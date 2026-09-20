@@ -4,7 +4,7 @@
 #include <kernel/process.h>
 #include <kernel/scheduler.h>
 #include <kernel/console.h>
-#include <kernel/rtl8139.h>
+#include <kernel/netdev.h>
 
 // Forward declarations for I/O port functions
 static inline void __outb(uint16_t port, uint8_t value);
@@ -340,10 +340,11 @@ void irq_handler(cpu_state_t *state) {
         console_com1_irq();
         break;
     default:
-        /* The rtl8139 NIC's IRQ line is assigned dynamically by PCI, so
-         * it can't be a compile-time case. Route it when it matches. */
-        if (rtl8139_present() && irq == rtl8139_irq_line()) {
-            rtl8139_irq();
+        /* The NIC's IRQ line is assigned dynamically (by PCI for the
+         * rtl8139, by the cmdline for virtio-mmio), so it can't be a
+         * compile-time case. Route it when it matches the bound device. */
+        if (netdev_present() && irq == netdev_irq_line()) {
+            netdev_irq();
         } else {
             boot_log("Unhandled IRQ: ");
             early_console_write_hex(irq);
