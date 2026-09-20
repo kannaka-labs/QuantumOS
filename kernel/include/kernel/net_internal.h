@@ -20,7 +20,7 @@
 #define NET_INTERNAL_H
 
 #include <kernel/types.h>
-#include <kernel/rtl8139.h> /* ETH_ADDR_LEN, RTL frame size, rtl8139_* */
+#include <kernel/netdev.h> /* ETH_ADDR_LEN, NET_FRAME_MAX, netdev_* */
 #include <kernel/net.h>     /* public API + UDP_PAYLOAD_MAX + NET_UDP_ and NET_TCP_ codes */
 
 /* The two protocol constants used by more than one net TU. Layer-local
