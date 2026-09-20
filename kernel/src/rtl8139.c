@@ -332,3 +332,17 @@ int rtl8139_init(void) {
     early_console_write_hex(nic_irq);
     return 1;
 }
+
+/* ---- netdev binding -------------------------------------------------
+ * Every entry point above already matches the netdev contract, so this is
+ * the whole port: no behaviour changes, only late binding. */
+const netdev_ops_t rtl8139_netdev = {
+    .name = "rtl8139",
+    .init = rtl8139_init,
+    .present = rtl8139_present,
+    .get_mac = rtl8139_get_mac,
+    .transmit = rtl8139_transmit,
+    .irq = rtl8139_irq,
+    .irq_line = rtl8139_irq_line,
+    .receive = rtl8139_receive,
+};
