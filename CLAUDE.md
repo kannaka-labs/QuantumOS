@@ -7,7 +7,7 @@ honest limits. For the *history*, read [`CHANGELOG.md`](CHANGELOG.md).
 ## What this is
 
 A capability-secure, quantum-aware x86-64 microkernel that boots under QEMU, on real hardware
-(GRUB ISO), and [in a browser](https://flaukowski.github.io/QuantumOS/) (qemu-wasm). Ring-3
+(GRUB ISO), and [in a browser](https://kannaka-labs.github.io/QuantumOS/) (qemu-wasm). Ring-3
 citizens hold only their granted capabilities; the host-side MCP toolkit
 (`quantumos-host-tools`, `scripts/`) lets an agent operate a running kernel with a verified boot
 identity on every result. North star: **agents operate the OS; safety is structural (kernel

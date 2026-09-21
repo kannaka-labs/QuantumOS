@@ -100,7 +100,7 @@ Nothing gated. This is built and runnable today. We'd value:
   memory, multi-node field coherence, and agents that run reproducible experiments
   against a system whose authority is fully auditable.
 
-**Repo:** github.com/flaukowski/QuantumOS · **Agent:** `scripts/qos_claude_agent.py`
+**Repo:** github.com/kannaka-labs/QuantumOS · **Agent:** `scripts/qos_claude_agent.py`
 · **Frozen surface:** `contracts/mcp/v1-tools.json` · **Design record:** `docs/adr/`
 
 *Honest scope note: QuantumOS is a research OS, not production infrastructure. The

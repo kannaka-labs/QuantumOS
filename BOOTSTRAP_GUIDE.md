@@ -52,4 +52,4 @@ un-echoable signals — if it passes, your toolchain is good.
 
 - Build a richer picture from the [Architecture Decision Records](docs/adr/).
 - Drive a running kernel from the host with the `quantumos-host-tools` package (`scripts/`).
-- Try the zero-install [browser demo](https://flaukowski.github.io/QuantumOS/).
+- Try the zero-install [browser demo](https://kannaka-labs.github.io/QuantumOS/).

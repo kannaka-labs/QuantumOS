@@ -143,7 +143,7 @@ Instances of abusive, harassing, or otherwise unacceptable behavior may be repor
 ### Development Environment Setup
 ```bash
 # Clone the repository
-git clone https://github.com/flaukowski/QuantumOS.git
+git clone https://github.com/kannaka-labs/QuantumOS.git
 cd QuantumOS
 
 # Install dependencies

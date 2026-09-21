@@ -1,8 +1,8 @@
 # quantumos-host-tools
 
-Host-side toolkit for [QuantumOS](https://github.com/flaukowski/QuantumOS) — the
+Host-side toolkit for [QuantumOS](https://github.com/kannaka-labs/QuantumOS) — the
 capability-secure, quantum-aware microkernel that boots
-[in your browser](https://flaukowski.github.io/QuantumOS/).
+[in your browser](https://kannaka-labs.github.io/QuantumOS/).
 
 This package is how an **agent operates a running QuantumOS from the host**: it owns
 the QEMU VM lifecycle, scripts the guest shell, drives the kernel holographic-memory
@@ -18,7 +18,7 @@ pip install "quantumos-host-tools[quantum,qbraid]"
 
 Requires Python ≥ 3.10 and a `qemu-system-x86_64` on `PATH`. You also need a QuantumOS
 `kernel.elf32` (build it from the repo with `make`, or take one from a
-[release](https://github.com/flaukowski/QuantumOS/releases)).
+[release](https://github.com/kannaka-labs/QuantumOS/releases)).
 
 ## What's inside
 

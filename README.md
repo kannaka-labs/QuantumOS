@@ -5,8 +5,8 @@
 *A next-generation quantum-aware operating system for the future of computing*
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://opensource.org/licenses/GPL-2.0)
-[![Build Status](https://github.com/flaukowski/QuantumOS/workflows/CI%2FCD%20Pipeline/badge.svg)](https://github.com/flaukowski/QuantumOS/actions)
-[![Issues](https://img.shields.io/github/issues/flaukowski/QuantumOS)](https://github.com/flaukowski/QuantumOS/issues)
+[![Build Status](https://github.com/kannaka-labs/QuantumOS/workflows/CI%2FCD%20Pipeline/badge.svg)](https://github.com/kannaka-labs/QuantumOS/actions)
+[![Issues](https://img.shields.io/github/issues/kannaka-labs/QuantumOS)](https://github.com/kannaka-labs/QuantumOS/issues)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 > *"The future of computing is quantum, and the future of operating systems must be quantum-aware."*
@@ -17,9 +17,9 @@
 
 ## 🌐 Try it in your browser — zero install
 
-**[flaukowski.github.io/QuantumOS](https://flaukowski.github.io/QuantumOS/)** boots the real 64-bit kernel in your tab — an unmodified `qemu-system-x86_64` compiled to WebAssembly — and drops you at a live `qsh` prompt. Type into it: it's the real OS, running for real.
+**[kannaka-labs.github.io/QuantumOS](https://kannaka-labs.github.io/QuantumOS/)** boots the real 64-bit kernel in your tab — an unmodified `qemu-system-x86_64` compiled to WebAssembly — and drops you at a live `qsh` prompt. Type into it: it's the real OS, running for real.
 
-[![QuantumOS running in the browser: the colourful qsh console, with imprint/recall demonstrating holographic memory recalled from a typo'd cue](web/preview.png)](https://flaukowski.github.io/QuantumOS/)
+[![QuantumOS running in the browser: the colourful qsh console, with imprint/recall demonstrating holographic memory recalled from a typo'd cue](web/preview.png)](https://kannaka-labs.github.io/QuantumOS/)
 
 *The live demo: `imprint a cat sat on the mat`, then `recall a cxt sxt on thx mat` — the holographic field returns the stored phrase from a corrupted cue.*
 
@@ -40,7 +40,7 @@ QuantumOS boots on x86-64 under QEMU (`make run`), and every claim below is gate
 - **Associative memory as a syscall** — `SYS_IMPRINT`/`SYS_RECALL` (epic #95): capability-scoped kernel field regions a process can store byte patterns into and recall associatively against — ranked Q15 wave-resonance scoring, one bounded integer pass, no floats in the kernel. From the shell: `imprint the cat sat on the mat`, then `recall the cxt sxt on thx mxt` recovers the exact stored text. CI proves the noisy-probe recall, the capless-caller EPERM (by attack), cross-region isolation, and that a degenerate probe can't fault the kernel ([docs/RUNTIME.md](docs/RUNTIME.md))
 - **…and those memories survive reboot** (epic #96): `sync` serializes the field to a checksummed section of the QDSK disk volume; the next boot restores it before services start, and the shell inherits its region exactly once, audibly. CI proves it in three boots: imprint+sync, then recall-from-corrupted-probe in a boot that never typed the pattern, then a deliberately corrupted blob that must cold-start honestly while the filesystem still restores ([docs/PERSISTENT_STORAGE.md](docs/PERSISTENT_STORAGE.md))
 - **Two kernels, one field** (epic #97): two QuantumOS instances couple their `ghostd` oscillator fields over UDP — distributed Kuramoto phase synchronization between running kernels. To get there, QuantumOS gained a static-IP path and an **ARP responder** (SLIRP always answered for the guest; two guests on a raw L2 must do it themselves). A `fieldsyncd` service exchanges 256-phase snapshots each second; the cross-node order parameter R_x climbs from divergent (each node seeded from its own quantum entropy) to locked. CI boots **two guests on one wire** and asserts both fields start uncorrelated and synchronize — while each node's own associative recall keeps passing ([docs/NETWORKING.md](docs/NETWORKING.md))
-- **Serves a page, then serves agents** (epics #98/#99/#100): TCP `listen`/`accept` + a ring-3 `httpd` make QuantumOS *serve* a live status page; a host-side **MCP server** (`scripts/qos_mcp.py`) exposes a running kernel to any MCP-speaking agent as 22 tools (the surface frozen as `contracts/mcp/v1-tools.json` — ADR-0020) — boot, script the shell, imprint/recall the field, run citizens, fetch over the guest's own TCP, read the audit ledger — every result carrying the verified Lamport boot identity. A **bring-your-own-model agent** (`scripts/qos_agent.py`) puts an AI of *your* choice in the driver's seat over those same frozen tools: Claude by default, or any OpenAI-compatible endpoint (OpenAI, OpenRouter, Groq, a keyless local Ollama) — `make qos-agent`, key and VM never leave your machine. And the whole thing **boots in a browser**: the real 64-bit kernel under `qemu-system-x86_64` compiled to WebAssembly at [flaukowski.github.io/QuantumOS](https://flaukowski.github.io/QuantumOS/)
+- **Serves a page, then serves agents** (epics #98/#99/#100): TCP `listen`/`accept` + a ring-3 `httpd` make QuantumOS *serve* a live status page; a host-side **MCP server** (`scripts/qos_mcp.py`) exposes a running kernel to any MCP-speaking agent as 22 tools (the surface frozen as `contracts/mcp/v1-tools.json` — ADR-0020) — boot, script the shell, imprint/recall the field, run citizens, fetch over the guest's own TCP, read the audit ledger — every result carrying the verified Lamport boot identity. A **bring-your-own-model agent** (`scripts/qos_agent.py`) puts an AI of *your* choice in the driver's seat over those same frozen tools: Claude by default, or any OpenAI-compatible endpoint (OpenAI, OpenRouter, Groq, a keyless local Ollama) — `make qos-agent`, key and VM never leave your machine. And the whole thing **boots in a browser**: the real 64-bit kernel under `qemu-system-x86_64` compiled to WebAssembly at [kannaka-labs.github.io/QuantumOS](https://kannaka-labs.github.io/QuantumOS/)
 - **Structural authority — conscience before wallet** (Phase D, epics #133/#135/#137/#144): a capability **authority ledger** records every grant, denial, spawn, and revocation, kernel-written and durable across reboots, so a citizen cannot forge or suppress its own entry; **explicit intent manifests** bind a per-pid allow-set at spawn and enforce real quotas (spawn count, CPU ticks, quantum submissions); **one-hop capability delegation** (`SYS_CAP_DERIVE`) lets an agent hand a *narrowed* authority to a sub-agent, cascade-revoked when the delegator dies. Authority *is* the capability set, and every attempt to exceed it is provable
 - **A quantum stack that never lies about precision** (epics #148/#149/#150): `qsv`, an *exact* Gaussian-integer state-vector engine in ring 3 (zero rounding — its unitarity is an integer identity), gated in CI against an independent host mirror by SHA-256 digest; a capability-gated kernel **QPU job broker** (`SYS_QPU`) that brokers *opaque* circuits under a per-manifest quota; and a host gateway dispatching **PennyLane (incl. cuQuantum GPU), CUDA-Q, and real qBraid QPUs**, every backend cross-oracled against the exact engine to ≤1e-9
 - **An agent society** (epics #139/#171–#178): N kernels synchronize one field over a multicast L2 (min-pairwise Kuramoto verdict); and an `agentd` orchestrator delegates narrowed field capabilities to sub-agents it spawns itself over **spawn-time parent↔child IPC channels** — the society *self-assembles*, reaches content consensus by digest, divides labor across private field workspaces, and exchanges verified results with a second VM's society
@@ -95,7 +95,7 @@ QuantumOS is not just another operating system—it's a bold reimagining of what
 ### Build and Run
 ```bash
 # Clone the repository
-git clone https://github.com/flaukowski/QuantumOS.git
+git clone https://github.com/kannaka-labs/QuantumOS.git
 cd QuantumOS
 
 # Install dependencies (Ubuntu/Debian)
@@ -418,7 +418,7 @@ The v0.1–v0.5 foundations (process management, capabilities, quantum resources
 services framework, the whole agent-native stack, and the frozen v1 contracts) are **done
 and CI-gated** — see [CHANGELOG.md](CHANGELOG.md). Good next directions are tracked in the
 [ADRs](docs/adr/) (N=5 societies, actor attribution in the authority ledger) and in the
-[open issues](https://github.com/flaukowski/QuantumOS/issues). Pick one, or open a new
+[open issues](https://github.com/kannaka-labs/QuantumOS/issues). Pick one, or open a new
 issue to propose your own.
 
 ### 🛠️ **How to Contribute**
@@ -431,7 +431,7 @@ issue to propose your own.
 ### 📖 **Guidelines**
 - Read our [Contributing Guidelines](CONTRIBUTING.md)
 - Check the [issue templates](docs/) (`docs/bug_report.md`, `docs/feature_request.md`) for guidance
-- Join our [Discussions](https://github.com/flaukowski/QuantumOS/discussions)
+- Join our [Discussions](https://github.com/kannaka-labs/QuantumOS/discussions)
 
 ### 🌟 **Wanted Skills**
 - **Kernel Development**: C, Assembly, Systems Programming
@@ -503,8 +503,8 @@ QuantumOS is licensed under the GNU General Public License v2.0. See [LICENSE](L
 
 ## 🌍 Community
 
-- **GitHub Issues**: [Report bugs and request features](https://github.com/flaukowski/QuantumOS/issues)
-- **GitHub Discussions**: [General questions and ideas](https://github.com/flaukowski/QuantumOS/discussions)
+- **GitHub Issues**: [Report bugs and request features](https://github.com/kannaka-labs/QuantumOS/issues)
+- **GitHub Discussions**: [General questions and ideas](https://github.com/kannaka-labs/QuantumOS/discussions)
 - **Documentation**: [Complete technical documentation](docs/)
 
 ---
