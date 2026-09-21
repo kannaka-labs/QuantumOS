@@ -21,7 +21,7 @@
 
 #include <kernel/types.h>
 #include <kernel/netdev.h> /* ETH_ADDR_LEN, NET_FRAME_MAX, netdev_* */
-#include <kernel/net.h>     /* public API + UDP_PAYLOAD_MAX + NET_UDP_ and NET_TCP_ codes */
+#include <kernel/net.h>    /* public API + UDP_PAYLOAD_MAX + NET_UDP_ and NET_TCP_ codes */
 
 /* The two protocol constants used by more than one net TU. Layer-local
  * values (ETH_TYPE_ARP, ARP_*, IP_PROTO_ICMP/TCP, DHCP_*, DNS ports) stay
