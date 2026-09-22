@@ -654,3 +654,99 @@ Where it is likeliest wrong, for whoever runs it first: the avail/used ring
 index wrap arithmetic; whether Firecracker wants `QueueNum` written before
 or after the address registers; and whether refusing a `QueueNumMax < 64`
 outright should instead shrink the ring.
+
+## modbusd: a Modbus/TCP agent that refuses control writes (stage 4 of #235)
+
+`user/modbusd.c` is a ring-3 Modbus/TCP server on `:502`. The point is not
+that QuantumOS can speak an industrial protocol — it is **where the refusal
+lives**.
+
+A conventional SCADA stack authenticates, authorises, executes, and then
+writes the record of what it did, all inside one process. A log a process
+writes about itself is the same class of evidence as a status field a process
+sets about itself. This agent is the smallest honest demonstration of the
+alternative: a control write arrives over the wire, is **refused by default**,
+and the refusal is counted into a register any poller can read.
+
+### A deliberately small dialect
+
+| FC | meaning | behaviour |
+|---|---|---|
+| `0x03` | read holding registers | live kernel telemetry |
+| `0x04` | read input registers | same bank, read-only alias |
+| `0x06` | write single register | **refused** unless armed |
+
+Everything else earns exception `0x01`. A protocol surface is an attack
+surface, and every function code not implemented is one that cannot be got
+wrong.
+
+### The register bank
+
+Eight registers, fixed. A register map that can grow at runtime is a register
+map nobody can audit.
+
+| # | name | meaning |
+|---|---|---|
+| 0 | `UPTIME_S` | seconds since boot (wraps at 65535) |
+| 1 | `REQUESTS` | requests served — rises, so it proves liveness |
+| 2 | `REFUSALS` | control writes refused. **The important one.** |
+| 3 | `SETPOINT` | the only writable point, and it is armed off |
+| 4 | `PROTO_ERR` | malformed frames rejected |
+| 5 | `ARMED` | 1 if control writes are permitted at all |
+| 6 | `VERSION` | agent version, so a poller can detect drift |
+| 7 | `RESERVED` | — |
+
+An `FC 0x06` write returns exception `0x04` (device failure) as the two bytes
+`0x86 0x04`, and `REFUSALS` is incremented **before** the response is built —
+so a refused write is visible to the next reader even though it changed
+nothing. An unrecorded refusal is indistinguishable from no request at all.
+
+### Authority: the caveat is the point
+
+The refusal is enforced **by this process, not by the kernel.** QuantumOS
+capabilities are per-resource-class (`CAP_RESOURCE_DEVICE` over
+`DEVICE_ID_NET`); there is no capability meaning *"may write holding register
+40001"*. Arming is the compile-time constant `MB_CONTROL_ARMED`, which is a
+decision compiled **into** the program being governed rather than held
+**over** it.
+
+So modbusd is precisely the application-level enforcement that 0xSCADA
+ADR-0028 criticises, and it is written that way on purpose: it is the working
+example that makes the missing kernel primitive concrete and testable.
+Closing that gap — a per-point control capability the kernel itself denies —
+is the next ADR, not this program. It does not claim to be safe for real
+plant; it claims to be honest about why it is not.
+
+The `grant_net` capability it holds is also honestly **wider than the job
+needs** — the same coarse cap `httpd` holds, which additionally gates
+`SYS_UDP`, `SYS_RESOLVE` and outbound `TCP_CONNECT`. The program therefore
+contains **no outbound operation of any kind**: it listens, answers, closes.
+An audit should keep it that way.
+
+### DoS bounds, following httpd
+
+A total request deadline captured once and never reset on progress (so
+slow-loris cannot extend it), a hard frame cap of 260 bytes (MBAP 7 + max PDU
+253), and a bounded close.
+
+### Status at this branch: registered, and idle
+
+Two things must be said plainly, because neither is visible in the diff:
+
+1. **modbusd cannot serve yet.** QuantumOS arms exactly *one* passive TCP
+   listener, and `httpd` takes `:8080` at boot — so `TCP_LISTEN` on `:502`
+   returns `EINVAL` and modbusd logs `TCP listener already held (httpd) -
+   idle` and parks. **This is the expected result on this branch**, not a
+   bug; it is issue #238, and the listener table that fixes it is a separate
+   change. modbusd idles rather than fight for the socket. The three failure
+   causes are reported distinctly (`EINVAL` busy socket, `EPERM` no
+   capability, `EIO` no NIC) because a single "no network" would send a
+   reader hunting a cable fault when the answer is a busy socket.
+2. **It has never been compiled or run.** Like the virtio-net driver above,
+   nothing here has been past a compiler. The acceptance test is one
+   specific exchange: send `FC 0x06` and confirm the reply is exception
+   `0x86 0x04`. *That failing to be refused is the only result that
+   matters.*
+
+Without a NIC it logs once and idles, so the default NIC-less boot is
+unchanged.

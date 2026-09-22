@@ -42,6 +42,7 @@ extern const uint8_t _binary_quantumd_elf_start[], _binary_quantumd_elf_end[];
 extern const uint8_t _binary_kannakad_elf_start[], _binary_kannakad_elf_end[];
 extern const uint8_t _binary_fieldsyncd_elf_start[], _binary_fieldsyncd_elf_end[];
 extern const uint8_t _binary_httpd_elf_start[], _binary_httpd_elf_end[];
+extern const uint8_t _binary_modbusd_elf_start[], _binary_modbusd_elf_end[];
 extern const uint8_t _binary_quota_test_elf_start[], _binary_quota_test_elf_end[];
 extern const uint8_t _binary_delegation_test_elf_start[], _binary_delegation_test_elf_end[];
 extern const uint8_t _binary_subagentd_elf_start[], _binary_subagentd_elf_end[];
@@ -61,6 +62,7 @@ void user_shell_init(uint32_t ghostd_pid);
 void user_quantum_demo_init(void);
 void user_fieldsync_demo_init(uint32_t ghostd_pid);
 void user_httpd_init(void);
+void user_modbusd_init(void);
 void user_kannaka_demo_init(void);
 void user_quota_test_init(void);
 void user_delegation_demo_init(void);
@@ -356,6 +358,9 @@ void user_paradox_demo_init(uint32_t ghostd_pid) {
     /* epic #98: bring up httpd, the TCP status-page server. */
     user_httpd_init();
 
+    /* 0xSCADA stage 4: bring up modbusd, the Modbus/TCP agent. */
+    user_modbusd_init();
+
     /* ghostd phase 4: bring up swarm_svc, the COM2 serial swarm bridge. */
     user_swarm_demo_init(ghostd_pid);
 }
@@ -368,6 +373,40 @@ void user_paradox_demo_init(uint32_t ghostd_pid) {
  * way. Needs no IPC wiring (the body is built from uncapped SYS_TICKS /
  * SYS_SYSINFO). Without a NIC it logs once and idles; the default boot
  * is unchanged. Monitored. */
+/* modbusd — a Modbus/TCP server on :502 (0xSCADA stage 4). Reads serve
+ * live kernel telemetry; CONTROL WRITES ARE REFUSED and the refusal is
+ * counted into a register any poller can read.
+ *
+ * The grant is grant_net, the same coarse cap httpd holds, and the same
+ * caveat applies with more force here: it also gates SYS_UDP /
+ * SYS_RESOLVE / outbound TCP connects, so user/modbusd.c deliberately
+ * contains no outbound operation and an audit should keep it that way.
+ *
+ * Worth stating where the grant is made rather than only in the program:
+ * the write refusal in modbusd is enforced BY THE PROGRAM, not by this
+ * capability. There is no cap meaning "may write holding register N".
+ * That gap is the point of the exercise, not an oversight — see
+ * 0xSCADA ADR-0028. Without a NIC it logs once and idles; the default
+ * boot is unchanged. Monitored. */
+void user_modbusd_init(void) {
+    service_definition_t modbusd_def = {
+        .name = "modbusd",
+        .entry = NULL,
+        .user_elf_start = _binary_modbusd_elf_start,
+        .user_elf_end = _binary_modbusd_elf_end,
+        .dependencies = {NULL},
+        .max_restarts = 2,
+        .grant_net = 1,
+    };
+    uint32_t sid = 0;
+    if (service_register(&modbusd_def, &sid) != SVC_SUCCESS ||
+        service_start("modbusd", NULL) != SVC_SUCCESS) {
+        boot_log("Warning: modbusd service failed to start");
+        return;
+    }
+    boot_log("ghostOS: modbusd (ring 3) listening on Modbus/TCP :502");
+}
+
 void user_httpd_init(void) {
     service_definition_t httpd_def = {
         .name = "httpd",
