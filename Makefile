@@ -94,7 +94,7 @@ ASSEMBLY_SOURCES = $(wildcard $(KERNEL_DIR)/src/*.S)
 # objects (symbols _binary_<name>_elf_start/_end)
 USER_DIR = user
 USER_BUILD = $(BUILD_DIR)/user
-USER_PROGS = init echo client hbsvc ghostd ghost_test paradoxd paradox_test swarm_svc qsh quantumd kannakad fieldsyncd httpd quota_test delegation_test subagentd cpu_hog qsv qpud qpu_test agentd
+USER_PROGS = init echo client hbsvc ghostd ghost_test paradoxd paradox_test swarm_svc qsh quantumd kannakad fieldsyncd httpd modbusd quota_test delegation_test subagentd cpu_hog qsv qpud qpu_test agentd
 USER_ELF_OBJS = $(USER_PROGS:%=$(USER_BUILD)/%_elf.o)
 
 # libq: the freestanding ring-3 runtime, built as a static archive and linked
