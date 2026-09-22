@@ -502,10 +502,11 @@ couples `ghostd`'s *living* attractor field; the kernel holographic field
 
 ## Known limits / follow-ups (the honest boundary)
 
-- **TCP is one client + one server connection.** One active-open and one
-  passive-open at a time (epic #98), one connection per pid; the server
-  accepts serially (a SYN while busy is dropped and the peer's retry
-  lands after the re-listen). Stop-and-wait send (one outstanding
+- **TCP is one client + four listeners.** One active-open at a time, and
+  `TCP_MAX_LISTENERS` (4) passive-open slots on distinct ports (epic #98,
+  issue #238), one connection per pid; **each slot still carries one
+  connection at a time** and accepts serially (a SYN while that slot is busy
+  is dropped and the peer's retry lands after the re-listen). Stop-and-wait send (one outstanding
   segment ≤ MSS), in-order receive only (out-of-order segments are
   dropped; the peer retransmits), no congestion control, a shortened
   ~1 s TIME_WAIT (not 2 MSL), and no TLS. A complete, honest
@@ -733,15 +734,16 @@ slow-loris cannot extend it), a hard frame cap of 260 bytes (MBAP 7 + max PDU
 
 Two things must be said plainly, because neither is visible in the diff:
 
-1. **modbusd cannot serve yet.** QuantumOS arms exactly *one* passive TCP
-   listener, and `httpd` takes `:8080` at boot — so `TCP_LISTEN` on `:502`
-   returns `EINVAL` and modbusd logs `TCP listener already held (httpd) -
-   idle` and parks. **This is the expected result on this branch**, not a
-   bug; it is issue #238, and the listener table that fixes it is a separate
-   change. modbusd idles rather than fight for the socket. The three failure
-   causes are reported distinctly (`EINVAL` busy socket, `EPERM` no
-   capability, `EIO` no NIC) because a single "no network" would send a
-   reader hunting a cable fault when the answer is a busy socket.
+1. **modbusd can now get a slot.** On the branch that introduced it, it could
+   not: QuantumOS armed exactly *one* passive TCP listener and `httpd` takes
+   `:8080` at boot, so `TCP_LISTEN` on `:502` returned `EINVAL` and modbusd
+   logged `TCP listener already held (httpd) - idle` and parked. **The
+   listener table below is what changed that** (issue #238) — `:502` and
+   `:8080` are distinct ports, so each gets its own slot. The idle path
+   remains for the cases that are still real, and reports its three causes
+   distinctly (`EINVAL` port taken, `EPERM` no capability, `EIO` no NIC),
+   because a single "no network" would send a reader hunting a cable fault
+   when the answer is a busy socket.
 2. **It has never been compiled or run.** Like the virtio-net driver above,
    nothing here has been past a compiler. The acceptance test is one
    specific exchange: send `FC 0x06` and confirm the reply is exception
@@ -750,3 +752,43 @@ Two things must be said plainly, because neither is visible in the diff:
 
 Without a NIC it logs once and idles, so the default NIC-less boot is
 unchanged.
+
+## A listener table: more than one service at a time (stage 3 of #235, fixes #238)
+
+`listen`/`accept` above was built for exactly one passive-open socket —
+`net.h` said "arm **the single** listener" and `net_tcp.c` held one server
+TCB. `httpd` takes port 8080 at boot, so it owned the only slot there was,
+and **no second network service could ever start.** Not a policy: a
+one-element array.
+
+`tcb_srv[]` is now `TCP_MAX_LISTENERS` (4) slots. Everything that walked the
+one server TCB — the rx demux, the per-tick service pass, cleanup on pid
+death — walks the array instead. Server slots are disjoint by listen port, so
+at most one can match an incoming segment, and the demux stops at the first
+slot that consumes it.
+
+### What ownership now means
+
+Ownership is **per port**, not per stack:
+
+- `net_tcp_listen(pid, port)` returns `EINVAL` if a live foreign owner holds
+  **that port** — previously, any live listener anywhere.
+- It still returns `EINVAL` if the caller owns the client connection, because
+  the one-connection-per-pid rule is unchanged.
+- `accept` polls **this pid's** listener rather than *the* listener.
+
+### A full table is EINVAL, not WOULDBLOCK
+
+When every slot is taken, `listen` fails with `EINVAL`. That is a deliberate
+choice and worth stating, because `WOULDBLOCK` is the tempting answer: the
+caller is supposed to poll `listen` until it returns 0, so "try again" looks
+like the consistent reply. But a full table does not clear on its own — no
+amount of polling frees a slot another service holds. A caller spinning
+forever on a condition that cannot change is worse off than one told plainly
+to stop, so the permanent failure gets the permanent error.
+
+### What it unlocks
+
+`httpd` on `:8080` and `modbusd` on `:502` answering **in the same boot** —
+which is the acceptance test for this branch, and the reason the Modbus agent
+(stage 4) is worth having at all.
