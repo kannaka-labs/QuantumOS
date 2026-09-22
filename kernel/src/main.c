@@ -17,6 +17,7 @@
 #include <kernel/ata.h>
 #include <kernel/ramfs.h>
 #include <kernel/netdev.h>
+#include <kernel/virtio_net.h>
 #include <kernel/net.h>
 #include <kernel/vga.h>
 #include <kernel/fb.h>
@@ -782,6 +783,100 @@ static uint64_t multiboot_parse_memory(uint32_t info_addr) {
 
 // Match "qseed=" at p; on hit, decode up to 16 hex digits into a u64. Also
 // scans for the bare `quiet` token (clean interactive console).
+/* Decode every `virtio_mmio.device=<size>@<base>:<irq>` token, the way a
+ * hypervisor with no discoverable bus tells a guest where its devices
+ * are (Firecracker emits one per device, e.g. 4K@0xd0000000:5). Size
+ * accepts a K or M suffix, base is hex or decimal, irq is decimal.
+ *
+ * Matched only at a whitespace token boundary, like ip= and peer=, so it
+ * can never trip on a substring. Malformed tokens are skipped rather
+ * than guessed at: a wrong MMIO base is a fault, not a degraded NIC. */
+static void cmdline_get_virtio_mmio(const char *cmd) {
+    static const char key[] = "virtio_mmio.device=";
+    for (const char *p = cmd; *p; p++) {
+        if (p != cmd && p[-1] != ' ' && p[-1] != '\t') {
+            continue;
+        }
+        int k = 0;
+        while (key[k] && p[k] == key[k]) {
+            k++;
+        }
+        if (key[k] != '\0') {
+            continue;
+        }
+        const char *h = p + k;
+
+        /* size, with an optional K/M suffix */
+        uint64_t size = 0;
+        int digits = 0;
+        while (*h >= '0' && *h <= '9') {
+            size = size * 10 + (uint64_t)(*h - '0');
+            h++;
+            digits++;
+        }
+        if (!digits) {
+            continue;
+        }
+        if (*h == 'K' || *h == 'k') {
+            size *= 1024;
+            h++;
+        } else if (*h == 'M' || *h == 'm') {
+            size *= 1024 * 1024;
+            h++;
+        }
+        if (*h != '@') {
+            continue;
+        }
+        h++;
+
+        /* base: 0x-prefixed hex, or decimal */
+        uint64_t base = 0;
+        digits = 0;
+        if (h[0] == '0' && (h[1] == 'x' || h[1] == 'X')) {
+            h += 2;
+            for (;;) {
+                char c = *h;
+                int v;
+                if (c >= '0' && c <= '9') {
+                    v = c - '0';
+                } else if (c >= 'a' && c <= 'f') {
+                    v = c - 'a' + 10;
+                } else if (c >= 'A' && c <= 'F') {
+                    v = c - 'A' + 10;
+                } else {
+                    break;
+                }
+                base = (base << 4) | (uint64_t)v;
+                h++;
+                digits++;
+            }
+        } else {
+            while (*h >= '0' && *h <= '9') {
+                base = base * 10 + (uint64_t)(*h - '0');
+                h++;
+                digits++;
+            }
+        }
+        if (!digits || *h != ':') {
+            continue;
+        }
+        h++;
+
+        /* irq */
+        uint32_t irq = 0;
+        digits = 0;
+        while (*h >= '0' && *h <= '9') {
+            irq = irq * 10 + (uint32_t)(*h - '0');
+            h++;
+            digits++;
+        }
+        if (!digits || irq > 255) {
+            continue;
+        }
+        virtio_mmio_add_device(base, size, (uint8_t)irq);
+    }
+}
+
 static void parse_boot_cmdline(uint32_t info_addr) {
     uint32_t *info = (uint32_t *)(uintptr_t)info_addr;
     // Multiboot v1: flags bit 2 => cmdline valid; cmdline ptr at word 4
@@ -815,6 +910,13 @@ static void parse_boot_cmdline(uint32_t info_addr) {
     cmdline_get_peers(cmd);
     if (net_get_peer_count() > 0) {
         boot_log("NET: coupling peer(s) configured from cmdline (peer=)");
+    }
+
+    /* Where the virtio-mmio devices live. There is no bus to walk on a
+     * Firecracker guest, so this token IS the device discovery. */
+    cmdline_get_virtio_mmio(cmd);
+    if (virtio_mmio_device_count() > 0) {
+        boot_log("NET: virtio-mmio device(s) declared on cmdline");
     }
 
     static const char key[] = "qseed=";

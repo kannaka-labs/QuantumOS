@@ -11,14 +11,18 @@
  */
 
 #include <kernel/netdev.h>
+#include <kernel/virtio_net.h>
 #include <kernel/rtl8139.h>
 #include <kernel/boot.h>
 
 /* Drivers, in probe order. The first whose init() returns 1 is bound.
- * virtio-net belongs here once it exists; put it FIRST when it lands,
- * because a Firecracker guest has no PCI for the rtl8139 probe to walk
- * and the cheap probe should come before the bus scan. */
+ * virtio-net is FIRST deliberately: its probe is a handful of MMIO reads
+ * at addresses the cmdline already named, whereas the rtl8139 probe walks
+ * the PCI bus — and a Firecracker guest has no PCI bus at all. Cheap and
+ * certain before expensive and absent. With no virtio_mmio.device= token
+ * the virtio probe returns 0 immediately and costs nothing. */
 static const netdev_ops_t *const drivers[] = {
+    &virtio_net_netdev,
     &rtl8139_netdev,
 };
 

@@ -392,6 +392,8 @@ same code, three translation units plus a shared internal header:
 - **`kernel/src/netdev.c`** — not a transport: the seam between the stack
   and whichever NIC is present. Holds the probe list, the bound-device
   pointer, and the `netdev_*` forwarders.
+- **`kernel/src/virtio_net.c`** — the virtio-mmio transport and the
+  virtio-net device, behind the netdev contract. The NIC Firecracker has.
 
 The transports keep all their state `static` in their own file, so the
 concurrency invariants (the volatile publish discipline on the UDP tx ring
@@ -511,12 +513,12 @@ couples `ghostd`'s *living* attractor field; the kernel holographic field
 - UDP: 4 sockets, 4-deep rings, 1472-byte datagrams (no IP
   fragmentation), no UDP TX checksum (0 is legal for IPv4), no
   broadcast/multicast send.
-- **One NIC driver (the rtl8139), IPv4 only.** The stack no longer names it
-  (see the netdev seam below), but it is still the only driver in the probe
-  list, so a hypervisor that exposes no PCI still comes up with no network.
-  The seam is the prerequisite for fixing that, not the fix. The network
-  capability is held by `qsh`, `httpd`, and `fieldsyncd` today; one kernel
-  resolve and one TCP connection in flight at a time.
+- **Two NIC drivers (virtio-net, rtl8139), IPv4 only.** The probe binds the
+  first one present, so the same kernel image comes up on Firecracker and on
+  QEMU. **The virtio-net driver has not yet been run** — see its section
+  below for what that means. The network capability is held by `qsh`,
+  `httpd`, and `fieldsyncd` today; one kernel resolve and one TCP connection
+  in flight at a time.
 - Static mode is a single flat /24 with no gateway (no off-link routing)
   and no DNS server on the peer segment; it is the two-guest enabler, not
   a general static-networking configuration.
@@ -598,3 +600,57 @@ hypervisor — while ARP, IPv4, ICMP, DHCP, DNS, ring-3 UDP and TCP with
 `listen`/`accept` are all already present and working. The NIC was the only
 thing missing. This seam is what lets the NIC Firecracker *does* expose be
 written without touching any of the stack above it.
+
+## virtio-net over virtio-mmio: the NIC Firecracker has (stage 2 of #235)
+
+The seam above made a second driver possible; this is the driver. A modern
+(virtio 1.x) MMIO transport and a virtio-net device, filling in the same
+`netdev_ops_t` the rtl8139 fills in.
+
+### There is no bus to walk
+
+The RTL8139 is found by enumerating PCI. Firecracker has no PCI, and
+virtio-mmio devices are not discoverable at all — the hypervisor tells the
+guest where they are, on the kernel command line, one token per device:
+
+```
+virtio_mmio.device=4K@0xd0000000:5
+                   size@base:irq
+```
+
+`cmdline_get_virtio_mmio()` in `main.c` decodes every such token, matched
+**only at a whitespace token boundary** — the same discipline `ip=` and
+`peer=` already use, so it can never trip on a substring. Size takes an
+optional `K`/`M` suffix, base is hex or decimal, irq is decimal.
+
+Each token is handed to `virtio_mmio_add_device(base, size, irq)`, which
+stores it (up to `VIRTIO_MMIO_MAX_DEVICES`, 8 — Firecracker's default is
+well under that, and a static array means the probe needs no allocator).
+It is idempotent per base, and it **refuses** `irq >= 16` rather than
+storing it: that is the rtl8139 lesson written down, because a line that
+cannot deliver RX is better refused at parse time than unmasked later as a
+bogus vector. Malformed tokens are skipped, not guessed at — a wrong MMIO
+base is a fault, not a degraded NIC.
+
+The parser must run **before** `netdev_init()`, since the probe reads the
+recorded slots, checking each for the virtio magic and a network device id.
+`netdev_init()` tries virtio-net **before** the PCI bus scan, so a guest
+with both takes the paravirtual NIC.
+
+### Status: written, not yet run
+
+**This driver has never been compiled or executed.** There is no
+cross-toolchain, KVM or QEMU on the machine it was written on, so nothing
+here has been past a compiler. It is documented because the seam and the
+cmdline contract are worth reviewing on their merits — not because it is
+known to work.
+
+The acceptance test is the one that already exists and has never been able
+to run: boot under Firecracker with a tap device and require
+`net_selftest()` (ARP → DHCP → ping → DNS) to pass. Until that goes green,
+treat this section as a description of intent.
+
+Where it is likeliest wrong, for whoever runs it first: the avail/used ring
+index wrap arithmetic; whether Firecracker wants `QueueNum` written before
+or after the address registers; and whether refusing a `QueueNumMax < 64`
+outright should instead shrink the ring.
