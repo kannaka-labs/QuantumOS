@@ -389,6 +389,9 @@ same code, three translation units plus a shared internal header:
   guards), the `htons`/`htonl`/`ip_eq` helpers, the netif globals, and the
   handful of prototypes one net TU calls in another. Not a public API;
   user-facing declarations still live in `kernel/include/kernel/net.h`.
+- **`kernel/src/netdev.c`** — not a transport: the seam between the stack
+  and whichever NIC is present. Holds the probe list, the bound-device
+  pointer, and the `netdev_*` forwarders.
 
 The transports keep all their state `static` in their own file, so the
 concurrency invariants (the volatile publish discipline on the UDP tx ring
@@ -508,8 +511,12 @@ couples `ghostd`'s *living* attractor field; the kernel holographic field
 - UDP: 4 sockets, 4-deep rings, 1472-byte datagrams (no IP
   fragmentation), no UDP TX checksum (0 is legal for IPv4), no
   broadcast/multicast send.
-- Single rtl8139, IPv4 only. The network capability is held by `qsh`, `httpd`, and `fieldsyncd`
-  today; one kernel resolve and one TCP connection in flight at a time.
+- **One NIC driver (the rtl8139), IPv4 only.** The stack no longer names it
+  (see the netdev seam below), but it is still the only driver in the probe
+  list, so a hypervisor that exposes no PCI still comes up with no network.
+  The seam is the prerequisite for fixing that, not the fix. The network
+  capability is held by `qsh`, `httpd`, and `fieldsyncd` today; one kernel
+  resolve and one TCP connection in flight at a time.
 - Static mode is a single flat /24 with no gateway (no off-link routing)
   and no DNS server on the peer segment; it is the two-guest enabler, not
   a general static-networking configuration.
@@ -539,3 +546,55 @@ wire input:
   ending in a mid-name compression pointer (legal per RFC 1035 §4.1.4),
   overshooting the record and missing a valid A answer. It now mirrors the
   question parser's pointer handling.
+
+## The netdev seam: one ops table, late binding (stage 1 of #235)
+
+Everything above was written against the RTL8139 and called it **by symbol
+name** — `rtl8139_transmit`, `rtl8139_present`, `rtl8139_irq_line` — from 16
+call sites across `net.c`, `net_udp.c`, `net_tcp.c`, `interrupts.c` and
+`main.c`. A second NIC therefore could not exist: adding one meant shadowing
+those symbols, which is not something a capability kernel should permit.
+
+`kernel/include/kernel/netdev.h` is the seam — one small ops table, filled in
+by a driver, bound once at boot:
+
+| member | contract |
+|---|---|
+| `name` | driver name, for the boot log |
+| `init` | the probe. Returns 1 **only** if a device was found *and* brought up, with no side effects a later driver would trip over. Called at most once per boot. |
+| `present` | 1 once a device is bound and up |
+| `get_mac` | copies `ETH_ADDR_LEN` bytes out |
+| `transmit` | one frame out; 1 on success |
+| `irq` | the device's interrupt handler |
+| `irq_line` | which line the device landed on (see *The dynamic IRQ*, above) |
+| `receive` | drain one frame into `buf`; returns its length, or 0 |
+
+`netdev_init()` walks the registered drivers in order and keeps the first that
+reports itself present. `netdev_name()` reports which one for the boot log and
+never returns NULL — it answers `"none"` rather than making the caller check.
+
+**The contract is unchanged.** Every member mirrors the `rtl8139_` entry point
+of the same name; only the binding is late. That is deliberate: it keeps this
+a pure refactor, verifiable by the `net_selftest()` that already exists
+(ARP → DHCP → ping → DNS) rather than by new tests written to match it.
+
+The link-layer constants `ETH_ADDR_LEN`, `NET_MTU` and `NET_FRAME_MAX` moved
+here from the driver header, because the stack needs them without knowing
+which NIC it has.
+
+### The no-NIC path is the same no-NIC path
+
+With nothing bound, the bound-device pointer stays NULL and every accessor
+returns the no-NIC answer — 0, or a no-op — rather than faulting. This is not
+new tolerance: it is exactly what the `rtl8139_present() == 0` path already
+did, and what the stack above already relies on. Boot continues without a
+network, as before.
+
+### Why the seam was worth cutting
+
+Firecracker exposes **no PCI at all** (`docs/FIRECRACKER.md`), so the RTL8139
+can never be found there and the whole stack above it is dead on that
+hypervisor — while ARP, IPv4, ICMP, DHCP, DNS, ring-3 UDP and TCP with
+`listen`/`accept` are all already present and working. The NIC was the only
+thing missing. This seam is what lets the NIC Firecracker *does* expose be
+written without touching any of the stack above it.

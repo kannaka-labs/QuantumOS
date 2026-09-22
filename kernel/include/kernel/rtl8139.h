@@ -13,10 +13,13 @@
 #define RTL8139_H
 
 #include <kernel/types.h>
+#include <kernel/netdev.h>
 
-#define ETH_ADDR_LEN 6
-#define RTL_MTU 1500
-#define RTL_FRAME_MAX 1600 /* MTU + headers, rounded up */
+/* ETH_ADDR_LEN, NET_MTU and NET_FRAME_MAX now live in <kernel/netdev.h>
+ * because the stack needs them without knowing which NIC it has. These
+ * aliases keep this driver's own source unchanged. */
+#define RTL_MTU NET_MTU
+#define RTL_FRAME_MAX NET_FRAME_MAX
 
 /* Probe PCI for the RTL8139, reset it, read the MAC, set up the RX ring
  * and TX descriptors, and enable RX/TX + the ROK/TOK interrupt. Returns
@@ -46,5 +49,9 @@ uint8_t rtl8139_irq_line(void);
  * length, or 0 if the queue is empty. Interrupt-safe. Called by the
  * network layer. */
 uint16_t rtl8139_receive(uint8_t *buf, uint16_t max);
+
+/* This driver as a netdev. Bound by netdev_init() via the probe list in
+ * kernel/src/netdev.c; the stack calls it only through that table. */
+extern const netdev_ops_t rtl8139_netdev;
 
 #endif /* RTL8139_H */

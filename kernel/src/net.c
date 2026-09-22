@@ -15,7 +15,7 @@
  */
 
 #include <kernel/net.h>
-#include <kernel/rtl8139.h>
+#include <kernel/netdev.h>
 #include <kernel/boot.h>
 #include <kernel/net_internal.h>
 #include <kernel/quantum.h> /* quantum_kernel_rand — unpredictable DNS txid/sport */
@@ -152,12 +152,12 @@ static uint8_t dhcp_server_id[4];
 /* The net thread's ONLY window onto the RX queue: every frame is offered
  * to the socket demux BEFORE the caller's own matcher sees it, so no
  * wait loop (ARP, DHCP, ICMP, DNS) can ever destroy a user datagram —
- * rtl8139_receive is destructive and has no putback. No code in this
- * file may call rtl8139_receive directly except this function. */
+ * netdev_receive is destructive and has no putback. No code in this
+ * file may call netdev_receive directly except this function. */
 static void arp_maybe_reply(const uint8_t *frame, uint16_t len);
 
 static uint16_t net_rx(uint8_t *buf, uint16_t max) {
-    uint16_t n = rtl8139_receive(buf, max);
+    uint16_t n = netdev_receive(buf, max);
     if (n > 0) {
         /* Answer peer ARP requests before demux — on a two-guest socket
          * L2 there is no SLIRP to do it for us (epic #97). */
@@ -233,10 +233,10 @@ static uint16_t checksum16(const uint8_t *data, uint32_t len) {
 }
 
 void net_init(void) {
-    if (!rtl8139_present()) {
+    if (!netdev_present()) {
         return;
     }
-    rtl8139_get_mac(self_mac);
+    netdev_get_mac(self_mac);
     dhcp_have_lease = 0;
     dhcp_state = 0;
     /* Apply a `ip=` static address parsed before net_init ran. */
@@ -290,7 +290,7 @@ static void arp_maybe_reply(const uint8_t *frame, uint16_t len) {
         rarp->spa[i] = my_ip[i];
         rarp->tpa[i] = arp->spa[i];
     }
-    rtl8139_transmit(out, sizeof(out));
+    netdev_transmit(out, sizeof(out));
 }
 
 /* ---- ARP ---- */
@@ -317,7 +317,7 @@ static int arp_send_request(const uint8_t *target_ip, const uint8_t *sender_ip) 
         arp->spa[i] = sender_ip[i];
         arp->tpa[i] = target_ip[i];
     }
-    return rtl8139_transmit(frame, sizeof(frame));
+    return netdev_transmit(frame, sizeof(frame));
 }
 
 static int arp_is_reply_from(const uint8_t *frame, uint16_t len, const uint8_t *want_ip,
@@ -505,7 +505,7 @@ static void dhcp_rx(const uint8_t *frame, uint16_t len) {
         uint8_t
             out[sizeof(eth_hdr_t) + sizeof(ip_hdr_t) + sizeof(udp_hdr_t) + sizeof(dhcp_hdr_t) + 32];
         uint16_t n = dhcp_build(out, DHCP_REQUEST, dhcp_offer_ip, dhcp_server_id);
-        rtl8139_transmit(out, n);
+        netdev_transmit(out, n);
         dhcp_state = 2;
     } else if (t == DHCP_ACK && dhcp_state == 2) {
         for (int i = 0; i < 4; i++) {
@@ -547,7 +547,7 @@ void ip_fill(ip_hdr_t *ip, const uint8_t *dst, uint8_t proto, uint16_t payload_l
  * Returns 1 and fills out_mac on success. */
 static int arp_resolve(const uint8_t *ip, const uint8_t *sender_ip, uint8_t *out_mac) {
     arp_send_request(ip, sender_ip);
-    uint8_t frame[RTL_FRAME_MAX];
+    uint8_t frame[NET_FRAME_MAX];
     for (int tries = 0; tries < 200; tries++) {
         uint16_t n = net_rx(frame, sizeof(frame));
         if (n > 0 && arp_is_reply_from(frame, n, ip, out_mac)) {
@@ -897,7 +897,7 @@ int net_dns_guard_selftest(void) {
  * syscall). Returns 0 and fills out_ip on success, -1 on failure.
  * Requires a NIC and a DHCP lease (for the unicast source address). */
 static int dns_resolve(const char *host, uint16_t txid, uint16_t sport, uint8_t *out_ip) {
-    if (!rtl8139_present() || !net_has_addr()) {
+    if (!netdev_present() || !net_has_addr()) {
         return -1;
     }
     uint8_t dns_mac[ETH_ADDR_LEN];
@@ -909,9 +909,9 @@ static int dns_resolve(const char *host, uint16_t txid, uint16_t sport, uint8_t 
     if (n == 0) {
         return -1;
     }
-    rtl8139_transmit(out, n);
+    netdev_transmit(out, n);
 
-    uint8_t frame[RTL_FRAME_MAX];
+    uint8_t frame[NET_FRAME_MAX];
     for (int tries = 0; tries < 400; tries++) {
         uint16_t m = net_rx(frame, sizeof(frame));
         if (m > 0 && dns_parse(frame, m, txid, sport, out_ip)) {
@@ -919,7 +919,7 @@ static int dns_resolve(const char *host, uint16_t txid, uint16_t sport, uint8_t 
         }
         if (m == 0) {
             if (tries > 0 && tries % 100 == 0) {
-                rtl8139_transmit(out, n);
+                netdev_transmit(out, n);
             }
             __asm__ volatile("hlt");
         }
@@ -973,11 +973,11 @@ static uint16_t dns_rand_sport(void) {
 }
 
 int net_ready(void) {
-    return rtl8139_present() && net_has_addr();
+    return netdev_present() && net_has_addr();
 }
 
 int net_nic_present(void) {
-    return rtl8139_present();
+    return netdev_present();
 }
 
 /* Post a resolve request (from SYS_RESOLVE). Returns 0 accepted, -1 if
@@ -1023,7 +1023,7 @@ int net_poll_resolve(uint8_t *out_ip) {
  * nobody are dropped), drain queued SENDTOs, drive the TCP state machine
  * (connect/retransmit/close/TIME_WAIT), then service a pending resolve. */
 void net_service_loop(void) {
-    uint8_t frame[RTL_FRAME_MAX];
+    uint8_t frame[NET_FRAME_MAX];
     for (;;) {
         udp_retire_closing();
         while (net_rx(frame, sizeof(frame)) > 0) {
@@ -1076,7 +1076,7 @@ static void log_ip(const char *label, const uint8_t *ip) {
 }
 
 void net_selftest(void) {
-    if (!rtl8139_present()) {
+    if (!netdev_present()) {
         boot_log("NET: no NIC — self-test skipped");
         return;
     }
@@ -1098,7 +1098,7 @@ void net_selftest(void) {
     static const uint8_t IP_PRE_DHCP[4] = {10, 0, 2, 15};
     arp_send_request(IP_GATEWAY, IP_PRE_DHCP);
 
-    uint8_t frame[RTL_FRAME_MAX];
+    uint8_t frame[NET_FRAME_MAX];
     uint8_t gw_mac[ETH_ADDR_LEN];
     int arp_ok = 0;
     for (int tries = 0; tries < 200 && !arp_ok; tries++) {
@@ -1128,7 +1128,7 @@ void net_selftest(void) {
         uint8_t
             out[sizeof(eth_hdr_t) + sizeof(ip_hdr_t) + sizeof(udp_hdr_t) + sizeof(dhcp_hdr_t) + 32];
         uint16_t n = dhcp_build(out, DHCP_DISCOVER, IP_ZERO, IP_ZERO);
-        if (rtl8139_transmit(out, n) == 0) {
+        if (netdev_transmit(out, n) == 0) {
             dhcp_state = 1;
         }
     }
@@ -1142,7 +1142,7 @@ void net_selftest(void) {
                 uint8_t out[sizeof(eth_hdr_t) + sizeof(ip_hdr_t) + sizeof(udp_hdr_t) +
                             sizeof(dhcp_hdr_t) + 32];
                 uint16_t m = dhcp_build(out, DHCP_DISCOVER, IP_ZERO, IP_ZERO);
-                rtl8139_transmit(out, m);
+                netdev_transmit(out, m);
             }
             __asm__ volatile("hlt");
         }
@@ -1165,7 +1165,7 @@ void net_selftest(void) {
         uint16_t ident = 0xBEEF, seq = 1;
         uint8_t out[sizeof(eth_hdr_t) + sizeof(ip_hdr_t) + 40];
         uint16_t n = icmp_build(out, IP_GATEWAY, gw_mac, ident, seq);
-        rtl8139_transmit(out, n);
+        netdev_transmit(out, n);
 
         int pong = 0;
         for (int tries = 0; tries < 300 && !pong; tries++) {
@@ -1174,7 +1174,7 @@ void net_selftest(void) {
                 pong = 1;
             } else if (m == 0) {
                 if (tries > 0 && tries % 64 == 0) {
-                    rtl8139_transmit(out, n);
+                    netdev_transmit(out, n);
                 }
                 __asm__ volatile("hlt");
             }

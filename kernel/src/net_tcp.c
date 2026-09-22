@@ -210,7 +210,7 @@ static void tcp_xmit(tcp_conn_t *c, uint32_t seq, uint8_t flags, const uint8_t *
     tcp[17] = (uint8_t)csum;
 
     ip_fill(ip, c->rip, IP_PROTO_TCP, seg_len, (uint16_t)(0x8000 + (seq & 0x7FFF)));
-    rtl8139_transmit(out, (uint16_t)(sizeof(eth_hdr_t) + sizeof(ip_hdr_t) + seg_len));
+    netdev_transmit(out, (uint16_t)(sizeof(eth_hdr_t) + sizeof(ip_hdr_t) + seg_len));
 
     /* Every ACK-bearing segment refreshes the advertised window. */
     if (flags & TCP_ACK) {

@@ -370,7 +370,7 @@ void udp_tx_drain(void) {
                 body[b] = e->data[b];
             }
             ip_fill(ip, e->dip, IP_PROTO_UDP, udp_len, (uint16_t)(0x5000 + udp_tx_tail));
-            rtl8139_transmit(out, (uint16_t)(sizeof(eth_hdr_t) + sizeof(ip_hdr_t) + udp_len));
+            netdev_transmit(out, (uint16_t)(sizeof(eth_hdr_t) + sizeof(ip_hdr_t) + udp_len));
         } else {
             udp_tx_dropped++; /* bounded ARP failed — UDP is lossy */
         }
