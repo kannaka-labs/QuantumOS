@@ -1,0 +1,29 @@
+name: Namespace Guard
+
+# Fails if documentation links back at a pre-migration namespace.
+# The check itself lives in kannaka-labs/.github so every repo shares
+# one definition — including its exclusions for real social handles.
+#
+# This repo is why the guard exists: the headline browser-demo link
+# pointed at flaukowski.github.io/QuantumOS, a Pages subdomain GitHub
+# does not redirect, and it returned 404 for months while every other
+# stale link here still resolved.
+
+on:
+  pull_request:
+    paths:
+      - "**/*.md"
+      # also on changes to the guard itself, so it self-verifies
+      - ".github/workflows/namespace-guard.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - ".github/workflows/namespace-guard.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  namespace:
+    uses: kannaka-labs/.github/.github/workflows/namespace-guard.yml@main
