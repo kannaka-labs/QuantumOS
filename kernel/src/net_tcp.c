@@ -1,8 +1,8 @@
 /**
  * QuantumOS ring-3 TCP (epics #82 client, #98 server) — split out of net.c.
  *
- * Two static connections and their net-thread state machine: `tcb` is the
- * single active-open (client) connection, `tcb_srv` the single passive-open
+ * Static connections and their net-thread state machine: `tcb` is the
+ * single active-open (client) connection, `tcb_srv[]` the passive-open
  * (server) connection. All cross-layer wire structs, byte-order helpers and
  * the IPv4/ARP output spine (ip_fill / net_next_hop / resolve_mac) come
  * from net_internal.h; the design notes are on the section comment just
@@ -112,8 +112,55 @@ typedef struct {
     uint16_t lreq_port;      /* pending listen port (written before listen_req) */
 } tcp_conn_t;
 
-static tcp_conn_t tcb;     /* the one active-open (client) connection */
-static tcp_conn_t tcb_srv; /* the one passive-open (server) connection */
+static tcp_conn_t tcb; /* the one active-open (client) connection */
+
+/* Passive-open connections. One per listening service, because an OS that
+ * can host only one TCP server can host only one tenant (issue #238:
+ * httpd on :8080 kept modbusd off :502 for the whole boot). Static and
+ * small — a listener table that can grow at runtime is one nobody can
+ * audit, and each slot still accepts exactly ONE connection at a time, so
+ * the per-connection honesty of the original design is unchanged. */
+#define TCP_MAX_LISTENERS 4
+static tcp_conn_t tcb_srv[TCP_MAX_LISTENERS];
+
+/* The slot `pid` owns, or NULL. A pristine CLOSED slot with no pending
+ * arm is owned by nobody, whatever owner_pid still reads. */
+static tcp_conn_t *srv_owned_by(uint32_t pid) {
+    for (int i = 0; i < TCP_MAX_LISTENERS; i++) {
+        tcp_conn_t *c = &tcb_srv[i];
+        if (c->owner_pid == pid && (c->state != TCPS_CLOSED || c->listen_req)) {
+            return c;
+        }
+    }
+    return NULL;
+}
+
+/* A live slot already bound to `port`, or NULL. Two services on one port
+ * is a real conflict and must be refused, not silently multiplexed. */
+static tcp_conn_t *srv_on_port(uint16_t port) {
+    for (int i = 0; i < TCP_MAX_LISTENERS; i++) {
+        tcp_conn_t *c = &tcb_srv[i];
+        if (c->state == TCPS_CLOSED && !c->listen_req) {
+            continue;
+        }
+        if (c->lport == port || (c->listen_req && c->lreq_port == port)) {
+            return c;
+        }
+    }
+    return NULL;
+}
+
+/* A pristine CLOSED slot — the ONLY claimable state (the UDP three-state
+ * lesson, preserved per slot). NULL when the table is full. */
+static tcp_conn_t *srv_free_slot(void) {
+    for (int i = 0; i < TCP_MAX_LISTENERS; i++) {
+        tcp_conn_t *c = &tcb_srv[i];
+        if (c->state == TCPS_CLOSED && !c->listen_req) {
+            return c;
+        }
+    }
+    return NULL;
+}
 static uint16_t tcp_ephemeral_next = TCP_EPHEMERAL_BASE;
 
 /* TCP checksum over the pseudo-header ++ segment as ONE running sum
@@ -487,7 +534,13 @@ void tcp_rx_demux(const uint8_t *frame, uint16_t len) {
     if (tcp_rx_one(&tcb, eth, ip, sport, dport, flags, seq, ack, payload, payload_len)) {
         return;
     }
-    tcp_rx_one(&tcb_srv, eth, ip, sport, dport, flags, seq, ack, payload, payload_len);
+    /* Server slots are disjoint by listen port, so at most one matches;
+     * stop at the first that consumes the segment. */
+    for (int i = 0; i < TCP_MAX_LISTENERS; i++) {
+        if (tcp_rx_one(&tcb_srv[i], eth, ip, sport, dport, flags, seq, ack, payload, payload_len)) {
+            return;
+        }
+    }
 }
 
 /* Allocate the next TCP ephemeral port (advances every active open so a
@@ -633,7 +686,9 @@ static void tcp_service_one(tcp_conn_t *c, uint32_t now) {
 void tcp_service(void) {
     uint32_t now = (uint32_t)timer_get_ticks();
     tcp_service_one(&tcb, now);
-    tcp_service_one(&tcb_srv, now);
+    for (int i = 0; i < TCP_MAX_LISTENERS; i++) {
+        tcp_service_one(&tcb_srv[i], now);
+    }
 }
 
 /* ---- syscall-facing TCP ops (cli'd context; never touch the NIC) ---- */
@@ -645,17 +700,14 @@ static tcp_conn_t *tcp_conn_for(uint32_t pid) {
     if (tcb.owner_pid == pid) {
         return &tcb;
     }
-    if (tcb_srv.owner_pid == pid) {
-        return &tcb_srv;
-    }
-    return NULL;
+    return srv_owned_by(pid);
 }
 
 long net_tcp_connect(uint32_t pid, const uint8_t *ip, uint16_t port) {
     if (!net_nic_present()) {
         return NET_TCP_ENONET;
     }
-    if (tcb_srv.owner_pid == pid) {
+    if (srv_owned_by(pid)) {
         return NET_TCP_EINVAL; /* one connection per pid: this pid listens */
     }
     int st = tcb.state;
@@ -703,11 +755,25 @@ long net_tcp_listen(uint32_t pid, uint16_t port) {
     if (tcb.owner_pid == pid) {
         return NET_TCP_EINVAL; /* one connection per pid: this pid connects */
     }
-    tcp_conn_t *c = &tcb_srv;
-    int st = c->state;
-    if (st == TCPS_CLOSED) {
-        if (c->listen_req) {
-            return (c->owner_pid == pid) ? NET_TCP_WOULDBLOCK : NET_TCP_EINVAL;
+
+    /* Pick the slot. In order: the one this pid already holds, else a
+     * pristine free slot — but never one another service is bound to on
+     * the same port, and never a second slot for a pid that has one. */
+    tcp_conn_t *c = srv_owned_by(pid);
+    if (!c) {
+        tcp_conn_t *taken = srv_on_port(port);
+        if (taken) {
+            /* Someone else is on this port. A dead owner posted abort_req
+             * in cleanup, so poll until the net thread retires it and the
+             * slot frees; a live one is a real conflict. */
+            return taken->abort_req ? NET_TCP_WOULDBLOCK : NET_TCP_EINVAL;
+        }
+        c = srv_free_slot();
+        if (!c) {
+            /* Table full. EINVAL rather than WOULDBLOCK: polling will not
+             * help, and a caller that spins forever on a permanent
+             * condition is worse than one told plainly to stop. */
+            return NET_TCP_EINVAL;
         }
         c->owner_pid = pid;
         c->lreq_port = port;
@@ -715,11 +781,11 @@ long net_tcp_listen(uint32_t pid, uint16_t port) {
         c->listen_req = 1; /* the publish store */
         return NET_TCP_WOULDBLOCK;
     }
-    if (c->owner_pid != pid) {
-        /* A foreign owner that died had abort_req posted by its cleanup:
-         * poll until the net thread retires the conn, then claim it. A
-         * live foreign owner is a real conflict. */
-        return c->abort_req ? NET_TCP_WOULDBLOCK : NET_TCP_EINVAL;
+
+    int st = c->state;
+    if (st == TCPS_CLOSED) {
+        /* Ours, with an arm already pending. */
+        return NET_TCP_WOULDBLOCK;
     }
     if (c->abort_req || c->close_req) {
         return NET_TCP_WOULDBLOCK; /* draining — the recycled-pid guard */
@@ -741,8 +807,8 @@ long net_tcp_listen(uint32_t pid, uint16_t port) {
  * listener waits or a handshake runs; EIO in every other state (the
  * caller's recovery is CLOSE then re-LISTEN). */
 long net_tcp_accept(uint32_t pid) {
-    tcp_conn_t *c = &tcb_srv;
-    if (c->owner_pid != pid) {
+    tcp_conn_t *c = srv_owned_by(pid);
+    if (!c) {
         return NET_TCP_EINVAL;
     }
     if (c->abort_req || c->close_req) {
@@ -865,7 +931,10 @@ void net_tcp_cleanup(uint32_t pid) {
     if ((tcb.state != TCPS_CLOSED || tcb.connect_req) && tcb.owner_pid == pid) {
         tcb.abort_req = 1; /* the net thread RSTs (if past SYN) and retires */
     }
-    if ((tcb_srv.state != TCPS_CLOSED || tcb_srv.listen_req) && tcb_srv.owner_pid == pid) {
-        tcb_srv.abort_req = 1; /* covers LISTEN/SYN_RCVD and a pending arm */
+    for (int i = 0; i < TCP_MAX_LISTENERS; i++) {
+        tcp_conn_t *c = &tcb_srv[i];
+        if ((c->state != TCPS_CLOSED || c->listen_req) && c->owner_pid == pid) {
+            c->abort_req = 1; /* covers LISTEN/SYN_RCVD and a pending arm */
+        }
     }
 }

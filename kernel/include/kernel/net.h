@@ -141,14 +141,20 @@ int net_udp_dst_ok(const uint8_t *dip);
  * another owner holds the connection. */
 long net_tcp_connect(uint32_t pid, const uint8_t *ip, uint16_t port);
 
-/* Passive open (epic #98): arm the single listener on `port`. WOULDBLOCK
- * while arming or while a previous connection drains — poll until 0
- * (armed, or already carrying a connection on that port). EINVAL if a
- * live foreign owner holds the listener or the caller owns the client
- * connection (one connection per pid), ENONET with no NIC. */
+/* Passive open (epic #98; multi-listener issue #238): arm a listener on
+ * `port`. WOULDBLOCK while arming or while a previous connection drains
+ * — poll until 0 (armed, or already carrying a connection on that port).
+ *
+ * There are TCP_MAX_LISTENERS slots, so several services can listen at
+ * once on distinct ports; each slot still carries ONE connection at a
+ * time. EINVAL if a live foreign owner holds THAT PORT, if the caller
+ * owns the client connection (one connection per pid), or if every slot
+ * is taken — the last is permanent, so it is EINVAL and not WOULDBLOCK:
+ * a caller polling forever on a condition that cannot clear is worse
+ * than one told plainly to stop. ENONET with no NIC. */
 long net_tcp_listen(uint32_t pid, uint16_t port);
 
-/* Poll the armed listener for a peer. 0 once connected (ESTABLISHED or
+/* Poll this pid's armed listener for a peer. 0 once connected (ESTABLISHED or
  * CLOSE_WAIT — the request bytes are readable even if the peer already
  * half-closed), WOULDBLOCK while listening / mid-handshake, EIO in any
  * other state (recover with CLOSE, then re-LISTEN), EINVAL if `pid` is
