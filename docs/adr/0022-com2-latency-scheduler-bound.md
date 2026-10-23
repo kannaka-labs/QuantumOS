@@ -3,6 +3,20 @@
 Date: 2026-07-11
 Status: Accepted (2026-07-15; the latency fix SHIPPED — the I/O-priority boost, see the final update)
 
+> **Update (2026-10-22) — the same cadence bound on the COM1 console, fixed by preemption.**
+> On the public Firecracker console (tools/qos-console) every keystroke echoed ~350 ms late
+> (p50 349.6 ms, spikes every 0.40 s): qsh polls `SYS_CONS_READ` and yields, and each of the
+> ~8 hlt-looping kernel threads (alpha, beta, the demo services) keeps the CPU for its whole
+> 5-tick quantum, so a key waited out most of the rotation. `SYS_CONS_READ` now notes its caller
+> as the console reader (pid, generation) and whether the read was empty; the COM1 RX IRQ, after
+> its drain, flags a reader parked on an empty read `io_boost` and calls `scheduler_reschedule`
+> at once (`scheduler_console_rx`; the frame swap the tick uses, EOI after it in `irq_handler`).
+> One handover per wait, so type-ahead during a running command does not churn the scheduler;
+> the live console device cap is the authority and `process_destroy` clears the registration,
+> as for the COM2 holder; `SCHED_IO_BOOST 0` stubs it out. Not counted as a preemption, so the
+> `ci-smoke-sched` band is unaffected. Measured under Firecracker: echo p50 349.6 → 1.0 ms
+> (max 372.9 → 1.6 ms); `imprint` Enter→prompt 117 → 10 ms.
+
 > **Update (2026-07-15) — the deferred epic is implemented: the I/O-priority boost.**
 > The option table's principled fix shipped, hardened by a 4-lens adversarial design panel
 > (31 findings: 7 blockers, 15 majors — all folded in). Mechanism: a per-PCB `io_boost` flag;
