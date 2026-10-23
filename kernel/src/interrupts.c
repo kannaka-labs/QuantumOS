@@ -338,6 +338,8 @@ void irq_handler(cpu_state_t *state) {
     case IRQ_COM1:
         /* Console serial input: drain received bytes into the input ring */
         console_com1_irq();
+        /* ...and hand the CPU straight to a shell waiting on it */
+        scheduler_console_rx(state);
         break;
     default:
         /* The NIC's IRQ line is assigned dynamically (by PCI for the

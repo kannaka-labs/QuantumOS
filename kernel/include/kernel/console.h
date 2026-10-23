@@ -55,6 +55,9 @@ void console_kbd_irq(void);
  * Interrupt-safe: the drain runs with interrupts disabled. */
 uint32_t console_read(uint8_t *buf, uint32_t len);
 
+/* Nonzero while the input ring holds undrained bytes. */
+int console_rx_pending(void);
+
 /* Write `len` raw bytes to COM1, polling THR-empty per byte. The whole
  * write runs with interrupts disabled (like early_console_write) so a
  * timer-tick log line cannot split it. Returns bytes written (== len). */

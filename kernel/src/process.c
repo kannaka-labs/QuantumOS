@@ -484,6 +484,7 @@ status_t process_destroy(uint32_t pid) {
      * must never inherit the holder's scheduling boost. (No-op for every
      * process but the COM2 holder; start_slot re-registers on rebirth.) */
     scheduler_com2_holder_clear(pid);
+    scheduler_console_reader_clear(pid); /* same rule for the console reader */
 
     /* Clear the intent manifest with the caps (epic #135). INVARIANT: this
      * must run before state=UNUSED below — every pid-reuse path funnels

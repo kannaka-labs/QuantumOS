@@ -80,6 +80,17 @@ void scheduler_boost_if_ready(uint32_t pid);
 void scheduler_com2_holder_set(uint32_t pid, uint32_t generation);
 void scheduler_com2_holder_clear(uint32_t pid);
 
+/* COM1 keystroke preemption. SYS_CONS_READ notes its caller as the console
+ * reader (pid, generation) and whether the read came back empty (`got` == 0:
+ * parked waiting for a key); process_destroy clears it. scheduler_console_rx,
+ * called from the COM1 RX IRQ after the drain, hands the CPU to a waiting
+ * reader at once instead of after the rest of the round-robin rotation. The
+ * live console device cap stays the authority, as for the COM2 boost.
+ * No-ops when SCHED_IO_BOOST is 0. */
+void scheduler_console_reader_note(uint32_t pid, uint32_t generation, uint32_t got);
+void scheduler_console_reader_clear(uint32_t pid);
+void scheduler_console_rx(cpu_state_t *state);
+
 /* ADR-0022 prereq-2 fairness/tail snapshot over the runnable ring-3 citizens.
  * Writes max reschedule gap (max now - last_scheduled), the run-count spread
  * (max - min sched_picks), and the runnable count. Read-only; `now` is the

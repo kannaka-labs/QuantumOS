@@ -104,6 +104,10 @@ uint32_t console_read(uint8_t *buf, uint32_t len) {
     return n;
 }
 
+int console_rx_pending(void) {
+    return ring_tail != ring_head;
+}
+
 /* ============================================================================
  * COM1 receive
  * ============================================================================ */

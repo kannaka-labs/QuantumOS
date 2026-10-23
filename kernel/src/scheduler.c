@@ -58,6 +58,12 @@ static uint8_t pick_was_boost = 0;
  * lesson). generation 0 with pid 0 = no holder. */
 static uint32_t com2_holder_pid = 0;
 static uint32_t com2_holder_gen = 0;
+/* The console reader for the COM1 keystroke preemption, as (pid, generation),
+ * plus whether its LAST SYS_CONS_READ came back empty — i.e. it is parked in
+ * its poll-and-yield loop waiting for a key, not busy running a command. */
+static uint32_t cons_reader_pid = 0;
+static uint32_t cons_reader_gen = 0;
+static uint8_t cons_reader_waiting = 0;
 #endif
 
 /* PID of the idle process (created second in process_init) */
@@ -185,6 +191,50 @@ void scheduler_com2_holder_clear(uint32_t pid) {
         com2_holder_pid = 0;
         com2_holder_gen = 0;
     }
+}
+
+void scheduler_console_reader_note(uint32_t pid, uint32_t generation, uint32_t got) {
+    cons_reader_pid = pid;
+    cons_reader_gen = generation;
+    cons_reader_waiting = (got == 0);
+}
+
+void scheduler_console_reader_clear(uint32_t pid) {
+    if (cons_reader_pid == pid) {
+        cons_reader_pid = 0;
+        cons_reader_gen = 0;
+        cons_reader_waiting = 0;
+    }
+}
+
+/* COM1 keystroke preemption, run from the COM1 RX IRQ after the drain (IRQ
+ * context, IF=0). Without it a keystroke waits for the reader's next turn in
+ * the round-robin: every hlt-looping kernel thread (alpha, beta, the demo
+ * services) keeps the CPU for its whole quantum, so with ~8 of them READY the
+ * shell echoed each key ~350 ms late on the public console. Here the reader
+ * is flagged and the CPU handed over at once — the same frame swap the timer
+ * tick does, and the EOI follows in irq_handler exactly as for the tick.
+ * Only when the reader is parked waiting for input (its last read was empty),
+ * so type-ahead during a running command never churns the scheduler. */
+void scheduler_console_rx(cpu_state_t *state) {
+    if (cons_reader_pid == 0 || !cons_reader_waiting || !console_rx_pending()) {
+        return;
+    }
+    if (process_get_generation(cons_reader_pid) != cons_reader_gen) {
+        return;
+    }
+    if (cap_find_resource(cons_reader_pid, CAP_RESOURCE_DEVICE, CAP_READ, DEVICE_ID_CONSOLE) !=
+        CAP_SUCCESS) {
+        return;
+    }
+    process_t *p = process_get_by_pid(cons_reader_pid);
+    process_t *cur = process_get_current();
+    if (!p || p == cur || p->state != PROCESS_STATE_READY || !p->context_valid) {
+        return;
+    }
+    p->io_boost = 1;
+    cons_reader_waiting = 0; /* one handover per wait; the next empty read re-arms */
+    scheduler_reschedule(state);
 }
 
 /* COM2 RX boost check, run from scheduler_tick (IRQ context, IF=0). Cost at
@@ -384,6 +434,17 @@ void scheduler_com2_holder_set(uint32_t pid, uint32_t generation) {
 }
 void scheduler_com2_holder_clear(uint32_t pid) {
     (void)pid;
+}
+void scheduler_console_reader_note(uint32_t pid, uint32_t generation, uint32_t got) {
+    (void)pid;
+    (void)generation;
+    (void)got;
+}
+void scheduler_console_reader_clear(uint32_t pid) {
+    (void)pid;
+}
+void scheduler_console_rx(cpu_state_t *state) {
+    (void)state;
 }
 #endif
 
