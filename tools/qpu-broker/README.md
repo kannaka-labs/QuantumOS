@@ -76,7 +76,8 @@ cd tools/qpu-broker && ./deploy/install-debain2.sh
 ```
 
 The install script creates the `qosqpu` user and puts the broker in `/opt/qos-qpu`, with
-a venv that pins `qbraid==0.12.2`. It writes `/etc/qos-qpu/broker.env` from the
+a venv on a uv-managed CPython 3.12 that pins `qbraid==0.12.2` and `pyquil==5.0.0rc3` (Rigetti's
+direct device takes a pyquil Program, and pyquil's wheels need Python 3.12). It writes `/etc/qos-qpu/broker.env` from the
 operator's `~/.qbraid/qbraidrc` without printing the key, then enables
 `qos-qpu-broker.service`. The console unit joins the `qosqpu` group and passes
 `--qpu-broker /run/qos-qpu/broker.sock`.
