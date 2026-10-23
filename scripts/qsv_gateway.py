@@ -11,9 +11,9 @@ vendor ran a circuit, so the kernel is future-proof against API churn. Backends:
   - CUDA-Q (Phase 3 C3): "cudaq" / "cudaq:<target>" — NVIDIA's CUDA-Q; the
     local CPU target ("qpp-cpu"/default) runs free, "nvidia" uses a GPU, and
     "nvqc"/qBraid targets reach hosted H100s or real QPUs (API key).
-  - qBraid (Phase 3 C2): "qbraid:<machine>" — submits to a real QPU
-    (Rigetti/IonQ/IQM/QuEra) via the qBraid runtime. CREDENTIALED + metered:
-    a maintainer-invoked path, never an autonomous CI gate.
+  - qBraid (#262): "qbraid:<device id>" — a qBraid SIMULATOR (sampled, needs a
+    key). Real QPUs are metered, so they go only through tools/qpu-broker, which
+    owns the budget, the per-job cap and the device choice.
 
 The native tier (qsv, exact integers) and the PennyLane/CUDA-Q tiers (floats)
 are utterly independent implementations; the cross-oracle gates assert they
@@ -125,14 +125,28 @@ def _probs_cudaq(circuit, device):
     return out
 
 
-def _probs_qbraid(circuit, device):
-    """qBraid backend (Phase 3 C2): submit to a REAL QPU via the qBraid runtime.
-    CREDENTIALED (needs ~/.qbraid/qbraidrc) and METERED (each submission costs
-    credits and queues), so this is a maintainer-invoked path — never called by
-    an autonomous CI gate. Returns sampled probabilities; the caller reconciles
-    the provider job id into the OS authority ledger. Left as an explicit,
-    guarded stub so importing the gateway never requires qbraid to be present."""
-    raise NotImplementedError(
-        "qBraid real-QPU submission is a credentialed, metered, manual-trigger "
-        "path — invoke scripts/qsv_qbraid_submit.py directly with credentials, "
-        "not through the autonomous cross-oracle gate. device=" + device)
+def _probs_qbraid(circuit, device, shots=1000):
+    """qBraid backend (#262): "qbraid:<qBraid device id>", SIMULATORS ONLY here.
+
+    Translates the wire format to OpenQASM 2 (tools/qpu-broker/qpu_broker.py: to_qasm2,
+    one translation for both paths), runs it on the named qBraid simulator and returns
+    SAMPLED probabilities in the exact engine's order (qubit 0 = LSB). A real QPU costs
+    money, so it is refused here: QPU jobs go through the broker, which owns the budget,
+    the per-job cap and the device choice. Needs the qbraid SDK and a key
+    (QBRAID_API_KEY or ~/.qbraid/qbraidrc)."""
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools", "qpu-broker"))
+    import qpu_broker
+    from qbraid.runtime import QbraidProvider
+
+    dev = QbraidProvider().get_device(device.split(":", 1)[1])
+    if not dev.profile.simulator:
+        raise PermissionError(f"{dev.id} is a real QPU: submit it through tools/qpu-broker")
+    n, qasm = qpu_broker.to_qasm2(circuit)
+    counts = dev.run(qasm, shots=shots).result().data.get_counts()
+    out = [0.0] * (1 << n)
+    for bits, c in counts.items():
+        out[int(bits, 2)] += c / shots      # qBraid bitstrings end with qubit 0
+    return out

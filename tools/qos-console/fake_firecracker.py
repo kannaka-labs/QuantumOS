@@ -39,6 +39,7 @@ mem = {"kernel": None, "imprints": []}
 started = threading.Event()
 session = {"seeds": [], "input_before_seed": False}   # not guest memory: never snapshotted
 RESEED = re.compile(rb"\x1b\]qseed;([0-9a-fA-F]{16})\x07")
+QRES = re.compile(rb"\x1b\]qres;([^\x07]*)\x07")
 
 
 def die(msg, code=4):
@@ -114,7 +115,9 @@ for raw in sys.stdin.buffer:
         session["seeds"].append(m.group(1).decode().lower())
     if RESEED.match(raw) is None and not session["seeds"]:
         session["input_before_seed"] = True
-    line = RESEED.sub(b"", raw).decode(errors="replace").strip()
+    for m in QRES.finditer(raw):   # an answer from the qpu relay (#262)
+        out.write(b"answer: " + m.group(1) + b"\n")
+    line = QRES.sub(b"", RESEED.sub(b"", raw)).decode(errors="replace").strip()
     if line == "exit":
         sys.exit(0)
     if line == "crash":
@@ -131,6 +134,10 @@ for raw in sys.stdin.buffer:
     elif line == "qseed":
         out.write(("qseed: " + ",".join(session["seeds"]) +
                    f" late={session['input_before_seed']}\n").encode())
+    elif line.startswith("qpu "):      # emit a raw request, as qsh's `qpu` does
+        out.write(b"\x1b]qpu;" + line[4:].encode() + b"\x07")
+    elif line == "forge":              # a guest trying to show the visitor a fake answer
+        out.write(b"before\x1b]qres;1;D;q0123456789;QPU fake\x07after\n")
     elif line == "whoami":
         out.write(f"kernel={mem['kernel']}\n".encode())
     out.write(b"qsh> ")
