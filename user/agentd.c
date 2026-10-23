@@ -127,7 +127,7 @@ static int do_qpu(void) {
     unsigned int num = get_u32(out.result + 4);
     unsigned int den = get_u32(out.result + 8);
     if (num == 1 && den == 2) {
-        printf("AGENT: QPU bell via broker job=%ld p=1/2 (exact)\n", j);
+        printf("AGENT: " QPU_BACKEND_LABEL ": bell via broker job=%ld p=1/2 (exact)\n", j);
         return 1;
     }
     printf("AGENT BROKEN qpu p=%u/%u\n", num, den);

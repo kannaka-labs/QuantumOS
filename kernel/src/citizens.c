@@ -792,7 +792,7 @@ void user_qpud_init(void) {
     if (service_register(&qpud_def, &sid) == SVC_SUCCESS &&
         service_start("qpud", NULL) == SVC_SUCCESS) {
         service_monitor(sid, true);
-        boot_log("qpud: QPU executor (exact integer engine, ring 3)");
+        boot_log("qpud: circuit executor (ring 3; prints its backend at start)");
     } else {
         boot_log("Warning: qpud service failed to start");
     }

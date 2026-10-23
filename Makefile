@@ -1145,13 +1145,13 @@ ci-smoke: kernel
 		grep "QPU" /tmp/qemu-boot.log 2>/dev/null || true; \
 		echo ""; echo "=== Smoke Test FAILED ==="; exit 1; \
 	fi
-	@JB=$$(grep -o "QPU: bell via broker job=[0-9]*" /tmp/qemu-boot.log | head -1 | grep -o "[0-9]*$$"); \
+	@JB=$$(grep -v "AGENT:" /tmp/qemu-boot.log | grep -o "bell via broker job=[0-9]*" | head -1 | grep -o "[0-9]*$$"); \
 	if [ -z "$$JB" ] || ! grep -qF "p=1/2 (exact)" /tmp/qemu-boot.log || ! grep -q "QPUD: executed job=$$JB owner=" /tmp/qemu-boot.log; then \
 		echo "ERROR: Bell was not brokered (no matching QPUD executed job=$$JB)"; \
 		grep "QPU" /tmp/qemu-boot.log 2>/dev/null || true; \
 		echo ""; echo "=== Smoke Test FAILED ==="; exit 1; \
 	fi
-	@JG=$$(grep -o "QPU: grover3 via broker job=[0-9]*" /tmp/qemu-boot.log | head -1 | grep -o "[0-9]*$$"); \
+	@JG=$$(grep -o "grover3 via broker job=[0-9]*" /tmp/qemu-boot.log | head -1 | grep -o "[0-9]*$$"); \
 	if [ -z "$$JG" ] || ! grep -qF "p=121/128" /tmp/qemu-boot.log || ! grep -q "QPUD: executed job=$$JG owner=" /tmp/qemu-boot.log; then \
 		echo "ERROR: Grover-3q was not brokered (no matching QPUD executed job=$$JG)"; \
 		grep "QPU" /tmp/qemu-boot.log 2>/dev/null || true; \
