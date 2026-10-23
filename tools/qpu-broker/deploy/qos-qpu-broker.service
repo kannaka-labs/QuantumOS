@@ -1,0 +1,44 @@
+[Unit]
+Description=QuantumOS host quantum broker (runs guest circuits on qBraid; holds the API key)
+Documentation=file:///opt/qos-qpu/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qosqpu
+Group=qosqpu
+# QBRAID_API_KEY=... in a root:root 0600 file. systemd reads it as root before it
+# drops to qosqpu; the key is never on a command line and never reaches a guest.
+EnvironmentFile=/etc/qos-qpu/broker.env
+RuntimeDirectory=qos-qpu
+RuntimeDirectoryMode=0750
+StateDirectory=qos-qpu
+StateDirectoryMode=0750
+# The money rules are these flags. Real QPU jobs: 10 credits/day across all visitors,
+# at most 5 credits per job (estimated before submit), 1 per session, 1 per visitor/day.
+ExecStart=/opt/qos-qpu/venv/bin/python -u /opt/qos-qpu/qpu_broker.py \
+    --socket /run/qos-qpu/broker.sock \
+    --db /var/lib/qos-qpu/broker.db \
+    --real --budget-per-day 10 --max-job-credits 5 \
+    --real-per-session 1 --real-per-client-per-day 1
+Restart=on-failure
+RestartSec=5
+UMask=0007
+MemoryMax=512M
+TasksMax=64
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

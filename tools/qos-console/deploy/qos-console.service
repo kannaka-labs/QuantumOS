@@ -7,6 +7,8 @@ After=network.target
 Type=simple
 User=qosconsole
 Group=kvm
+# The host quantum broker's socket (tools/qpu-broker); the VMs never see it.
+SupplementaryGroups=qosqpu
 RuntimeDirectory=qos-console
 RuntimeDirectoryMode=0750
 # Funnel metrics (counts and timings only, #258) survive restarts here.
@@ -18,7 +20,8 @@ ExecStart=/usr/bin/python3 -u /opt/qos-console/qos_console.py \
     --run-dir /run/qos-console \
     --listen-unix /run/qos-console/ws.sock \
     --max-vms 4 --per-ip 1 --max-seconds 600 --mem-mib 128 \
-    --state-file /var/lib/qos-console/metrics.json
+    --state-file /var/lib/qos-console/metrics.json \
+    --qpu-broker /run/qos-qpu/broker.sock
 Restart=on-failure
 RestartSec=5
 # Every VM is a child of this unit, so these limits cap all of them together.

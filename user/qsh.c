@@ -19,7 +19,8 @@
  * SPDX-License-Identifier: GPL-2.0-only
  */
 
-#include "ghost.h" /* usys.h + wire structs + freestanding string builders */
+#include "ghost.h"       /* usys.h + wire structs + freestanding string builders */
+#include "qpu_circuit.h" /* the circuit wire format the host broker takes (#262) */
 
 #define LINE_MAX 120
 
@@ -116,6 +117,8 @@ static void cmd_help(void) {
         "\r\n");
     out("         " A_CMD "ghost" A0 "          " A_DIM
         "dice + resonant recall (seed: see qseed)" A0 "\r\n");
+    out("         " A_CMD "qpu" A0 "            " A_DIM
+        "send a circuit to the host's qBraid broker, if one is attached" A0 "\r\n");
     out(A_CAT "  run    " A0 A_CMD "run" A0 " <path>      " A_DIM "start a citizen  " A_KEY
               "try: run /bin/qtop" A0 "\r\n");
     out(A_CAT "  files  " A0 A_CMD "ls" A0 " " A_CMD "cat" A0 " " A_CMD "write" A0 " " A_CMD "rm" A0
@@ -1362,6 +1365,329 @@ static void cmd_unknown(const char *line) {
     out_bytes(b, o);
 }
 
+/* ------------------------------------------------------------------ *
+ * qpu: hand a small circuit to the HOST's quantum broker (#262).
+ *
+ * The guest holds no credentials and has no network. It writes one
+ * request on COM1 as an OSC escape, ESC ] qpu ; <op> ; <tag> ; ... BEL,
+ * and waits for the host's answer, ESC ] qres ; <tag> ; <state> ;
+ * <job> ; <text> BEL. On the public console the launcher strips the
+ * request out of the visitor's stream, adds the session identity the
+ * guest cannot forge, and forwards it to the broker, which validates
+ * the circuit, applies the spending policy and talks to qBraid. With no
+ * host broker (QEMU, a laptop) nothing answers and the command says so.
+ *
+ * Every line printed for a result comes from the host and names the
+ * device that ran it ("qBraid simulator ..." or "QPU ...").
+ *   ops: I = info, S = submit (mode s = simulator, q = real QPU),
+ *        J = job status/result.
+ *   states: Q queued, R running, D done, E error/refused, I info.
+ * ------------------------------------------------------------------ */
+
+#define QPU_REPLY_MAX 600
+#define QPU_WAIT_TICKS 1500 /* 15 s for one answer from the host */
+#define QPU_SIM_TICKS 9000  /* 90 s for a simulator job to finish */
+
+static unsigned qpu_tag_seq;
+
+static int qpu_op(unsigned char *c, int o, int op, int a, int b) {
+    c[o] = (unsigned char)op;
+    c[o + 1] = (unsigned char)a;
+    c[o + 2] = (unsigned char)b;
+    return o + 3;
+}
+
+/* The wire bytes of a canonical circuit (user/qpu_circuit.h); returns the
+ * length, or 0 for an unknown name. */
+static int qpu_circuit_of(const char *name, unsigned char *c) {
+    for (int i = 0; i < QC_HDR; i++) {
+        c[i] = 0;
+    }
+    c[0] = QC_VERSION;
+    int o = QC_HDR;
+    if (is_cmd(name, "bell")) {
+        c[1] = 2;
+        c[2] = 2;
+        o = qpu_op(c, o, QC_OP_H, 0, 0);
+        o = qpu_op(c, o, QC_OP_CNOT, 0, 1);
+    } else if (is_cmd(name, "ghz3")) {
+        c[1] = 3;
+        c[2] = 3;
+        o = qpu_op(c, o, QC_OP_H, 0, 0);
+        o = qpu_op(c, o, QC_OP_CNOT, 0, 1);
+        o = qpu_op(c, o, QC_OP_CNOT, 1, 2);
+    } else if (is_cmd(name, "grover3")) {
+        /* H on 3 qubits, then 2 x (oracle |101> + diffusion): p(5) = 121/128 */
+        c[1] = 3;
+        c[2] = 7;
+        c[3] = 5;
+        for (int q = 0; q < 3; q++) {
+            o = qpu_op(c, o, QC_OP_H, q, 0);
+        }
+        for (int k = 0; k < 2; k++) {
+            o = qpu_op(c, o, QC_OP_ORACLE, 5, 0);
+            o = qpu_op(c, o, QC_OP_DIFFUSION, 0, 0);
+        }
+    } else {
+        return 0;
+    }
+    return o;
+}
+
+static int qpu_put_hex(char *b, int o, const unsigned char *p, int n) {
+    for (int i = 0; i < n; i++) {
+        int hi = p[i] >> 4, lo = p[i] & 0xF;
+        b[o++] = (char)(hi < 10 ? '0' + hi : 'a' + hi - 10);
+        b[o++] = (char)(lo < 10 ? '0' + lo : 'a' + lo - 10);
+    }
+    return o;
+}
+
+/* Wait for ESC ] qres ; <tag> ; ... BEL. Fills reply with the part after
+ * "<tag>;" and returns its length; -1 on timeout, -2 if the visitor
+ * pressed Ctrl-C. Other input that arrives while waiting is dropped. */
+static int qpu_await(const char *tag, char *reply, long max_ticks) {
+    static const char pre[] = "\x1b]qres;";
+    int pi = 0; /* bytes of the prefix matched */
+    int in = 0; /* inside a reply body */
+    int rl = 0;
+    long t0 = ticks();
+    while (ticks() - t0 < max_ticks) {
+        heartbeat();
+        unsigned char chunk[64];
+        long n = cons_read(chunk, sizeof(chunk));
+        if (n <= 0) {
+            yield();
+            continue;
+        }
+        for (long i = 0; i < n; i++) {
+            char ch = (char)chunk[i];
+            if (!in) {
+                if (ch == 3) {
+                    return -2;
+                }
+                if (ch == pre[pi]) {
+                    pi++;
+                    if (pre[pi] == '\0') {
+                        in = 1;
+                        rl = 0;
+                        pi = 0;
+                    }
+                } else {
+                    pi = (ch == pre[0]) ? 1 : 0;
+                }
+                continue;
+            }
+            if (ch == 7) {
+                reply[rl] = '\0';
+                int tl = str_len(tag);
+                int ok = rl > tl && reply[tl] == ';';
+                for (int k = 0; ok && k < tl; k++) {
+                    ok = reply[k] == tag[k];
+                }
+                in = 0;
+                if (ok) {
+                    int m = 0;
+                    for (int k = tl + 1; k <= rl; k++) {
+                        reply[m++] = reply[k];
+                    }
+                    return m - 1;
+                }
+                continue; /* a stale answer to an earlier request */
+            }
+            if (rl < QPU_REPLY_MAX - 1) {
+                reply[rl++] = ch;
+            } else {
+                in = 0; /* oversized: drop it */
+            }
+        }
+    }
+    return -1;
+}
+
+/* Send one request (body after the tag) and wait for its answer. */
+static int qpu_ask(const char op, const char *body, char *reply, long max_ticks) {
+    char tag[12];
+    int t = ghost_put_u(tag, 0, ++qpu_tag_seq);
+    tag[t] = '\0';
+    char req[320];
+    int o = ghost_put(req, 0, "\x1b]qpu;");
+    req[o++] = op;
+    req[o++] = ';';
+    o = ghost_put(req, o, tag);
+    if (body[0]) {
+        req[o++] = ';';
+        for (int i = 0; body[i] && o < (int)sizeof(req) - 2; i++) {
+            req[o++] = body[i];
+        }
+    }
+    req[o++] = '\x07';
+    out_bytes(req, o);
+    return qpu_await(tag, reply, max_ticks);
+}
+
+/* Print the reply's text field ("<state>;<job>;<line>|<line>...") and
+ * return its state letter; job (if non-null) gets the job id. */
+static char qpu_show(const char *reply, char *job, int job_max) {
+    char state = reply[0];
+    int i = 0;
+    while (reply[i] && reply[i] != ';') {
+        i++;
+    }
+    if (reply[i] == ';') {
+        i++;
+    }
+    int j = 0;
+    while (reply[i] && reply[i] != ';') {
+        if (job && j < job_max - 1) {
+            job[j++] = reply[i];
+        }
+        i++;
+    }
+    if (job) {
+        job[j] = '\0';
+    }
+    if (reply[i] == ';') {
+        i++;
+    }
+    char b[160];
+    int o = ghost_put(b, 0, "qpu: ");
+    for (; reply[i]; i++) {
+        char c = reply[i];
+        if (c == '|' || o >= (int)sizeof(b) - 3) {
+            b[o++] = '\r';
+            b[o++] = '\n';
+            out_bytes(b, o);
+            o = ghost_put(b, 0, "     ");
+            if (c == '|') {
+                continue;
+            }
+        }
+        if (c >= 32 && c < 127) {
+            b[o++] = c;
+        }
+    }
+    b[o++] = '\r';
+    b[o++] = '\n';
+    out_bytes(b, o);
+    return state;
+}
+
+static void qpu_no_answer(int r) {
+    if (r == -2) {
+        out("qpu: stopped waiting (the job, if any, keeps its id on the host)\r\n");
+    } else {
+        out("qpu: no answer from a host quantum broker (none is attached to this machine)\r\n");
+    }
+}
+
+static void cmd_qpu_usage(void) {
+    out(A_CMD "qpu run" A0 " <bell|ghz3|grover3> [shots]   " A_DIM
+              "run on qBraid's simulator (free)" A0 "\r\n");
+    out(A_CMD "qpu real" A0 " <bell|ghz3|grover3> [shots]  " A_DIM
+              "queue on a real QPU, within the daily budget" A0 "\r\n");
+    out(A_CMD "qpu job" A0 " <id>                          " A_DIM "status or counts of a job" A0
+              "\r\n");
+}
+
+static void cmd_qpu(const char *args) {
+    static char reply[QPU_REPLY_MAX];
+    const char *a;
+    char job[48];
+    if (args == 0 || args[0] == '\0') {
+        cmd_qpu_usage();
+        int r = qpu_ask('I', "", reply, QPU_WAIT_TICKS);
+        if (r < 0) {
+            qpu_no_answer(r);
+        } else {
+            qpu_show(reply, 0, 0);
+        }
+        return;
+    }
+    if ((a = arg_of(args, "job")) != 0) {
+        char body[64];
+        int o = 0;
+        for (; a[o] && a[o] != ' ' && o < (int)sizeof(body) - 1; o++) {
+            body[o] = a[o];
+        }
+        body[o] = '\0';
+        int r = qpu_ask('J', body, reply, QPU_WAIT_TICKS);
+        if (r < 0) {
+            qpu_no_answer(r);
+        } else {
+            qpu_show(reply, 0, 0);
+        }
+        return;
+    }
+    int real = 0;
+    if ((a = arg_of(args, "real")) != 0) {
+        real = 1;
+    } else if ((a = arg_of(args, "run")) == 0) {
+        cmd_qpu_usage();
+        return;
+    }
+    char name[16];
+    int nl = 0;
+    while (a[nl] && a[nl] != ' ' && nl < (int)sizeof(name) - 1) {
+        name[nl] = a[nl];
+        nl++;
+    }
+    name[nl] = '\0';
+    unsigned shots = 0;
+    const char *sp = a + nl;
+    while (*sp == ' ') {
+        sp++;
+    }
+    while (*sp >= '0' && *sp <= '9' && shots < 100000) {
+        shots = shots * 10 + (unsigned)(*sp - '0');
+        sp++;
+    }
+    unsigned char circ[QC_HDR + 3 * 8];
+    int cl = qpu_circuit_of(name, circ);
+    if (cl == 0) {
+        out("qpu: circuits: bell, ghz3, grover3\r\n");
+        return;
+    }
+    char body[160];
+    int o = 0;
+    body[o++] = real ? 'q' : 's';
+    body[o++] = ';';
+    o = ghost_put_u(body, o, shots);
+    body[o++] = ';';
+    o = qpu_put_hex(body, o, circ, cl);
+    body[o] = '\0';
+    int r = qpu_ask('S', body, reply, QPU_WAIT_TICKS);
+    if (r < 0) {
+        qpu_no_answer(r);
+        return;
+    }
+    char st = qpu_show(reply, job, sizeof(job));
+    if (real || (st != 'Q' && st != 'R') || job[0] == '\0') {
+        return;
+    }
+    /* A simulator job usually finishes in well under a minute: poll it. */
+    long t0 = ticks();
+    while (ticks() - t0 < QPU_SIM_TICKS) {
+        long w = ticks();
+        while (ticks() - w < 300) {
+            heartbeat();
+            yield();
+        }
+        r = qpu_ask('J', job, reply, QPU_WAIT_TICKS);
+        if (r < 0) {
+            qpu_no_answer(r);
+            return;
+        }
+        if (reply[0] != 'Q' && reply[0] != 'R') {
+            qpu_show(reply, 0, 0);
+            return;
+        }
+    }
+    out("qpu: still running; check later with: qpu job ");
+    out(job);
+    out("\r\n");
+}
+
 static void execute(const char *line) {
     /* strip leading spaces */
     while (*line == ' ') {
@@ -1450,6 +1776,10 @@ static void execute(const char *line) {
         cmd_pid();
     } else if (is_cmd(line, "qrand")) {
         cmd_qrand();
+    } else if ((a = arg_of(line, "qpu")) != 0) {
+        cmd_qpu(a);
+    } else if (is_cmd(line, "qpu")) {
+        cmd_qpu(0);
     } else if (is_cmd(line, "qseed")) {
         cmd_qseed();
     } else if ((a = arg_of(line, "ghost")) != 0) {
@@ -1509,7 +1839,7 @@ void _start(void) {
 
     char line[LINE_MAX];
     int len = 0;
-    int esc = 0;      /* 0 = none, 1 = got ESC, 2 = inside a CSI sequence */
+    int esc = 0;      /* 0 none, 1 got ESC, 2 inside CSI, 3 inside OSC */
     char prev_cr = 0; /* last byte was CR (suppress the LF of a CRLF pair) */
 
     for (;;) {
@@ -1535,7 +1865,17 @@ void _start(void) {
              * ESC [ A etc.) instead of letting the residue pollute the
              * line — mirrors the PS/2 path's unmapped extended keys. */
             if (esc == 1) {
-                esc = (c == '[') ? 2 : 0;
+                esc = (c == '[') ? 2 : (c == ']') ? 3 : 0;
+                continue;
+            }
+            if (esc == 3) {
+                /* An OSC string (ESC ] ... BEL), e.g. a late answer from the
+                 * host's quantum broker: never part of a command line. */
+                if (c == 7 || c == '\r' || c == '\n') {
+                    esc = 0;
+                } else if (c == 27) {
+                    esc = 1;
+                }
                 continue;
             }
             if (esc == 2) {

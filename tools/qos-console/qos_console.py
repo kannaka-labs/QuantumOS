@@ -67,6 +67,8 @@ from websockets.asyncio.server import ServerConnection, serve, unix_serve
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
+from qpu_relay import QpuRelay
+
 log = logging.getLogger("qos-console")
 
 MAX_INPUT = 1024          # bytes per client frame
@@ -370,7 +372,7 @@ class Console:
     def __init__(self, kernel: Path, firecracker: str, run_dir: Path, max_vms: int,
                  per_ip: int, max_seconds: float, mem_mib: int, boot_args: str,
                  snapshot: str = "auto", ready_marker: str = "qsh>", boot_timeout: float = 60,
-                 metrics: Metrics | None = None):
+                 metrics: Metrics | None = None, qpu_broker: str | None = None):
         self.kernel = kernel
         self.firecracker = firecracker
         self.run_dir = run_dir
@@ -382,6 +384,7 @@ class Console:
         self.snapshot_mode = snapshot
         self.ready_marker = ready_marker.encode()
         self.boot_timeout = boot_timeout
+        self.qpu_broker = qpu_broker      # host quantum broker socket (#262), or None
         self.active: dict[str, str] = {}   # session id -> client address
         self.salt = secrets.token_bytes(16)  # per process: hashes do not link across restarts
         self.snap: Snapshot | None = None
@@ -608,6 +611,7 @@ class Console:
         d: Path | None = None
         vm: asyncio.subprocess.Process | None = None
         snap: Snapshot | None = None
+        relay: QpuRelay | None = None
         try:
             d = self.prepare(sid)
             snap = self.take_snapshot()
@@ -652,12 +656,21 @@ class Console:
                 await vm.stdin.drain()
                 await ws.send(snap.transcript)   # what the snapshot VM printed while it booted
                 sent(snap.transcript)
+            if self.qpu_broker:
+                async def write_guest(b: bytes) -> None:
+                    vm.stdin.write(b)
+                    await vm.stdin.drain()
+                relay = QpuRelay(self.qpu_broker, sid, self.ip_hash(ip), write_guest)
 
             async def guest_to_ws():
                 while True:
                     data = await vm.stdout.read(READ_CHUNK)
                     if not data:
                         return "guest-exited"
+                    if relay is not None:
+                        data = relay.from_guest(data)   # qpu requests go to the broker, not the page
+                        if not data:
+                            continue
                     await ws.send(data)
                     sent(data)
 
@@ -668,6 +681,8 @@ class Console:
                     if not seen["typed"] and data:
                         seen["typed"] = True
                         self.metrics.typed()
+                    if relay is not None:
+                        data = relay.from_visitor(data)   # no typed qpu requests or answers
                     vm.stdin.write(data)
                     await vm.stdin.drain()
                 return "disconnect"
@@ -697,6 +712,8 @@ class Console:
             end_reason = f"error:{type(e).__name__}"
             log.exception("session %s failed", sid)
         finally:
+            if relay is not None:
+                await relay.close()
             await self._stop(vm)
             if d is not None:
                 shutil.rmtree(d, ignore_errors=True)
@@ -774,7 +791,7 @@ async def amain(a: argparse.Namespace, stop: asyncio.Future | None = None) -> in
     metrics = Metrics(Path(a.state_file) if a.state_file else None)
     con = Console(Path(a.kernel), a.firecracker, Path(a.run_dir), a.max_vms, a.per_ip,
                   a.max_seconds, a.mem_mib, a.boot_args, a.snapshot, a.ready_marker,
-                  metrics=metrics)
+                  metrics=metrics, qpu_broker=a.qpu_broker)
     swept = con.sweep()
     if swept:
         log.info("swept %d stale session dirs", swept)
@@ -833,6 +850,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="JSON file the funnel metrics (counts and timings only) persist to")
     ap.add_argument("--ready-marker", default="qsh>",
                     help="guest output (ANSI colour stripped) that means the shell is ready to snapshot")
+    ap.add_argument("--qpu-broker", default=None,
+                    help="Unix socket of the host quantum broker (tools/qpu-broker); unset: no qpu relay")
     return ap
 
 
