@@ -1,0 +1,41 @@
+[Unit]
+Description=QuantumOS public console (one throwaway Firecracker microVM per visitor)
+Documentation=file:///opt/qos-console/README.md
+After=network.target
+
+[Service]
+Type=simple
+User=qosconsole
+Group=kvm
+RuntimeDirectory=qos-console
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/python3 -u /opt/qos-console/qos_console.py \
+    --kernel /opt/qos-console/kernel.elf \
+    --firecracker /usr/local/bin/firecracker \
+    --run-dir /run/qos-console \
+    --listen-unix /run/qos-console/ws.sock \
+    --max-vms 4 --per-ip 1 --max-seconds 600 --mem-mib 128
+Restart=on-failure
+RestartSec=5
+# Every VM is a child of this unit, so these limits cap all of them together.
+MemoryMax=1G
+CPUQuota=200%
+TasksMax=256
+# The VMs have no NIC and the launcher listens on a Unix socket only.
+PrivateNetwork=yes
+DevicePolicy=closed
+DeviceAllow=/dev/kvm rw
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/run/qos-console
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

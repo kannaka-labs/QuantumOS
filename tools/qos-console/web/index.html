@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>QuantumOS Console</title>
+<meta name="description" content="Boot a real QuantumOS microVM on KVM and type into its shell. The machine is yours for ten minutes and is thrown away when you leave.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css"
+      integrity="sha384-tStR1zLfWgsiXCF3IgfB3lBa8KmBe/lG287CL9WCeKgQYcp1bjb4/+mwN6oti4Co" crossorigin="anonymous">
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #111821; --ink: #d7e2ee; --muted: #8a9bb0;
+    --accent: #5fd3c4; --warn: #f0b35e; --bad: #f07a6e; --line: #223040;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 "IBM Plex Sans", system-ui, -apple-system, Segoe UI, sans-serif; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding-block: 24px; padding-inline: 16px;
+          display: grid; gap: 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+  h1 { margin: 0; font-size: 22px; letter-spacing: 0.01em; }
+  .tag { font: 12px "IBM Plex Mono", ui-monospace, monospace; color: var(--muted);
+         text-transform: uppercase; letter-spacing: 0.08em; }
+  p.note { margin: 0; color: var(--muted); max-width: 70ch; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+         background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  button { font: inherit; font-weight: 600; color: #04211e; background: var(--accent);
+           border: 0; border-radius: 6px; padding: 8px 16px; cursor: pointer; }
+  button[disabled] { opacity: 0.45; cursor: default; }
+  button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  #status { font: 13px "IBM Plex Mono", ui-monospace, monospace; color: var(--muted); }
+  #status.ok { color: var(--accent); } #status.warn { color: var(--warn); } #status.bad { color: var(--bad); }
+  #timer { margin-left: auto; font: 600 14px "IBM Plex Mono", ui-monospace, monospace;
+           font-variant-numeric: tabular-nums; color: var(--ink); }
+  #term { background: #05080b; border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+          height: min(70vh, 640px); overflow: hidden; }
+  footer { color: var(--muted); font-size: 13px; }
+  footer code { font: 12px "IBM Plex Mono", ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>QuantumOS Console</h1>
+    <span class="tag">staging · real KVM microVM</span>
+  </header>
+  <p class="note">Each boot starts a fresh QuantumOS virtual machine on Firecracker, with no disk and no network.
+    It takes about a minute and a half to reach the <code>qsh&gt;</code> prompt. You get ten minutes;
+    the machine is deleted when you close the page or the timer runs out. Nothing you type is logged.</p>
+  <div class="bar">
+    <button id="boot">Boot QuantumOS</button>
+    <button id="stop" class="secondary" disabled>Power off</button>
+    <span id="status">idle</span>
+    <span id="timer" aria-live="polite">10:00</span>
+  </div>
+  <div id="term" role="application" aria-label="QuantumOS serial console"></div>
+  <footer>Try <code>help</code>, <code>ls /</code>, <code>imprint a cat sat on the mat</code> then
+    <code>recall a cxt sxt on thx mat</code>.</footer>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"
+        integrity="sha384-J4qzUjBl1FxyLsl/kQPQIOeINsmp17OHYXDOMpMxlKX53ZfYsL+aWHpgArvOuof9" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"
+        integrity="sha384-XGqKrV8Jrukp1NITJbOEHwg01tNkuXr6uB6YEj69ebpYU3v7FvoGgEg23C1Gcehk" crossorigin="anonymous"></script>
+<script>
+(() => {
+  const term = new Terminal({ convertEol: true, cursorBlink: true, fontSize: 14,
+    fontFamily: '"IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace',
+    theme: { background: "#05080b", foreground: "#d7e2ee", cursor: "#5fd3c4" } });
+  let fit = null;
+  try { if (window.FitAddon) { fit = new FitAddon.FitAddon(); term.loadAddon(fit); } } catch (e) {}
+  term.open(document.getElementById("term"));
+  const refit = () => { try { fit && fit.fit(); } catch (e) {} };
+  refit(); window.addEventListener("resize", refit);
+  term.writeln("\x1b[90mPress \"Boot QuantumOS\" to start a machine.\x1b[0m");
+
+  const $ = (id) => document.getElementById(id);
+  const statusEl = $("status"), timerEl = $("timer"), bootBtn = $("boot"), stopBtn = $("stop");
+  let ws = null, deadline = 0, tick = null;
+  const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = cls || ""; };
+  const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const decoder = new TextDecoder();
+
+  function end(msg, cls) {
+    setStatus(msg, cls); bootBtn.disabled = false; stopBtn.disabled = true;
+    clearInterval(tick); tick = null; ws = null;
+  }
+
+  bootBtn.onclick = () => {
+    if (ws) return;
+    term.reset();
+    const url = new URL("ws", location.href); url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(url); ws.binaryType = "arraybuffer";
+    bootBtn.disabled = true; stopBtn.disabled = false; setStatus("connecting…", "warn");
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === "string") {
+        let m = {}; try { m = JSON.parse(ev.data); } catch (e) {}
+        if (m.type === "hello") {
+          deadline = Date.now() + m.max_seconds * 1000; setStatus("booting (about 90 s)…", "warn");
+          tick = setInterval(() => { timerEl.textContent = fmt(Math.max(0, (deadline - Date.now()) / 1000)); }, 500);
+        } else if (m.type === "refused") {
+          end(m.reason === "busy" ? "all machines are in use, try again in a few minutes"
+                                  : "you already have a machine running", "bad");
+        } else if (m.type === "expired") { term.writeln("\r\n\x1b[33m[time is up, the machine was deleted]\x1b[0m");
+        } else if (m.type === "exited") { term.writeln("\r\n\x1b[33m[the machine halted]\x1b[0m"); }
+        return;
+      }
+      const text = decoder.decode(new Uint8Array(ev.data), { stream: true });
+      if (/qsh/.test(text) && statusEl.textContent.startsWith("booting")) setStatus("running", "ok");
+      term.write(text);
+    };
+    ws.onclose = () => { if (ws) end("disconnected, the machine was deleted", ""); };
+    ws.onerror = () => setStatus("connection error", "bad");
+  };
+  term.onData((d) => { if (ws && ws.readyState === 1) ws.send(d); });
+  stopBtn.onclick = () => { if (ws) { const w = ws; end("powered off", ""); w.close(); } };
+  window.addEventListener("beforeunload", () => { if (ws) ws.close(); });
+})();
+</script>
+</body>
+</html>

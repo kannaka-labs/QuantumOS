@@ -48,3 +48,10 @@ swarm bridge stays idle). Firecracker's logger reports the VGA CRTC and COM2 por
 writes as `MissingAddressRange` at `Warning` level, which is why the config above
 sets `Error`. Networking and storage inside Firecracker need virtio-mmio drivers,
 which QuantumOS does not have yet.
+
+## Public console
+
+`tools/qos-console/` serves QuantumOS to the web: each visitor gets a fresh microVM
+booted from this same `kernel.elf` (no drives, no NIC, serial console bridged to a
+WebSocket), deleted on disconnect or after ten minutes. See its README for the
+launcher, the outbound tunnel to the public edge, the caps and the deployment.
