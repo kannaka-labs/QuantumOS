@@ -1,13 +1,14 @@
 /**
- * QuantumOS virtio-net over virtio-mmio (the Firecracker NIC)
+ * QuantumOS virtio-net (modern virtio 1.x; ADR-0024)
  *
- * Firecracker exposes no PCI at all (docs/FIRECRACKER.md), so the rtl8139
- * can never be found there and the whole network stack is dead on that
- * hypervisor. This driver is the other half: a modern (virtio 1.x) MMIO
- * transport and a virtio-net device behind the same netdev contract.
+ * One device driver over two transports (kernel/include/kernel/virtio.h):
+ * virtio-pci for QEMU/KVM and the clouds, virtio-mmio for Firecracker,
+ * which exposes no PCI at all (docs/FIRECRACKER.md). It sits behind the
+ * same netdev contract as the rtl8139 and is probed before it.
  *
- * Device placement is not discoverable — there is no bus to walk. The
- * hypervisor passes it on the kernel command line, one token per device:
+ * For the MMIO transport, device placement is not discoverable — there is
+ * no bus to walk. The hypervisor passes it on the kernel command line, one
+ * token per device:
  *
  *     virtio_mmio.device=4K@0xd0000000:5
  *                        size@base:irq

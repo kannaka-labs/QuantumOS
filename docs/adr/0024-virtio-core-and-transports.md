@@ -1,0 +1,96 @@
+# 24. virtio-net: One Device Driver over virtio-pci and virtio-mmio
+
+Date: 2026-10-22
+Status: Accepted (2026-10-22; PCI and MMIO transports shipped together, CI gate
+`ci-smoke-net-virtio`)
+
+## Context
+
+QuantumOS had one emulated NIC driver, the rtl8139 (epic #73), and since PR #237 a
+virtio-net driver hard-wired to the virtio-mmio register block, for Firecracker. Every
+production hypervisor (QEMU/KVM, the clouds, Firecracker) offers virtio-net as its
+paravirtual NIC, and most offer it over PCI. The rtl8139 is an emulated 1990s part:
+QEMU has to model its register file and a 64 KiB copy ring, and nothing in a cloud
+offers one.
+
+Two latent bugs blocked the MMIO path on a real Firecracker guest:
+
+1. **Device windows above 1 GB were not mapped.** Boot paging identity-maps only the
+   low 1 GB (ADR-0021). Firecracker places virtio-mmio slots at `0xd0000000` (3.25 GB),
+   and QEMU puts PCI memory BARs above 1 GB as well. The first register read
+   page-faulted.
+2. **A missing COM2 froze the guest.** Firecracker returns 0 for reads of an unbacked
+   I/O port, where QEMU returns 0xFF. `LSR=0` means "THR never empties", so the swarm
+   bridge's first `SYS_COM2` write spun 2,000,000 polls (each one a VM exit) with
+   interrupts off. The guest stopped servicing interrupts, the NIC included, for tens
+   of seconds. This is also why a NIC-less Firecracker boot took 75 s to reach the
+   qsh prompt. With the check below it takes 1.6 s (measured on debain2: main's
+   kernel 75.5 s, main plus only this fix 1.6 s).
+
+## Decision
+
+**One device driver, two transports.** `kernel/include/kernel/virtio.h` defines
+`virtio_transport_t`: status, 64-bit features, `queue_setup(index, size, desc, driver,
+device)`, `notify`, `isr_ack`, `config_read8`, and an INTx line. Two transports
+implement it:
+
+- `virtio_mmio.c`: virtio-mmio v2 (virtio 1.2 §4.2). Slots come from the
+  `virtio_mmio.device=` cmdline tokens Firecracker appends.
+- `virtio_pci.c`: modern virtio-pci (§4.1). It finds the device on bus 0 by its
+  modern id (0x1041) or its transitional id (0x1000, confirmed by subsystem id). It
+  walks the vendor capabilities (common, notify, ISR, device config), maps the BAR
+  windows they name, and enables memory decoding and bus mastering. MSI-X stays off:
+  every vector is set to `VIRTIO_MSI_NO_VECTOR`, so the device raises the INTx line
+  firmware routed to the 8259, like every other device in this kernel. Legacy-only
+  devices (no capability list) are refused, not half-driven.
+
+`virtio_net.c` is transport-agnostic and follows the §3.1.1 initialisation sequence in
+order:
+
+1. Reset, ACKNOWLEDGE, DRIVER.
+2. Feature negotiation. It requires `VERSION_1` and takes `MAC` and `STATUS` only if
+   offered. It takes no offloads: checksums are computed in software, so `CSUM`,
+   `GUEST_CSUM`, TSO and `MRG_RXBUF` are deliberately left off.
+3. FEATURES_OK, then a read-back check.
+4. Two split virtqueues of 64 entries in kmalloc memory (identity-mapped, so VA == PA),
+   with compiler barriers around every avail/used index update.
+5. 64 receive buffers posted, then DRIVER_OK.
+
+Every frame carries the 12-byte `virtio_net_hdr` that VERSION_1 mandates. Receive is
+interrupt-driven: the IRQ reads or acknowledges the ISR and drains the used ring into
+a software queue. `receive()` falls back to draining the ring itself, with interrupts
+off, when that queue is empty, so a lost or unrouted interrupt degrades to polling
+and never to silence. Transmit is a single descriptor polled to completion with a
+bounded wait, the rtl8139 discipline.
+
+**Probe order:** virtio first (MMIO slots, then PCI), rtl8139 as the fallback. One
+log line names the driver, the transport and the MAC:
+`NET: virtio-net up (pci) - MAC: ...` or `(mmio)`.
+
+**Device windows above 1 GB:** `mmio_identity_map(base, len)` (`kernel/src/mmio.c`)
+installs uncached (PCD|PWT) 2 MB identity mappings into the boot page tables from a
+small static pool. It never touches PDPT[1] (the per-process user half) and never
+touches the upper canonical half. `vmspace_create` copies the shared kernel device
+entries into every new address space without `PG_USER`, so ring 3 cannot reach them.
+`vmspace_destroy` skips any entry without `PG_USER`, so a process exit never frees a
+shared table. Mapping is done at probe time, before the first user process exists.
+
+**COM2 absence:** `com2_init` writes two patterns to the scratch register and reads
+them back. If no UART answers, writes are dropped (as on an unbacked QEMU port) and
+reads return nothing, without touching the port.
+
+## Consequences
+
+- **CI:** `ci-smoke-net-virtio` runs the full `ci-smoke-net` and `ci-smoke-http` gates
+  with `-device virtio-net-pci`: ARP, DHCP, ICMP to the gateway, DNS, and HTTP 200 from
+  both a loopback server and example.com. The rtl8139 gates are unchanged, and the NIC
+  model is a Makefile variable (`NET_NIC`, `NET_UP`).
+- **Verified on Firecracker v1.16.1:** the guest binds virtio-mmio, answers ARP from
+  the host's tap, and fetches `HTTP/1.0 200 OK` from a host `http.server`. The MMIO
+  path has no CI gate: QEMU's `microvm` machine cannot load the PVH image (its loader
+  finds the Multiboot header first), and CI runners have no KVM for Firecracker.
+- **Not done, in order of value:** an e1000 driver for hypervisors and bare metal that
+  offer neither virtio nor an rtl8139; checksum offload (`CSUM`/`GUEST_CSUM`) and
+  `MRG_RXBUF`; MSI-X; and multiqueue (`MQ`), which needs SMP to matter (ADR-0005).
+  Packed virtqueues and `EVENT_IDX` are throughput work this single-core kernel does
+  not yet need.

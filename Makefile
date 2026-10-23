@@ -118,7 +118,7 @@ OBJECTS = $(KERNEL_SOURCES:$(KERNEL_DIR)/src/%.c=$(BUILD_DIR)/%.o) \
 -include $(OBJECTS:.o=.d)
 
 # Targets
-.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list
+.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list
 
 all: kernel
 
@@ -1622,21 +1622,26 @@ ci-smoke-disk-upgrade: kernel
 # (10.0.2.2) always answers ARP, so an ARP request that gets a reply exercises
 # the full path: PCI enumeration -> rtl8139 driver -> Ethernet TX -> SLIRP ->
 # RX interrupt -> ARP parse. Both directions through the real driver.
+# NET_NIC / NET_UP pick the NIC model and the bring-up line the gate greps
+# for; ci-smoke-net-virtio re-runs this and ci-smoke-http on virtio-net-pci.
+NET_NIC ?= rtl8139
+NET_UP ?= NET: rtl8139 up
+
 ci-smoke-net: kernel
-	@echo "=== QuantumOS Networking Smoke Test (rtl8139 + user-net) ==="
-	@echo "[1/3] Booting with -device rtl8139 on QEMU user-net (+ shell nslookup + udping)..."
+	@echo "=== QuantumOS Networking Smoke Test ($(NET_NIC) + user-net) ==="
+	@echo "[1/3] Booting with -device $(NET_NIC) on QEMU user-net (+ shell nslookup + udping)..."
 	@( printf 'nslookup example.com\nudping example.com\n'; sleep 15 ) | timeout 17s qemu-system-x86_64 \
 		-kernel $(BUILD_DIR)/kernel.elf32 \
-		-netdev user,id=n0 -device rtl8139,netdev=n0 -serial stdio -m 128M \
+		-netdev user,id=n0 -device $(NET_NIC),netdev=n0 -serial stdio -m 128M \
 		-display none -no-reboot 2>&1 | tee /tmp/qemu-net.log || true
 	@echo ""
 	@echo "[2/3] The NIC must be found and brought up..."
-	@if ! grep -q "NET: rtl8139 up" /tmp/qemu-net.log 2>/dev/null; then \
-		echo "ERROR: rtl8139 was not detected/brought up (NET: rtl8139 up)"; \
+	@if ! grep -qF "$(NET_UP)" /tmp/qemu-net.log 2>/dev/null; then \
+		echo "ERROR: $(NET_NIC) was not detected/brought up ($(NET_UP))"; \
 		echo "Boot log:"; cat /tmp/qemu-net.log 2>/dev/null || true; \
 		echo ""; echo "=== Networking Test FAILED ==="; exit 1; \
 	fi
-	@echo "SUCCESS: rtl8139 NIC detected via PCI and brought up"
+	@echo "SUCCESS: $(NET_NIC) NIC detected via PCI and brought up"
 	@echo "[3/3] ARP must resolve the SLIRP gateway (TX + RX round trip)..."
 	@if grep -q "NET: ARP 10.0.2.2 timed out" /tmp/qemu-net.log 2>/dev/null; then \
 		echo "ERROR: ARP timed out — no reply from the SLIRP gateway"; \
@@ -1744,7 +1749,7 @@ ci-smoke-http: kernel
 	 [ $$ok = 1 ] || { echo "ERROR: loopback httpd never came up"; cat /tmp/qos-httpd.log 2>/dev/null || true; exit 1; }; \
 	 ( printf 'http 10.0.2.2 18080\nhttp example.com\n'; sleep 20 ) | timeout 22s qemu-system-x86_64 \
 		-kernel $(BUILD_DIR)/kernel.elf32 \
-		-netdev user,id=n0 -device rtl8139,netdev=n0 -serial stdio -m 128M \
+		-netdev user,id=n0 -device $(NET_NIC),netdev=n0 -serial stdio -m 128M \
 		-display none -no-reboot 2>&1 | tee /tmp/qemu-http.log || true
 	@echo ""
 	@echo "[2/2] Validating the fetch..."
@@ -1774,6 +1779,12 @@ ci-smoke-http: kernel
 	@echo "SUCCESS: fetched http://example.com/ over TCP — QuantumOS reads the web"
 	@echo ""
 	@echo "=== TCP Test PASSED ==="
+
+# CI Smoke Test (virtio-net, ADR-0024): the same ARP/DHCP/ping/DNS and
+# HTTP-200 gates as ci-smoke-net + ci-smoke-http, driven through the modern
+# virtio-pci transport (-device virtio-net-pci) instead of the rtl8139.
+ci-smoke-net-virtio: kernel
+	@$(MAKE) --no-print-directory ci-smoke-net ci-smoke-http NET_NIC=virtio-net-pci 'NET_UP=NET: virtio-net up (pci)'
 
 # CI Smoke Test (TCP server + httpd — epic #98): the host fetches a live
 # status page FROM QuantumOS. QEMU SLIRP hostfwd maps host 127.0.0.1:18081

@@ -43,6 +43,7 @@ SMP; defer UEFI, a libagent extraction, and a block filesystem — are recorded 
 | [0021](0021-honest-memory-1gb.md) | Accepted | Honest memory to the 1 GB identity window |
 | [0022](0022-com2-latency-scheduler-bound.md) | Accepted | COM2 round-trip latency is scheduler-cadence-bound |
 | [0023](0023-ipc-peer-rewire-on-rebirth.md) | Accepted | IPC peer re-wiring on watchdog rebirth + dead-target IPC unlink |
+| [0024](0024-virtio-core-and-transports.md) | Accepted | virtio-net: one device driver over virtio-pci and virtio-mmio |
 
 ## Sequencing of the next phases
 
