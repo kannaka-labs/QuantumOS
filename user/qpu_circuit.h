@@ -42,6 +42,15 @@
 #define QC_OP_ORACLE 7 /* a = low byte of target basis, b = high byte */
 #define QC_OP_DIFFUSION 8
 
+/* What actually executes a brokered circuit, as printed on every result line
+ * (qpu_test, agentd) and by qpud at startup. Today that is qpud's exact integer
+ * state-vector engine (qsv_engine.h) in ring 3: a local simulator, with no QPU
+ * attached. This is the ONE place the label lives. When qpud dispatches to a
+ * real backend (#262, qBraid), change it here, and only if that is true for
+ * the build. CI gates match the text after the label ("bell via broker job="),
+ * so the label can change without touching them. */
+#define QPU_BACKEND_LABEL "QSIM (local simulator, no QPU attached)"
+
 #define QC_STATUS_OK 0
 #define QC_STATUS_EINVAL 1 /* malformed circuit — fail closed */
 

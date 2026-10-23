@@ -80,7 +80,7 @@ void _start(void) {
         unsigned int den = get_u32(out.result + 8);
         int amp_re = (int)get_u32(out.result + 12);
         if (h == 1 && num == 1 && den == 2 && amp_re == 1) {
-            printf("QPU: bell via broker job=%ld p=1/2 (exact)\n", j1);
+            printf(QPU_BACKEND_LABEL ": bell via broker job=%ld p=1/2 (exact)\n", j1);
         } else {
             printf("QPU BROKEN bell h=%u p=%u/%u amp=%d\n", h, num, den, amp_re);
             broken = 1;
@@ -129,7 +129,7 @@ void _start(void) {
         unsigned int den = get_u32(out.result + 8);
         int amp_re = (int)get_u32(out.result + 12);
         if (h == 15 && num == 121 && den == 128 && amp_re == 176) {
-            printf("QPU: grover3 via broker job=%ld p=121/128\n", j2);
+            printf(QPU_BACKEND_LABEL ": grover3 via broker job=%ld p=121/128\n", j2);
         } else {
             printf("QPU BROKEN grover3 h=%u p=%u/%u amp=%d\n", h, num, den, amp_re);
             broken = 1;

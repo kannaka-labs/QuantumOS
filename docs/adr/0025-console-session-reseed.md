@@ -89,3 +89,18 @@ sent by this escape. The kernel now reports the actual source:
   restore, before typing. No ABI change: `SYS_QSEED`/`SYS_QRAND` are untouched.
 - quantumd, citizens, qsh `help` and the motd no longer call pool entropy quantum unless a
   qseed handoff happened.
+
+## Update 2026-10-23: name the circuit backend too
+
+Every console visitor's boot transcript also showed "QPU: bell via broker" and
+"QPU: grover3 via broker" from the `qpu-test` self-test. The broker is real (the kernel's
+SYS_QPU queue, caps and quota), but what executes a brokered circuit is `qpud` running the
+exact integer state-vector engine (`qsv_engine.h`) in ring 3: a local simulator. No QPU
+is attached. The result lines now carry `QPU_BACKEND_LABEL` from `user/qpu_circuit.h`,
+the one place the label lives, so they read
+"QSIM (local simulator, no QPU attached): grover3 via broker job=2 p=121/128". `qpud`
+prints "QPUD: backend QSIM (local simulator, no QPU attached)" when it starts. When a real
+backend is dispatched from `qpud` (#262), that string changes, and only for builds where
+it is true. The CI gates match the text after the label ("bell via broker job="). The
+authority lines ("QPU: quota ENFORCED", "QPU: capless submit denied") are about the
+broker and are unchanged.

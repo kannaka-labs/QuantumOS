@@ -165,6 +165,7 @@ void _start(void) {
         sreq.circuit[2] = 0; /* 0 ops */
         sreq.circuit[3] = 0; /* probe 0 */
         long r = qpu_submit_(&sreq);
+        write_str("QPUD: backend " QPU_BACKEND_LABEL);
         if (r == -4) {
             write_str("QPU: executor submit denied (EPERM)");
         } else {
