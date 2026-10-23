@@ -47,6 +47,85 @@ memory file is never written after the snapshot is taken.
 | `deploy/install-debain2.sh` | Installs the launcher side. |
 | `test_qos_console.py` | Tests against a fake hypervisor (`fake_firecracker.py`). |
 | `smoke_client.py` | End-to-end check: boot, wait for `qsh>`, run a command. |
+| `bench_console.py` | The timing harness behind "Measured timings" below. |
+| `deploy/nginx-qos-public.conf` | The public server block (`qos.ninja-portal.com`), certbot lines left out. |
+
+## Metrics (#258)
+
+The launcher counts the visitor funnel. It keeps counts and timings only: no addresses,
+no session ids, and nothing typed.
+
+| Step | Counted when |
+|---|---|
+| `page_loads` | the page sends `GET beacon?e=load` |
+| `boot_clicks` | the visitor presses Boot (`GET beacon?e=boot`) |
+| `sessions_started{mode}` | a `/ws` session gets a VM (`restore` or `cold`) |
+| `sessions_refused{reason}` | `busy` or `one-per-visitor` |
+| `boots_completed{mode}` | the `qsh>` prompt has been sent to the visitor |
+| `sessions_with_input` | the visitor typed at least one key (only that it happened, never what) |
+| `sessions_ended{reason}` | `disconnect`, `expired`, `guest-exited` or `error` |
+
+There are three timings, each measured from the moment the session is admitted:
+`first_output` (the first guest byte sent), `ready` (the prompt sent) and `session` (the
+whole session).
+
+- `GET /stats` returns JSON: totals, p50/p90/max over the last 1000 values of each
+  timing, and a row per UTC day (60 days are kept). The public site proxies it:
+  https://qos.ninja-portal.com/stats.
+- `GET /metrics` returns Prometheus text format: the counters above as `qos_*_total`, the
+  gauges `qos_sessions_active`, `qos_sessions_max` and `qos_snapshot_ready`, and the
+  histograms `qos_first_output_seconds`, `qos_ready_seconds` and `qos_session_seconds`
+  (buckets from 0.01 s to 600 s). nginx does not proxy it, so it answers only on the
+  launcher's socket (on O1: `curl 127.0.0.1:8930/metrics`).
+- `GET /beacon?e=load|boot` returns 200, or 400 for any other event. The nginx
+  locations for `/beacon` and `/stats` have `access_log off`, so they add no record of
+  addresses. Both share the page's rate limit.
+- **Unique visitors per day.** The count comes from an HMAC-SHA256 of the address under
+  a 32-byte salt. The salt exists only in memory and is replaced at each UTC midnight,
+  and the set of hashes is dropped at the same time. Nothing derived from an address is
+  ever written to disk. A launcher restart replaces the salt early, so a visitor who
+  comes back the same day after a restart is counted twice.
+- With `--state-file` (the unit uses `/var/lib/qos-console/metrics.json`), the counts
+  and timings are saved every 30 s and at shutdown, so they survive restarts.
+
+## Measured timings
+
+These come from real runs of `bench_console.py`. Each run is one WebSocket session.
+Timings are taken on the client's monotonic clock from the moment the WebSocket opens
+(the TLS handshake is not included), and there are 10 sequential runs per row. Echo is
+one key (alternately `x` and DEL) until its echo arrives: 40 keys per run, 400 samples
+per row, taken after the console has been quiet for 3 s. Output rate is the bytes of
+`help` (about 1.4 KB) divided by the time from Enter to the next prompt.
+
+Host: debain2, a Xeon E5-2697 v4 KVM guest, which makes this nested KVM. Firecracker
+v1.16.1, with the console's VM shape (1 vCPU, 128 MiB, no drives, no NIC, `quiet`).
+Measured 2026-10-23.
+
+| Path | Kernel | To `qsh>` (median, max) | Echo p50 / p90 | Output rate |
+|---|---|---|---|---|
+| Cold boot, before #246/#248 (3 runs, 10 keys each) | `b972dbd3…` (debug build, the console's first kernel) | 75.9 s, 78.3 s | 350.0 / 350.6 ms | ~1.2 KB/s |
+| Cold boot (`--snapshot off`), on the host | `43c4c1af…` (release, #268) | 1.33 s, 1.40 s | 2.0 / 2.3 ms | ~1.0 KB/s |
+| Snapshot restore, on the host | `43c4c1af…` | 18 ms, 21 ms | 2.0 / 2.4 ms | ~1.0 KB/s |
+| Snapshot restore, public: `wss://qos.ninja-portal.com` from a home PC (O1 nginx + SSH tunnel) | `1b0f9b33…` (release, #251) | 15 ms, 33 ms after the socket opened (opening it took a median 0.92 s) | 55.7 / 65.5 ms | ~0.95 KB/s |
+
+Reading the table:
+
+- The 75 s cold boot was the absent-COM2 spin that #246 fixed. The 350 ms echo was the
+  scheduler rotation that #248 fixed.
+- On the public path, echo is dominated by the network: PC to O1 plus the tunnel to
+  debain2. On the host it is about 2 ms.
+- Output stays at about 1 KB/s on every path. That is serial TX under nested KVM, about
+  1 ms per byte (#259).
+
+To reproduce on the host, run a second launcher beside the service, with its own run
+dir and port. Its startup sweep only touches its own run dir.
+
+```
+python3 qos_console.py --kernel kernel.elf --firecracker /usr/local/bin/firecracker \
+    --run-dir ~/qos-bench-run --listen-tcp 127.0.0.1:8931 [--snapshot off]
+python3 bench_console.py ws://127.0.0.1:8931/ws --runs 10 --pause 1 --json out.json
+python3 bench_console.py wss://qos.ninja-portal.com/ws --runs 10 --pause 11   # public; 6 boots/min/address
+```
 
 ## Limits
 
@@ -54,7 +133,8 @@ memory file is never written after the snapshot is taken.
 - Input is capped at 1 KiB per frame. nginx limits page loads to 5/s and boots to 6/min per address.
 - The guest has no NIC and no drives, so a visitor can reach nothing but the guest.
 - The launcher log records session id, a per-process salted hash of the address, start,
-  end, reason and duration. It never records keystrokes or guest output.
+  end, reason and duration. It never records keystrokes or guest output. The metrics
+  above add no new record of addresses.
 
 ## O1 side
 

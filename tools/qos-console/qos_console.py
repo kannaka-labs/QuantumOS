@@ -29,6 +29,14 @@ only through a Unix socket that nginx reaches over an SSH tunnel), and
 The log records session start, end, duration, reason and a salted hash of the
 client address. It never records anything the visitor types or the guest prints.
 
+Metrics (#258) are counts and timings only. They are kept in memory and, with
+--state-file, in a small JSON file. GET /metrics answers in Prometheus text format and
+GET /stats in JSON (the public site proxies /stats; /metrics answers only on the
+launcher's own socket). The page reports two events with GET /beacon?e=load|boot.
+Unique visitors per UTC day are counted from an HMAC of the address under a salt that
+lives only in memory and is replaced every UTC day. Those hashes are never written
+anywhere and are dropped when the day ends.
+
   qos_console.py --kernel /opt/qos-console/kernel.elf --run-dir /run/qos-console \
                  --listen-unix /run/qos-console/ws.sock
 """
@@ -36,8 +44,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import contextlib
+import datetime
 import hashlib
+import hmac
 import http
 import json
 import logging
@@ -50,6 +61,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from websockets.asyncio.server import ServerConnection, serve, unix_serve
 from websockets.exceptions import ConnectionClosed
@@ -60,6 +72,7 @@ log = logging.getLogger("qos-console")
 MAX_INPUT = 1024          # bytes per client frame
 READ_CHUNK = 4096         # bytes per guest read
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
+SAVE_EVERY_S = 30         # how often changed metrics are written to --state-file
 SNAPSHOT_RETRY_S = 300    # after a failed snapshot build, cold-boot this long before retrying
 
 
@@ -142,10 +155,222 @@ class Snapshot:
         return self.dir / "vm.mem"
 
 
+def utc_day(now: float) -> str:
+    return datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y-%m-%d")
+
+
+class Histogram:
+    """Prometheus-style buckets, plus the most recent values for percentiles."""
+    BUCKETS = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600)
+    RECENT = 1000
+
+    def __init__(self):
+        self.counts = [0] * len(self.BUCKETS)   # per bucket (made cumulative on output)
+        self.inf = 0
+        self.sum = 0.0
+        self.n = 0
+        self.recent: collections.deque[float] = collections.deque(maxlen=self.RECENT)
+
+    def observe(self, v: float) -> None:
+        v = max(0.0, float(v))
+        for i, b in enumerate(self.BUCKETS):
+            if v <= b:
+                self.counts[i] += 1
+                break
+        else:
+            self.inf += 1
+        self.sum += v
+        self.n += 1
+        self.recent.append(round(v, 4))
+
+    def summary(self) -> dict:
+        vals = sorted(self.recent)
+        if not vals:
+            return {"n": self.n}
+
+        def pct(p: float) -> float:
+            return round(vals[min(len(vals) - 1, int(p * len(vals)))], 3)
+        return {"n": self.n, "p50": pct(0.5), "p90": pct(0.9), "max": round(vals[-1], 3)}
+
+    def prometheus(self, name: str) -> list[str]:
+        out, acc = [f"# TYPE {name} histogram"], 0
+        for b, c in zip(self.BUCKETS, self.counts):
+            acc += c
+            out.append(f'{name}_bucket{{le="{b}"}} {acc}')
+        out.append(f'{name}_bucket{{le="+Inf"}} {acc + self.inf}')
+        out.append(f"{name}_sum {self.sum:.6f}")
+        out.append(f"{name}_count {self.n}")
+        return out
+
+    def dump(self) -> dict:
+        return {"counts": self.counts, "inf": self.inf, "sum": self.sum, "n": self.n,
+                "recent": list(self.recent)}
+
+    def load(self, d: dict) -> None:
+        if len(d.get("counts", [])) == len(self.BUCKETS):
+            self.counts = [int(x) for x in d["counts"]]
+        self.inf, self.sum, self.n = int(d.get("inf", 0)), float(d.get("sum", 0)), int(d.get("n", 0))
+        self.recent.extend(float(x) for x in d.get("recent", [])[-self.RECENT:])
+
+
+class Metrics:
+    """The visitor funnel, as counts and timings only (#258).
+
+    page loads -> Boot clicks -> /ws sessions started (or refused) -> boots completed
+    (the shell prompt reached the visitor) -> sessions where the visitor typed -> ends.
+
+    Nothing here holds an address, a session id, or anything typed. The one piece of
+    per-visitor state is the set of today's visitor hashes: an HMAC under a salt that
+    exists only in memory and is replaced each UTC day. It counts unique visitors and is
+    then forgotten. It is never saved, so a restart can count a visitor twice that day."""
+    EVENTS = ("load", "boot")
+    COUNTERS = ("page_loads", "boot_clicks", "sessions_started", "sessions_refused",
+                "boots_completed", "sessions_with_input", "sessions_ended")
+    LABELLED = ("sessions_started", "sessions_refused", "boots_completed", "sessions_ended")
+    DAY_FIELDS = ("page_loads", "boot_clicks", "unique_visitors", "sessions_started",
+                  "sessions_refused", "boots_completed", "sessions_with_input")
+    KEEP_DAYS = 60
+
+    def __init__(self, state_file: Path | None = None, clock=time.time):
+        self.clock = clock
+        self.state_file = state_file
+        self.since = clock()
+        self.c = {k: collections.Counter() for k in self.COUNTERS}
+        self.h = {"first_output_seconds": Histogram(), "ready_seconds": Histogram(),
+                  "session_seconds": Histogram()}
+        self.days: dict[str, dict[str, int]] = {}
+        self._day = ""
+        self._salt = b""
+        self._seen: set[bytes] = set()
+        self.dirty = False
+        if state_file is not None:
+            self._load()
+
+    # ---- recording ----
+    def _today(self) -> dict[str, int]:
+        day = utc_day(self.clock())
+        if day != self._day:      # a new UTC day: a new salt, and yesterday's hashes are dropped
+            self._day, self._salt, self._seen = day, secrets.token_bytes(32), set()
+        row = self.days.setdefault(day, dict.fromkeys(self.DAY_FIELDS, 0))
+        while len(self.days) > self.KEEP_DAYS:
+            del self.days[min(self.days)]
+        return row
+
+    def _bump(self, counter: str, label: str = "", day_field: str | None = None) -> None:
+        self.c[counter][label] += 1
+        if day_field:
+            self._today()[day_field] += 1
+        self.dirty = True
+
+    def visitor(self, ip: str) -> None:
+        if not ip or ip == "unknown":
+            return
+        row = self._today()
+        key = hmac.new(self._salt, ip.encode(), hashlib.sha256).digest()[:16]
+        if key not in self._seen:
+            self._seen.add(key)
+            row["unique_visitors"] += 1
+            self.dirty = True
+
+    def event(self, name: str, ip: str) -> bool:
+        """A page beacon. Only the two known events count; anything else is ignored."""
+        if name not in self.EVENTS:
+            return False
+        self.visitor(ip)
+        if name == "load":
+            self._bump("page_loads", day_field="page_loads")
+        else:
+            self._bump("boot_clicks", day_field="boot_clicks")
+        return True
+
+    def refused(self, reason: str) -> None:
+        self._bump("sessions_refused", reason, "sessions_refused")
+
+    def started(self, mode: str) -> None:
+        self._bump("sessions_started", mode, "sessions_started")
+
+    def first_output(self, seconds: float) -> None:
+        self.h["first_output_seconds"].observe(seconds)
+        self.dirty = True
+
+    def booted(self, mode: str, seconds: float) -> None:
+        self._bump("boots_completed", mode, "boots_completed")
+        self.h["ready_seconds"].observe(seconds)
+
+    def typed(self) -> None:
+        self._bump("sessions_with_input", day_field="sessions_with_input")
+
+    def ended(self, reason: str, seconds: float) -> None:
+        self._bump("sessions_ended", "error" if reason.startswith("error") else reason)
+        self.h["session_seconds"].observe(seconds)
+
+    # ---- output ----
+    def stats(self, active: int, max_vms: int, snapshot: bool) -> dict:
+        self._today()
+        return {
+            "about": ("QuantumOS public console funnel. Counts and timings only: no addresses, "
+                      "no session ids, nothing typed. Unique visitors are counted per UTC day "
+                      "from a hash under a salt that is never stored and is replaced daily."),
+            "since": datetime.datetime.fromtimestamp(self.since, datetime.timezone.utc)
+                     .isoformat(timespec="seconds"),
+            "now": {"active": active, "max_vms": max_vms, "snapshot": snapshot},
+            "totals": {k: dict(v) if k in self.LABELLED else sum(v.values()) for k, v in self.c.items()},
+            "timings_s": {k.removesuffix("_seconds"): v.summary() for k, v in self.h.items()},
+            "days": dict(sorted(self.days.items(), reverse=True)),
+        }
+
+    def prometheus(self, active: int, max_vms: int, snapshot: bool) -> str:
+        lines: list[str] = []
+        for k in self.COUNTERS:
+            name = f"qos_{k}_total"
+            lines.append(f"# TYPE {name} counter")
+            if k in self.LABELLED:
+                label = "mode" if k in ("sessions_started", "boots_completed") else "reason"
+                lines += [f'{name}{{{label}="{v}"}} {n}' for v, n in sorted(self.c[k].items())]
+            else:
+                lines.append(f"{name} {sum(self.c[k].values())}")
+        for name, v in (("qos_sessions_active", active), ("qos_sessions_max", max_vms),
+                        ("qos_snapshot_ready", int(snapshot))):
+            lines += [f"# TYPE {name} gauge", f"{name} {v}"]
+        for k, hist in self.h.items():
+            lines += hist.prometheus(f"qos_{k}")
+        return "\n".join(lines) + "\n"
+
+    # ---- persistence (counts and timings only) ----
+    def _load(self) -> None:
+        try:
+            d = json.loads(self.state_file.read_text())
+        except (OSError, ValueError):
+            return
+        self.since = float(d.get("since", self.since))
+        for k, v in d.get("counters", {}).items():
+            if k in self.c:
+                self.c[k] = collections.Counter({str(a): int(b) for a, b in v.items()})
+        for k, v in d.get("histograms", {}).items():
+            if k in self.h:
+                self.h[k].load(v)
+        self.days = {str(day): {f: int(row.get(f, 0)) for f in self.DAY_FIELDS}
+                     for day, row in d.get("days", {}).items()}
+
+    def save(self) -> None:
+        if self.state_file is None or not self.dirty:
+            return
+        d = {"since": self.since, "counters": {k: dict(v) for k, v in self.c.items()},
+             "histograms": {k: v.dump() for k, v in self.h.items()}, "days": self.days}
+        tmp = self.state_file.with_name(self.state_file.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(d))
+            os.replace(tmp, self.state_file)
+            self.dirty = False
+        except OSError as e:
+            log.warning("metrics save failed: %s", e)
+
+
 class Console:
     def __init__(self, kernel: Path, firecracker: str, run_dir: Path, max_vms: int,
                  per_ip: int, max_seconds: float, mem_mib: int, boot_args: str,
-                 snapshot: str = "auto", ready_marker: str = "qsh>", boot_timeout: float = 60):
+                 snapshot: str = "auto", ready_marker: str = "qsh>", boot_timeout: float = 60,
+                 metrics: Metrics | None = None):
         self.kernel = kernel
         self.firecracker = firecracker
         self.run_dir = run_dir
@@ -164,6 +389,7 @@ class Console:
         self._kernel_sig: tuple[int, int] | None = None
         self._kernel_sha = ""
         self._failed: tuple[str, float] | None = None   # (kernel sha, monotonic time) of the last failed build
+        self.metrics = metrics if metrics is not None else Metrics()
 
     # ---- bookkeeping -------------------------------------------------------
     def ip_hash(self, ip: str) -> str:
@@ -369,6 +595,7 @@ class Console:
         ip = ws.request.headers.get("X-Real-IP", "unknown") if ws.request else "unknown"
         reason = self.admit(ip)
         if reason:
+            self.metrics.refused(reason)
             await ws.send(json.dumps({"type": "refused", "reason": reason}))
             await ws.close(1013, reason)
             log.info("refused ip=%s reason=%s active=%d", self.ip_hash(ip), reason, len(self.active))
@@ -377,6 +604,7 @@ class Console:
         self.active[sid] = ip
         t0 = time.monotonic()
         end_reason = "disconnect"
+        started = False
         d: Path | None = None
         vm: asyncio.subprocess.Process | None = None
         snap: Snapshot | None = None
@@ -396,6 +624,25 @@ class Console:
                 vm = await self._cold_boot(d)
             log.info("start sid=%s ip=%s pid=%d mode=%s ready_ms=%d active=%d", sid, self.ip_hash(ip),
                      vm.pid, mode, (time.monotonic() - t0) * 1000, len(self.active))
+            started = True
+            self.metrics.started(mode)
+            self.metrics.visitor(ip)
+            # Funnel timings, from the moment the session was admitted: the first guest
+            # byte the visitor gets, and the shell prompt reaching them (boot completed).
+            seen = {"output": False, "ready": False, "typed": False}
+            tail = b""
+
+            def sent(data: bytes) -> None:
+                nonlocal tail
+                if not seen["output"] and data:
+                    seen["output"] = True
+                    self.metrics.first_output(time.monotonic() - t0)
+                if not seen["ready"]:
+                    window = tail + data
+                    tail = window[-256:]
+                    if self.ready_marker in ANSI.sub(b"", window):
+                        seen["ready"] = True
+                        self.metrics.booted(mode, time.monotonic() - t0)
             await ws.send(json.dumps({"type": "hello", "session": sid, "max_seconds": self.max_seconds,
                                       "restored": mode == "restore"}))
             if snap is not None:
@@ -404,6 +651,7 @@ class Console:
                 vm.stdin.write(reseed_escape(secrets.token_bytes(8)))
                 await vm.stdin.drain()
                 await ws.send(snap.transcript)   # what the snapshot VM printed while it booted
+                sent(snap.transcript)
 
             async def guest_to_ws():
                 while True:
@@ -411,11 +659,15 @@ class Console:
                     if not data:
                         return "guest-exited"
                     await ws.send(data)
+                    sent(data)
 
             async def ws_to_guest():
                 async for msg in ws:
                     data = msg.encode() if isinstance(msg, str) else msg
                     data = data[:MAX_INPUT].replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                    if not seen["typed"] and data:
+                        seen["typed"] = True
+                        self.metrics.typed()
                     vm.stdin.write(data)
                     await vm.stdin.drain()
                 return "disconnect"
@@ -455,6 +707,8 @@ class Console:
                 await ws.close()
             except Exception:  # noqa: BLE001
                 pass
+            if started:
+                self.metrics.ended(end_reason, time.monotonic() - t0)
             log.info("end sid=%s ip=%s reason=%s duration_s=%.1f active=%d",
                      sid, self.ip_hash(ip), end_reason, time.monotonic() - t0, len(self.active))
 
@@ -476,19 +730,51 @@ class Console:
             await vm.wait()
 
     # ---- HTTP side ---------------------------------------------------------
+    def snapshot_ready(self) -> bool:
+        snap = self.snap
+        return snap is not None and snap.kernel_sha == self._kernel_sha
+
     def process_request(self, ws: ServerConnection, request: Request) -> Response | None:
-        if request.path.split("?")[0].rstrip("/") in ("/health", "/qos/health"):
+        url = urlsplit(request.path)
+        path = url.path.rstrip("/")
+        if path.startswith("/qos/"):          # the staging route keeps its /qos prefix
+            path = path[len("/qos"):]
+        if path == "/health":
             snap = self.snap
             body = json.dumps({"active": len(self.active), "max_vms": self.max_vms,
-                               "snapshot": snap is not None and snap.kernel_sha == self._kernel_sha,
-                               "snapshot_kernel": snap.kernel_sha[:12] if snap else None}).encode()
-            return ws.respond(http.HTTPStatus.OK, body.decode() + "\n")
+                               "snapshot": self.snapshot_ready(),
+                               "snapshot_kernel": snap.kernel_sha[:12] if snap else None})
+            return ws.respond(http.HTTPStatus.OK, body + "\n")
+        if path == "/stats":
+            body = json.dumps(self.metrics.stats(len(self.active), self.max_vms, self.snapshot_ready()),
+                              indent=1)
+            return self._respond(ws, body + "\n", "application/json")
+        if path == "/metrics":
+            return self._respond(ws, self.metrics.prometheus(len(self.active), self.max_vms,
+                                                             self.snapshot_ready()),
+                                 "text/plain; version=0.0.4")
+        if path == "/beacon":
+            event = (parse_qs(url.query).get("e") or [""])[0]
+            ok = self.metrics.event(event, request.headers.get("X-Real-IP", "unknown"))
+            return self._respond(ws, "ok\n" if ok else "unknown event\n", "text/plain",
+                                 http.HTTPStatus.OK if ok else http.HTTPStatus.BAD_REQUEST)
         return None
+
+    @staticmethod
+    def _respond(ws: ServerConnection, body: str, ctype: str,
+                 status: http.HTTPStatus = http.HTTPStatus.OK) -> Response:
+        r = ws.respond(status, body)
+        del r.headers["Content-Type"]
+        r.headers["Content-Type"] = ctype if "charset" in ctype else ctype + "; charset=utf-8"
+        r.headers["Cache-Control"] = "no-store"
+        return r
 
 
 async def amain(a: argparse.Namespace, stop: asyncio.Future | None = None) -> int:
+    metrics = Metrics(Path(a.state_file) if a.state_file else None)
     con = Console(Path(a.kernel), a.firecracker, Path(a.run_dir), a.max_vms, a.per_ip,
-                  a.max_seconds, a.mem_mib, a.boot_args, a.snapshot, a.ready_marker)
+                  a.max_seconds, a.mem_mib, a.boot_args, a.snapshot, a.ready_marker,
+                  metrics=metrics)
     swept = con.sweep()
     if swept:
         log.info("swept %d stale session dirs", swept)
@@ -511,10 +797,19 @@ async def amain(a: argparse.Namespace, stop: asyncio.Future | None = None) -> in
         host, port = a.listen_tcp.rsplit(":", 1)
         server = await serve(con.session, host, int(port), **kw)
         log.info("listening tcp %s", a.listen_tcp)
+    async def save_loop():
+        while True:
+            await asyncio.sleep(SAVE_EVERY_S)
+            metrics.save()
+
+    saver = asyncio.create_task(save_loop())
     try:
         async with server:
             await stop
     finally:
+        saver.cancel()
+        await asyncio.gather(saver, return_exceptions=True)
+        metrics.save()
         await con.shutdown()
     return 0
 
@@ -534,6 +829,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--boot-args", default="quiet")
     ap.add_argument("--snapshot", choices=("auto", "off"), default="auto",
                     help="auto: restore visitors from a booted snapshot; off: cold-boot every session")
+    ap.add_argument("--state-file",
+                    help="JSON file the funnel metrics (counts and timings only) persist to")
     ap.add_argument("--ready-marker", default="qsh>",
                     help="guest output (ANSI colour stripped) that means the shell is ready to snapshot")
     return ap
