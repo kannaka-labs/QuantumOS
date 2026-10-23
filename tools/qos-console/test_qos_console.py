@@ -77,15 +77,20 @@ class Server:
             await asyncio.sleep(0.05)
         raise RuntimeError("server did not start")
 
-    async def _get_health(self) -> tuple[bytes, bytes]:
+    async def _get_health(self, request: bytes = HEALTH_REQUEST) -> tuple[bytes, bytes]:
         r, w = await asyncio.open_connection("127.0.0.1", self.port)
-        w.write(HEALTH_REQUEST)
+        w.write(request)
         await w.drain()
         raw = await asyncio.wait_for(r.read(), 5)
         w.close()
         await w.wait_closed()
         head, _, body = raw.partition(CRLF + CRLF)
         return head.split(CRLF, 1)[0], body
+
+    async def get(self, path: str, headers: dict | None = None) -> tuple[bytes, bytes]:
+        lines = [f"GET {path} HTTP/1.1".encode(), b"Host: t", b"Connection: close"]
+        lines += [f"{k}: {v}".encode() for k, v in (headers or {}).items()]
+        return await self._get_health(CRLF.join(lines + [b"", b""]))
 
     async def health(self) -> dict:
         _, body = await self._get_health()
@@ -453,3 +458,106 @@ async def test_shutdown_mid_build_leaves_no_vm_or_dir(env):
         pass                                             # stop before the snapshot is ready
     await asyncio.sleep(0.2)
     assert bases(env["run"]) == [] and not fake_pids(env["run"], builders=True)
+
+
+# ---- metrics (#258) ----------------------------------------------------------------
+
+HEXID = r"\b(?=[0-9a-f]*[a-f])[0-9a-f]{12,}\b"   # a hash or session id, not a plain number
+
+
+def prom_value(text: str, series: str) -> float:
+    for line in text.splitlines():
+        if line.startswith(series + " "):
+            return float(line.split()[-1])
+    raise AssertionError(f"{series} not in /metrics")
+
+
+@pytest.mark.asyncio
+async def test_metrics_count_the_funnel_without_personal_data(env, tmp_path):
+    state = tmp_path / "metrics.json"
+    async with Server(env, per_ip=1, state_file=state) as s:
+        await s.wait_snapshot()
+        for e in ("load", "load", "boot"):
+            status, _ = await s.get(f"/beacon?e={e}", h("198.51.100.7"))
+            assert b" 200 " in status
+        status, _ = await s.get("/beacon?e=anything-else", h("198.51.100.7"))
+        assert b" 400 " in status, "only the two page events count"
+        async with connect(s.url(), additional_headers=h("198.51.100.7")) as ws:
+            assert (await control(ws))["restored"]
+            await read_until(ws, b"qsh> ")
+            async with connect(s.url(), additional_headers=h("198.51.100.7")) as again:
+                assert (await control(again))["type"] == "refused"
+            await ws.send("echo typed-secret-words\r")
+            await read_until(ws, b"typed-secret-words")
+        await asyncio.sleep(0.5)
+
+        _, body = await s.get("/stats")
+        st = json.loads(body)
+        tot = st["totals"]
+        assert tot["page_loads"] == 2 and tot["boot_clicks"] == 1
+        assert tot["sessions_started"] == {"restore": 1}
+        assert tot["sessions_refused"] == {"one-per-visitor": 1}
+        assert tot["boots_completed"] == {"restore": 1}
+        assert tot["sessions_with_input"] == 1
+        assert tot["sessions_ended"] == {"disconnect": 1}
+        for k in ("first_output", "ready", "session"):
+            assert st["timings_s"][k]["n"] == 1, k
+        assert st["timings_s"]["first_output"]["p50"] <= st["timings_s"]["ready"]["p50"]
+        (today,) = st["days"].values()
+        assert today["unique_visitors"] == 1, "one address, one visitor"
+        assert today["page_loads"] == 2 and today["sessions_started"] == 1
+
+        status, prom = await s.get("/metrics")
+        assert b" 200 " in status
+        prom = prom.decode()
+        assert prom_value(prom, 'qos_sessions_started_total{mode="restore"}') == 1
+        assert prom_value(prom, 'qos_sessions_ended_total{reason="disconnect"}') == 1
+        assert prom_value(prom, 'qos_sessions_refused_total{reason="one-per-visitor"}') == 1
+        assert prom_value(prom, "qos_page_loads_total") == 2
+        assert prom_value(prom, "qos_snapshot_ready") == 1
+        assert prom_value(prom, "qos_ready_seconds_count") == 1
+        assert prom_value(prom, 'qos_session_seconds_bucket{le="+Inf"}') == 1
+
+        for text in (body.decode(), prom):
+            assert "198.51.100.7" not in text and "typed-secret" not in text
+            assert not re.search(HEXID, text), "no hashes or session ids in metrics"
+    saved = state.read_text()
+    assert '"page_loads"' in saved
+    assert "198.51.100.7" not in saved and "typed-secret" not in saved
+    assert not re.search(HEXID, saved), "no visitor hashes are persisted"
+
+
+@pytest.mark.asyncio
+async def test_metrics_survive_a_restart(env, tmp_path):
+    state = tmp_path / "metrics.json"
+    async with Server(env, state_file=state) as s:
+        await s.get("/beacon?e=load", h("192.0.2.1"))
+    async with Server(env, state_file=state) as s:
+        await s.get("/beacon?e=load", h("192.0.2.1"))
+        st = json.loads((await s.get("/qos/stats"))[1])     # the staging prefix answers too
+        assert st["totals"]["page_loads"] == 2
+
+
+def test_unique_visitors_reset_with_the_daily_salt():
+    now = [1_800_000_000.0]
+    m = qos_console.Metrics(clock=lambda: now[0])
+    for ip in ("192.0.2.1", "192.0.2.1", "192.0.2.2"):
+        m.event("load", ip)
+    salt = m._salt
+    now[0] += 86400
+    m.event("load", "192.0.2.1")
+    assert m._salt != salt, "the salt must change with the UTC day"
+    days = sorted(m.days.items())
+    assert [d["unique_visitors"] for _, d in days] == [2, 1]
+    assert [d["page_loads"] for _, d in days] == [3, 1]
+    assert len(m._seen) == 1, "yesterday's hashes are dropped"
+
+
+def test_histogram_buckets_and_percentiles():
+    hist = qos_console.Histogram()
+    for v in (0.02, 0.3, 0.3, 700):
+        hist.observe(v)
+    lines = hist.prometheus("x")
+    assert 'x_bucket{le="0.025"} 1' in lines and 'x_bucket{le="0.5"} 3' in lines
+    assert 'x_bucket{le="600"} 3' in lines and 'x_bucket{le="+Inf"} 4' in lines
+    assert hist.summary()["p50"] == 0.3 and hist.summary()["max"] == 700

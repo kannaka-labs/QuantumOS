@@ -36,6 +36,7 @@
   #term { background: #05080b; border: 1px solid var(--line); border-radius: 8px; padding: 8px;
           height: min(70vh, 640px); overflow: hidden; }
   footer { color: var(--muted); font-size: 13px; }
+  footer a { color: var(--accent); }
   footer code { font: 12px "IBM Plex Mono", ui-monospace, monospace; }
 </style>
 </head>
@@ -56,7 +57,9 @@
   </div>
   <div id="term" role="application" aria-label="QuantumOS serial console"></div>
   <footer>Try <code>help</code>, <code>ls /</code>, <code>imprint a cat sat on the mat</code> then
-    <code>recall a cxt sxt on thx mat</code>.</footer>
+    <code>recall a cxt sxt on thx mat</code>.
+    The page counts page loads and Boot presses, with no cookies and no addresses kept:
+    <a href="stats">visitor counts and timings</a>.</footer>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"
         integrity="sha384-J4qzUjBl1FxyLsl/kQPQIOeINsmp17OHYXDOMpMxlKX53ZfYsL+aWHpgArvOuof9" crossorigin="anonymous"></script>
@@ -80,6 +83,13 @@
   const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = cls || ""; };
   const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
   const decoder = new TextDecoder();
+  // Funnel counts (#258): the launcher counts "load" and "boot" and keeps no address,
+  // cookie or identifier. Totals are public at ./stats.
+  const beacon = (e) => {
+    try { fetch(new URL("beacon?e=" + e, location.href), { cache: "no-store", keepalive: true })
+            .catch(() => {}); } catch (err) {}
+  };
+  beacon("load");
 
   function end(msg, cls) {
     setStatus(msg, cls); bootBtn.disabled = false; stopBtn.disabled = true;
@@ -88,6 +98,7 @@
 
   bootBtn.onclick = () => {
     if (ws) return;
+    beacon("boot");
     term.reset();
     const url = new URL("ws", location.href); url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
     ws = new WebSocket(url); ws.binaryType = "arraybuffer";
