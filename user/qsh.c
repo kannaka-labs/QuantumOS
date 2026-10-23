@@ -112,7 +112,8 @@ static void cmd_help(void) {
     out("         " A_CMD "fieldtest" A0 "      " A_DIM "run the field self-test" A0 "\r\n");
     out(A_CAT "  quantum" A0 " " A_CMD "qrand" A0 "          " A_DIM
               "64 bits from the seeded generator" A0 "\r\n");
-    out("         " A_CMD "qseed" A0 "          " A_DIM "the seed this system started with" A0 "\r\n");
+    out("         " A_CMD "qseed" A0 "          " A_DIM "the seed this system started with" A0
+        "\r\n");
     out("         " A_CMD "ghost" A0 "          " A_DIM "quantum-seeded dice + resonant recall" A0
         "\r\n");
     out(A_CAT "  run    " A0 A_CMD "run" A0 " <path>      " A_DIM "start a citizen  " A_KEY

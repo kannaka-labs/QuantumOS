@@ -139,9 +139,12 @@ static uint8_t reseed_buf[RESEED_PREFIX_LEN + RESEED_HEX_LEN];
 static uint32_t reseed_len;
 
 static int hex_val(uint8_t c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
     return -1;
 }
 
