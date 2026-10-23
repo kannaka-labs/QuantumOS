@@ -46,7 +46,7 @@
     <span class="tag">staging · real KVM microVM</span>
   </header>
   <p class="note">Each boot starts a fresh QuantumOS virtual machine on Firecracker, with no disk and no network.
-    It takes about a minute and a half to reach the <code>qsh&gt;</code> prompt. You get ten minutes;
+    It is at the <code>qsh&gt;</code> prompt within a second or two. You get ten minutes;
     the machine is deleted when you close the page or the timer runs out. Nothing you type is logged.</p>
   <div class="bar">
     <button id="boot">Boot QuantumOS</button>
@@ -96,7 +96,7 @@
       if (typeof ev.data === "string") {
         let m = {}; try { m = JSON.parse(ev.data); } catch (e) {}
         if (m.type === "hello") {
-          deadline = Date.now() + m.max_seconds * 1000; setStatus("booting (about 90 s)…", "warn");
+          deadline = Date.now() + m.max_seconds * 1000; setStatus(m.restored ? "booting…" : "booting (a few seconds)…", "warn");
           tick = setInterval(() => { timerEl.textContent = fmt(Math.max(0, (deadline - Date.now()) / 1000)); }, 500);
         } else if (m.type === "refused") {
           end(m.reason === "busy" ? "all machines are in use, try again in a few minutes"

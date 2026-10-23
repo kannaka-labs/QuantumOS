@@ -11,8 +11,27 @@ browser ──https/wss──▶ O1 nginx (/qos/, basic auth, rate limits)
                           │ 127.0.0.1:8930
                           ▼ reverse SSH tunnel (opened outbound by the KVM host)
                        KVM host: qos-console.service ──▶ /run/qos-console/ws.sock
-                                    └─ per session: firecracker --no-api (COM1 on stdio)
+                                    └─ per session: firecracker restored from a snapshot (COM1 on stdio)
 ```
+
+## Fast start
+
+At startup the launcher boots one VM to the `qsh>` prompt, pauses it, and writes a
+Firecracker snapshot (vmstate plus the 128 MiB guest memory) to `/run/qos-console/base-*`.
+Each visitor's VM is restored from it (`PUT /snapshot/load`, File memory backend, about
+15 ms on debain2) instead of booting, and the visitor is sent the boot transcript the
+snapshot VM printed. Every restored VM maps the memory file copy-on-write
+(MAP_PRIVATE): clean pages are shared, and each VM's writes stay private to it. The
+memory file is never written after the snapshot is taken.
+
+- The snapshot is rebuilt when `kernel.elf` changes (checked by size and mtime, then
+  sha256, at each session start). Old snapshots are deleted once no VM maps them.
+- Until a snapshot for the current kernel exists, or if a restore fails, the session
+  cold-boots as before (about 1.5 s). `--snapshot off` cold-boots every session.
+- The builder VM is not counted against `--max-vms`; it lives for about 2 s per kernel.
+- Every restored VM starts from the same guest state, including the kernel's random
+  generator: `qseed` is the same for every visitor, and `qrand` output can repeat
+  across visitors. Nothing on the console uses it for secrets (the VM has no NIC).
 
 ## Pieces
 

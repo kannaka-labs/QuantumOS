@@ -90,6 +90,16 @@ class Server:
         _, body = await self._get_health()
         return json.loads(body)
 
+    async def wait_snapshot(self, kernel: str | None = None, timeout=10.0) -> dict:
+        """Wait until /health reports a usable snapshot (of `kernel`, a 12-hex sha, if given)."""
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            hl = await self.health()
+            if hl["snapshot"] and (kernel is None or hl["snapshot_kernel"] == kernel):
+                return hl
+            await asyncio.sleep(0.05)
+        raise AssertionError(f"no snapshot after {timeout} s: {hl}")
+
     async def __aexit__(self, *exc):
         if not self.stop.done():
             self.stop.set_result(None)
@@ -118,10 +128,11 @@ async def control(ws, timeout=5.0) -> dict:
             return json.loads(msg)
 
 
-def fake_pids(run: Path) -> set[int]:
-    """PIDs of hypervisors whose config lives under THIS test's run dir. Matching on the
-    run dir (not on the binary name) keeps a host's real, long-running Firecracker VMs
-    out of the count."""
+def fake_pids(run: Path, builders: bool = False) -> set[int]:
+    """PIDs of hypervisors whose config or API socket lives under THIS test's run dir.
+    Matching on the run dir (not on the binary name) keeps a host's real, long-running
+    Firecracker VMs out of the count. The snapshot builder (under run/base-*) may still be
+    booting while a first session runs, so it only counts with builders=True."""
     out = set()
     for p in Path("/proc").iterdir():
         if not p.name.isdigit():
@@ -130,8 +141,9 @@ def fake_pids(run: Path) -> set[int]:
             cmd = (p / "cmdline").read_bytes().split(b"\0")
         except OSError:
             continue
-        if b"--config-file" in cmd and any(str(run).encode() in c for c in cmd):
-            out.add(int(p.name))
+        if (b"--config-file" in cmd or b"--api-sock" in cmd) and any(str(run).encode() in c for c in cmd):
+            if builders or not any(f"{run}/base-".encode() in c for c in cmd):
+                out.add(int(p.name))
     return out
 
 
@@ -163,7 +175,7 @@ async def test_boot_talk_and_cleanup(env):
 @pytest.mark.asyncio
 async def test_vm_config_has_no_drives_or_network(env):
     # fake_firecracker asserts this and exits non-zero otherwise; a clean banner proves it
-    async with Server(env) as s:
+    async with Server(env, snapshot="off") as s:
         async with connect(s.url(), additional_headers=h("10.0.0.2")) as ws:
             await control(ws)
             await read_until(ws, b"Welcome to QuantumOS")
@@ -298,3 +310,118 @@ async def test_log_has_no_keystrokes_or_addresses(env, caplog):
     assert "start sid=" in text and "end sid=" in text and "duration_s=" in text
     assert secret not in text, "typed input must never reach the log"
     assert "203.0.113.77" not in text, "raw client addresses must never reach the log"
+
+
+# ---- snapshot restore ------------------------------------------------------------
+
+def ksha(path) -> str:
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:12]
+
+
+def bases(run: Path) -> list[Path]:
+    return sorted(d for d in run.iterdir() if d.name.startswith("base-")) if run.exists() else []
+
+
+@pytest.mark.asyncio
+async def test_session_restores_from_snapshot_and_replays_boot_transcript(env):
+    async with Server(env) as s:
+        await s.wait_snapshot(ksha(env["kernel"]))
+        async with connect(s.url(), additional_headers=h("10.5.0.1")) as ws:
+            hello = await control(ws)
+            assert hello["type"] == "hello" and hello["restored"] is True
+            out = await read_until(ws, b"qsh> ")      # replayed transcript: banner + prompt
+            assert f"kernel={ksha(env['kernel'])}".encode() in out
+            await ws.send("whoami\r")
+            assert f"kernel={ksha(env['kernel'])}".encode() in await read_until(ws, b"kernel=")
+            sdir = env["run"] / sessions(env["run"])[0]
+            assert not (sdir / "kernel.elf").exists(), "a restored session needs no kernel copy"
+        await asyncio.sleep(0.5)
+        assert sessions(env["run"]) == [] and not fake_pids(env["run"])
+        assert len(bases(env["run"])) == 1, "the snapshot outlives the session"
+
+
+@pytest.mark.asyncio
+async def test_restored_sessions_are_isolated_and_never_write_the_snapshot(env):
+    async with Server(env, per_ip=2) as s:
+        await s.wait_snapshot()
+        mem = bases(env["run"])[0] / "vm.mem"
+        before = mem.read_bytes()
+        async with connect(s.url(), additional_headers=h("10.6.0.1")) as a, \
+                connect(s.url(), additional_headers=h("10.6.0.2")) as b:
+            assert (await control(a))["restored"] and (await control(b))["restored"]
+            await read_until(a, b"qsh> ")
+            await read_until(b, b"qsh> ")
+            await a.send("imprint visitor-a-secret\n")
+            await read_until(a, b"qsh> ")
+            await b.send("recall\n")
+            out = await read_until(b, b"recall:")
+            assert b"visitor-a-secret" not in out, "one visitor's memory leaked into another's VM"
+            await a.send("recall\n")
+            assert b"visitor-a-secret" in await read_until(a, b"visitor-a-secret")
+        await asyncio.sleep(0.5)
+        assert mem.read_bytes() == before, "a session wrote to the shared snapshot memory"
+        assert sessions(env["run"]) == [] and not fake_pids(env["run"])
+
+
+@pytest.mark.asyncio
+async def test_kernel_change_rebuilds_snapshot_and_drops_the_old_one(env):
+    async with Server(env) as s:
+        old = ksha(env["kernel"])
+        await s.wait_snapshot(old)
+        Path(env["kernel"]).write_bytes(b"\x7fELF a newer fake kernel")
+        new = ksha(env["kernel"])
+        # The next session sees the new kernel either way: cold boot while the new
+        # snapshot builds, or restored from it once it exists. Never the old snapshot.
+        async with connect(s.url(), additional_headers=h("10.7.0.1")) as ws:
+            await control(ws)
+            await read_until(ws, b"qsh> ")
+            await ws.send("whoami\n")
+            assert f"kernel={new}".encode() in await read_until(ws, b"kernel=")
+        await s.wait_snapshot(new)
+        await asyncio.sleep(0.3)
+        assert [d.name.split("-")[1] for d in bases(env["run"])] == [new], "old snapshot not deleted"
+        async with connect(s.url(), additional_headers=h("10.7.0.2")) as ws:
+            assert (await control(ws))["restored"] is True
+            await ws.send("whoami\n")
+            assert f"kernel={new}".encode() in await read_until(ws, f"kernel={new}".encode())
+
+
+@pytest.mark.asyncio
+async def test_failed_restore_falls_back_to_cold_boot(env):
+    async with Server(env) as s:
+        await s.wait_snapshot()
+        (bases(env["run"])[0] / "vm.mem").unlink()      # the load now fails inside the VMM
+        async with connect(s.url(), additional_headers=h("10.8.0.1")) as ws:
+            assert (await control(ws))["restored"] is False
+            await read_until(ws, b"Welcome to QuantumOS")
+            await ws.send("echo still-works\n")
+            await read_until(ws, b"still-works")
+        await asyncio.sleep(0.5)
+        assert sessions(env["run"]) == [] and not fake_pids(env["run"])
+
+
+@pytest.mark.asyncio
+async def test_snapshot_off_cold_boots(env):
+    async with Server(env, snapshot="off") as s:
+        async with connect(s.url(), additional_headers=h("10.9.0.1")) as ws:
+            assert (await control(ws))["restored"] is False
+            await read_until(ws, b"qsh> ")
+        assert (await s.health())["snapshot"] is False and bases(env["run"]) == []
+
+
+@pytest.mark.asyncio
+async def test_snapshot_removed_on_shutdown(env):
+    async with Server(env) as s:
+        await s.wait_snapshot()
+        assert len(bases(env["run"])) == 1
+        assert not fake_pids(env["run"], builders=True), "the builder VM must exit once it has snapshotted"
+    assert bases(env["run"]) == [] and not fake_pids(env["run"], builders=True)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_mid_build_leaves_no_vm_or_dir(env):
+    async with Server(env):
+        pass                                             # stop before the snapshot is ready
+    await asyncio.sleep(0.2)
+    assert bases(env["run"]) == [] and not fake_pids(env["run"], builders=True)
