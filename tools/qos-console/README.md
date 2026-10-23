@@ -29,9 +29,11 @@ memory file is never written after the snapshot is taken.
 - Until a snapshot for the current kernel exists, or if a restore fails, the session
   cold-boots as before (about 1.5 s). `--snapshot off` cold-boots every session.
 - The builder VM is not counted against `--max-vms`; it lives for about 2 s per kernel.
-- Every restored VM starts from the same guest state, including the kernel's random
-  generator: `qseed` is the same for every visitor, and `qrand` output can repeat
-  across visitors. Nothing on the console uses it for secrets (the VM has no NIC).
+- Every restored VM starts from the same guest state. So before the visitor can type, the
+  launcher sends the kernel 8 fresh random bytes on COM1 (`ESC ] qseed ; <16 hex> BEL`).
+  The kernel consumes that sequence and mixes it into its generator (ADR-0025). Each
+  visitor gets their own `qseed` and `qrand` output. The seed comes from the host's OS
+  random source, not a QPU. Nothing on the console uses it for secrets (the VM has no NIC).
 
 ## Pieces
 

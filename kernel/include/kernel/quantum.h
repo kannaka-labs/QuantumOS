@@ -48,6 +48,19 @@
  * internal default. */
 void quantum_set_boot_entropy(uint64_t seed);
 
+/* Mix host-supplied entropy into the generator AFTER boot: used when a VM is
+ * restored from a snapshot, so every restored copy draws a different stream
+ * instead of replaying the snapshot's generator state (ADR-0025). Always mixes
+ * (never replaces) the live state, so a hostile caller cannot reduce entropy.
+ * If the kernel booted WITHOUT a qseed, the seed is also recorded as the
+ * host seed that quantum_boot_seed()/SYS_QSEED report; a kernel that booted
+ * WITH a qseed keeps reporting that boot qseed unchanged (attestation binds to
+ * it). seed == 0 is ignored. Safe to call from IRQ context. */
+void quantum_session_reseed(uint64_t seed);
+
+/* Number of session reseeds accepted since boot (diagnostics). */
+uint32_t quantum_session_reseeds(void);
+
 /* Initialize the quantum resource manager (before process_init) */
 quantum_result_t quantum_init(void);
 
@@ -107,7 +120,10 @@ uint64_t quantum_bits_consumed(void);
 
 /* The boot qseed the kernel accepted on the cmdline (0 = none). Backs the
  * capability-gated SYS_QSEED so a ring-3 attestation service can bind its
- * boot record to the exact entropy the system started with. */
+ * boot record to the exact entropy the system started with. For a kernel
+ * booted without a qseed and later reseeded after a snapshot restore
+ * (quantum_session_reseed), this is the first session seed the host supplied
+ * (ADR-0025): same syscall number, shape and errno contract as frozen in v1. */
 uint64_t quantum_boot_seed(void);
 
 /* Pool statistics */

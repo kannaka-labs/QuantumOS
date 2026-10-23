@@ -44,6 +44,7 @@ SMP; defer UEFI, a libagent extraction, and a block filesystem — are recorded 
 | [0022](0022-com2-latency-scheduler-bound.md) | Accepted | COM2 round-trip latency is scheduler-cadence-bound |
 | [0023](0023-ipc-peer-rewire-on-rebirth.md) | Accepted | IPC peer re-wiring on watchdog rebirth + dead-target IPC unlink |
 | [0024](0024-virtio-core-and-transports.md) | Accepted | virtio-net: one device driver over virtio-pci and virtio-mmio |
+| [0025](0025-console-session-reseed.md) | Accepted | Reseed each console session after a snapshot restore |
 
 ## Sequencing of the next phases
 

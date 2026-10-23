@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import socket
 import stat
 import sys
@@ -339,6 +340,33 @@ async def test_session_restores_from_snapshot_and_replays_boot_transcript(env):
         await asyncio.sleep(0.5)
         assert sessions(env["run"]) == [] and not fake_pids(env["run"])
         assert len(bases(env["run"])) == 1, "the snapshot outlives the session"
+
+
+@pytest.mark.asyncio
+async def test_each_restored_session_is_reseeded_before_the_visitor_types(env):
+    async with Server(env, per_ip=2) as s:
+        await s.wait_snapshot()
+        seeds = []
+        for ip in ("10.8.0.1", "10.8.0.2"):
+            async with connect(s.url(), additional_headers=h(ip)) as ws:
+                assert (await control(ws))["restored"]
+                await read_until(ws, b"qsh> ")
+                await ws.send("qseed\r")
+                out = await read_until(ws, b"qsh> ")
+                m = re.search(rb"qseed: ([0-9a-f,]*) late=(\w+)", out)
+                assert m, out
+                got = m.group(1).decode().split(",")
+                assert len(got) == 1 and len(got[0]) == 16, got       # exactly one reseed
+                assert m.group(2) == b"False", "the visitor's input reached the guest first"
+                seeds.append(got[0])
+        assert seeds[0] != seeds[1], "two visitors got the same session seed"
+
+
+def test_reseed_escape_format():
+    from qos_console import reseed_escape
+    assert reseed_escape(bytes.fromhex("0123456789abcdef")) == b"\x1b]qseed;0123456789abcdef\x07"
+    with pytest.raises(AssertionError):
+        reseed_escape(bytes(8))
 
 
 @pytest.mark.asyncio
