@@ -101,7 +101,8 @@ class FakeBackend:
         self.status_calls: list[str] = []
 
     def devices(self):
-        return [Device(d.id, d.simulator, d.qubits, d.per_task, d.per_shot, d.per_minute) for d in self.devs]
+        return [Device(d.id, d.simulator, d.qubits, d.per_task, d.per_shot, d.per_minute, qasm=d.qasm)
+                for d in self.devs]
 
     def status(self, dev):
         self.status_calls.append(dev.id)
@@ -124,6 +125,7 @@ DEVICES = [
     Device("rigetti:rigetti:qpu:cepheus-1-108q", False, 107, 0, 0, 12000),
     Device("openquantum:iqm:qpu:garnet", False, 20, 0, 0, 0),            # billed elsewhere
     Device("azure:ionq:qpu:forte-1", False, 36, None, None, None),       # no price
+    Device("azure:pasqal:qpu:fresnel", False, 100, 0, 0, 500, qasm=False),  # analog: no OpenQASM
 ]
 
 
@@ -171,12 +173,13 @@ def test_real_picks_cheapest_online_priced_qpu(tmp_path):
     assert be.submitted == [("rigetti:rigetti:qpu:cepheus-1-108q", 20)]
     assert "openquantum:iqm:qpu:garnet" not in be.status_calls       # zero price = unbounded, skipped
     assert "azure:ionq:qpu:forte-1" not in be.status_calls
+    assert "azure:pasqal:qpu:fresnel" not in be.status_calls          # cheaper, but analog
 
 
 def test_real_refused_when_estimate_over_cap(tmp_path):
     b, be = make(tmp_path, real=True)
     a = run(b.handle(sub("qpu", shots=100)))
-    assert not a["ok"] and "per-job cap" in a["error"]
+    assert not a["ok"] and "estimated at 13.50 credits" in a["error"] and "per-job cap" in a["error"]
     assert be.submitted == []
 
 

@@ -163,6 +163,7 @@ class Device:
     per_minute: float | None
     status: str = "UNKNOWN"
     handle: object = field(default=None, repr=False)
+    qasm: bool = True      # the SDK profile says it takes OpenQASM (gate model, not analog)
 
     def priced(self) -> bool:
         p = (self.per_task, self.per_shot, self.per_minute)
@@ -261,13 +262,15 @@ class QbraidBackend:
         for d in self.provider.get_devices():
             prof = d.profile
             pricing = getattr(prof, "pricing", None)
+            spec = getattr(prof, "program_spec", None)
+            specs = spec if isinstance(spec, (list, tuple)) else [spec] if spec else []
             out.append(Device(
                 id=d.id, simulator=bool(getattr(prof, "simulator", False)),
                 qubits=int(getattr(prof, "num_qubits", 0) or 0),
                 per_task=_credits(getattr(pricing, "perTask", None)) if pricing else None,
                 per_shot=_credits(getattr(pricing, "perShot", None)) if pricing else None,
                 per_minute=_credits(getattr(pricing, "perMinute", None)) if pricing else None,
-                handle=d))
+                handle=d, qasm=any(getattr(s, "alias", "") in ("qasm2", "qasm3") for s in specs)))
         return out
 
     def status(self, dev: Device) -> str:
@@ -324,11 +327,11 @@ class Broker:
         """The cheapest suitable device that reports ONLINE right now, with its estimate."""
         devs = await self.devices()
         if mode == "sim":
-            cands = [d for d in devs if d.simulator and d.free() and d.qubits >= n]
+            cands = [d for d in devs if d.simulator and d.qasm and d.free() and d.qubits >= n]
             # free simulators cost the same; prefer qBraid's own, then by id, for stable output
             cands.sort(key=lambda d: (not d.id.startswith("qbraid:"), d.id))
         else:
-            cands = [d for d in devs if not d.simulator and d.priced() and d.qubits >= n
+            cands = [d for d in devs if not d.simulator and d.qasm and d.priced() and d.qubits >= n
                      and (not self.pol.allow or d.id in self.pol.allow)]
             cands.sort(key=lambda d: (d.estimate(shots, self.pol), d.id))
         for d in cands:
