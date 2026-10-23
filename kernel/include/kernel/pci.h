@@ -38,4 +38,8 @@ pci_device_t pci_find(uint16_t vendor, uint16_t device);
  * the device can DMA and answer port I/O. */
 void pci_enable_bus_master_io(const pci_device_t *dev);
 
+/* Set the bus-master + memory-space enable bits, for a device driven
+ * through memory BARs (virtio-pci modern). */
+void pci_enable_bus_master_mem(const pci_device_t *dev);
+
 #endif /* PCI_H */

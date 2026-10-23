@@ -16,6 +16,7 @@
 #define PCI_INTERRUPT_LINE 0x3C
 
 #define PCI_CMD_IO 0x0001
+#define PCI_CMD_MEM 0x0002
 #define PCI_CMD_BUS_MASTER 0x0004
 
 static inline void io_outl(uint16_t port, uint32_t value) {
@@ -79,5 +80,14 @@ void pci_enable_bus_master_io(const pci_device_t *dev) {
     }
     uint32_t cmd = pci_config_read32(dev->bus, dev->slot, dev->func, PCI_COMMAND);
     cmd |= (PCI_CMD_IO | PCI_CMD_BUS_MASTER);
+    pci_config_write32(dev->bus, dev->slot, dev->func, PCI_COMMAND, cmd);
+}
+
+void pci_enable_bus_master_mem(const pci_device_t *dev) {
+    if (!dev || !dev->found) {
+        return;
+    }
+    uint32_t cmd = pci_config_read32(dev->bus, dev->slot, dev->func, PCI_COMMAND);
+    cmd |= (PCI_CMD_MEM | PCI_CMD_BUS_MASTER);
     pci_config_write32(dev->bus, dev->slot, dev->func, PCI_COMMAND, cmd);
 }

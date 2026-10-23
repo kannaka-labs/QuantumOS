@@ -16,11 +16,12 @@
 #include <kernel/boot.h>
 
 /* Drivers, in probe order. The first whose init() returns 1 is bound.
- * virtio-net is FIRST deliberately: its probe is a handful of MMIO reads
- * at addresses the cmdline already named, whereas the rtl8139 probe walks
- * the PCI bus — and a Firecracker guest has no PCI bus at all. Cheap and
- * certain before expensive and absent. With no virtio_mmio.device= token
- * the virtio probe returns 0 immediately and costs nothing. */
+ * virtio-net is FIRST deliberately (ADR-0024): it is the paravirtual NIC
+ * every modern hypervisor offers, and the rtl8139 is the emulated fallback.
+ * Its probe tries the virtio-mmio slots the cmdline named (Firecracker has
+ * no PCI bus at all), then one PCI bus-0 scan for a virtio-net function
+ * (0x1AF4:0x1041, or transitional 0x1000). With neither present it returns
+ * 0 and the rtl8139 probe runs exactly as before. */
 static const netdev_ops_t *const drivers[] = {
     &virtio_net_netdev,
     &rtl8139_netdev,

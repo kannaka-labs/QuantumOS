@@ -43,11 +43,39 @@ FIELD: winner="a cat sat on the mat" slot=0 score=15975 n=1
 
 Firecracker exposes no VGA, no PCI and no ATA, and only virtio-mmio devices. So:
 the text-mode console writes to `0xB8000` land in plain RAM (harmless); the `rtl8139`
-NIC and ATA disk are absent (`httpd: no network -- idle`); COM2 is unbacked (the
-swarm bridge stays idle). Firecracker's logger reports the VGA CRTC and COM2 port
-writes as `MissingAddressRange` at `Warning` level, which is why the config above
-sets `Error`. Networking and storage inside Firecracker need virtio-mmio drivers,
-which QuantumOS does not have yet.
+NIC and ATA disk are absent; COM2 is unbacked. Firecracker returns 0 (not 0xFF) for
+reads of a missing port, so `com2_init` detects the absence with the scratch register
+and the swarm bridge stays idle without touching the port. Before that check, the
+first COM2 write spun its full drain bound in VM exits with interrupts off and froze
+the guest for tens of seconds. Firecracker's logger reports the VGA CRTC writes as
+`MissingAddressRange` at `Warning` level, which is why the config above sets `Error`.
+Storage inside Firecracker needs a virtio-blk driver, which QuantumOS does not have yet.
+
+## Networking (virtio-net over virtio-mmio, ADR-0024)
+
+Give the microVM a tap device and QuantumOS binds it as virtio-net:
+
+```json
+  "network-interfaces": [
+    { "iface_id": "eth0", "guest_mac": "02:fc:00:00:00:15", "host_dev_name": "qostap0" }
+  ]
+```
+
+Firecracker appends `virtio_mmio.device=4K@0xd0000000:5` to the command line, and the
+boot log shows `NET: virtio-net up (mmio) - MAC: ...`. There is no DHCP server on a
+bare tap, so pass a static address in `boot_args` (`ip=10.0.2.15`). The stack expects
+the gateway at 10.0.2.2, so put that on the host end of the tap:
+
+```sh
+sudo ip tuntap add qostap0 mode tap user "$(id -un)"
+sudo ip addr add 10.0.2.2/24 dev qostap0 && sudo ip link set qostap0 up
+# ... boot; then in qsh:  http 10.0.2.2 8000   (a host-side http.server)
+sudo ip link del qostap0
+```
+
+Verified 2026-10-22 on Firecracker v1.16.1 (debain2): `qsh: http 10.0.2.2 -> HTTP/1.0 200 OK`
+from a host `python3 -m http.server`, and fieldsyncd's UDP to `peer=10.0.2.2` on the
+tap. QuantumOS does not answer ICMP echo, so test it with traffic it starts, not `ping`.
 
 ## Public console
 

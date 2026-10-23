@@ -13,7 +13,16 @@
 
 /* Boot page tables (kernel/src/boot.S) — the shared kernel half */
 extern uint64_t boot_pml4[];
+extern uint64_t boot_pdpt[];
 extern uint64_t boot_pd[];
+
+/* How many address spaces vmspace_create has built (kernel/src/mmio.c logs
+ * a device mapping added after the first one, which that space lacks). */
+static int created_count;
+
+int vmspace_created_count(void) {
+    return created_count;
+}
 
 /* CR3 helpers (kernel/src/interrupts.S) */
 extern uint64_t get_cr3(void);
@@ -61,6 +70,23 @@ address_space_t vmspace_create(void) {
 
     /* PDPT[1] (user half, 1–2 GB) created lazily in map_page */
 
+    /* Kernel device windows above the low GB (MMIO NIC registers, a GRUB
+     * framebuffer — kernel/src/mmio.c, fb.c) live in the boot tables. Share
+     * them, supervisor-only (no U bit on the entry), so an interrupt that
+     * arrives while this space's CR3 is loaded can still reach the device.
+     * vmspace_destroy never frees an entry identical to the kernel's. */
+    for (int i = 2; i < 512; i++) {
+        if (boot_pdpt[i] & PG_PRESENT) {
+            pdpt[i] = boot_pdpt[i] & ~PG_USER;
+        }
+    }
+    for (int i = 1; i < 256; i++) {
+        if (boot_pml4[i] & PG_PRESENT) {
+            pml4[i] = boot_pml4[i] & ~PG_USER;
+        }
+    }
+
+    created_count++;
     as.pml4 = pml4;
     as.cr3 = (uint64_t)pml4;
     return as;
@@ -171,6 +197,12 @@ void vmspace_destroy(uint64_t *pml4) {
          * page directory (the kernel half) — never free it. */
         for (int pi = 1; pi < 512; pi++) {
             if (!(pdpt[pi] & PG_PRESENT)) {
+                continue;
+            }
+            if (!(pdpt[pi] & PG_USER)) {
+                /* A shared kernel device window (copied supervisor-only in
+                 * vmspace_create). User tables always carry PG_USER (see
+                 * vmspace_map_page), so this never skips one of ours. */
                 continue;
             }
             uint64_t *pd = (uint64_t *)(pdpt[pi] & PG_ADDR);
