@@ -58,6 +58,11 @@ void quantum_set_boot_entropy(uint64_t seed);
  * it). seed == 0 is ignored. Safe to call from IRQ context. */
 void quantum_session_reseed(uint64_t seed);
 
+/* One-shot, non-IRQ: the line describing the seed source after a session reseed
+ * ("host-seeded ... (no QPU attached)" unless a boot qseed is also mixed in),
+ * or NULL when there is nothing new to say. Printed from the console read path. */
+const char *quantum_take_reseed_notice(void);
+
 /* Number of session reseeds accepted since boot (diagnostics). */
 uint32_t quantum_session_reseeds(void);
 

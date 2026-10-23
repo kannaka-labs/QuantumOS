@@ -134,7 +134,8 @@ void user_quantum_demo_init(void) {
     if (service_register(&quantumd_def, &sid) == SVC_SUCCESS &&
         service_start("quantumd", NULL) == SVC_SUCCESS) {
         service_monitor(sid, true);
-        boot_log("kannaka-quantum: quantumd (ring 3) drawing real quantum entropy");
+        boot_log("kannaka-quantum: quantumd (ring 3) drawing pool entropy (quantum only with a "
+                 "qseed handoff)");
     } else {
         boot_log("Warning: quantumd service failed to start");
     }

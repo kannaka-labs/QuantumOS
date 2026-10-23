@@ -114,8 +114,8 @@ static void cmd_help(void) {
               "64 bits from the seeded generator" A0 "\r\n");
     out("         " A_CMD "qseed" A0 "          " A_DIM "the seed this system started with" A0
         "\r\n");
-    out("         " A_CMD "ghost" A0 "          " A_DIM "quantum-seeded dice + resonant recall" A0
-        "\r\n");
+    out("         " A_CMD "ghost" A0 "          " A_DIM
+        "dice + resonant recall (seed: see qseed)" A0 "\r\n");
     out(A_CAT "  run    " A0 A_CMD "run" A0 " <path>      " A_DIM "start a citizen  " A_KEY
               "try: run /bin/qtop" A0 "\r\n");
     out(A_CAT "  files  " A0 A_CMD "ls" A0 " " A_CMD "cat" A0 " " A_CMD "write" A0 " " A_CMD "rm" A0
