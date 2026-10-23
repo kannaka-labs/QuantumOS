@@ -18,6 +18,9 @@ Commands on stdin, one per line:
   imprint <text>  stores <text> in guest memory
   recall          prints every stored text
   whoami          prints the kernel sha the memory was booted from
+  qseed           prints the session seeds received (ESC ] qseed ; <hex> BEL, stripped
+                  from input like the kernel does) and whether the first came before
+                  any other input
   exit            exits 0 (guest halt)
   crash           exits 3 (guest crash)
   hang            stops reading, keeps running (for the time cap test)
@@ -25,6 +28,7 @@ Commands on stdin, one per line:
 import hashlib
 import json
 import os
+import re
 import socket
 import sys
 import threading
@@ -33,6 +37,8 @@ import time
 out = sys.stdout.buffer
 mem = {"kernel": None, "imprints": []}
 started = threading.Event()
+session = {"seeds": [], "input_before_seed": False}   # not guest memory: never snapshotted
+RESEED = re.compile(rb"\x1b\]qseed;([0-9a-fA-F]{16})\x07")
 
 
 def die(msg, code=4):
@@ -104,7 +110,11 @@ else:
 
 started.wait()
 for raw in sys.stdin.buffer:
-    line = raw.decode(errors="replace").strip()
+    for m in RESEED.finditer(raw):
+        session["seeds"].append(m.group(1).decode().lower())
+    if RESEED.match(raw) is None and not session["seeds"]:
+        session["input_before_seed"] = True
+    line = RESEED.sub(b"", raw).decode(errors="replace").strip()
     if line == "exit":
         sys.exit(0)
     if line == "crash":
@@ -118,6 +128,9 @@ for raw in sys.stdin.buffer:
         mem["imprints"].append(line[8:])
     elif line == "recall":
         out.write(("recall: " + ",".join(mem["imprints"]) + "\n").encode())
+    elif line == "qseed":
+        out.write(("qseed: " + ",".join(session["seeds"]) +
+                   f" late={session['input_before_seed']}\n").encode())
     elif line == "whoami":
         out.write(f"kernel={mem['kernel']}\n".encode())
     out.write(b"qsh> ")

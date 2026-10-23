@@ -116,6 +116,13 @@ async def fc_api(sock: Path, method: str, path: str, body: dict | None = None, t
             await w.wait_closed()
 
 
+def reseed_escape(seed: bytes) -> bytes:
+    """The COM1 escape the kernel consumes to mix a session seed into its generator
+    (ADR-0025): ESC ] qseed ; <16 hex> BEL. It never reaches the shell."""
+    assert len(seed) == 8 and any(seed), "an all-zero seed is ignored by the kernel"
+    return b"\x1b]qseed;" + seed.hex().encode() + b"\x07"
+
+
 class Snapshot:
     """A booted, paused VM saved on disk, that sessions restore from."""
 
@@ -392,6 +399,10 @@ class Console:
             await ws.send(json.dumps({"type": "hello", "session": sid, "max_seconds": self.max_seconds,
                                       "restored": mode == "restore"}))
             if snap is not None:
+                # Every restored copy of the snapshot resumes the same generator state;
+                # give this one its own entropy before the visitor can type (ADR-0025).
+                vm.stdin.write(reseed_escape(secrets.token_bytes(8)))
+                await vm.stdin.drain()
                 await ws.send(snap.transcript)   # what the snapshot VM printed while it booted
 
             async def guest_to_ws():

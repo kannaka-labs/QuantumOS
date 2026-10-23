@@ -43,6 +43,7 @@ static uint64_t boot_entropy = 0;
 static uint8_t boot_entropy_present = 0;
 static uint8_t quantum_initialized = 0;
 static uint64_t qrand_bits_served = 0; /* total bits drawn via QRAND/lottery */
+static uint32_t session_reseeds = 0;   /* host reseeds accepted after boot (ADR-0025) */
 
 /* ============================================================================
  * Helpers
@@ -435,6 +436,26 @@ uint32_t quantum_kernel_rand(void) {
 
 uint64_t quantum_bits_consumed(void) {
     return qrand_bits_served;
+}
+
+void quantum_session_reseed(uint64_t seed) {
+    if (seed == 0) {
+        return;
+    }
+    /* Mix, never replace: the restored generator state is unknown to the
+     * caller, so folding its bits in cannot lower the state's entropy. */
+    prng_state = mix_seed_nonzero(prng_state, seed);
+    if (!boot_entropy_present) {
+        /* No host seed at boot (a console snapshot boots with none): record
+         * this one so SYS_QSEED names the entropy this session started with. */
+        boot_entropy = seed;
+        boot_entropy_present = 1;
+    }
+    session_reseeds++;
+}
+
+uint32_t quantum_session_reseeds(void) {
+    return session_reseeds;
 }
 
 uint64_t quantum_boot_seed(void) {

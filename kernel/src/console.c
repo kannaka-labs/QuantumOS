@@ -18,6 +18,7 @@
  */
 
 #include <kernel/console.h>
+#include <kernel/quantum.h>
 #include <kernel/boot.h>
 #include <kernel/vga.h>
 
@@ -123,6 +124,72 @@ int console_com1_present(void) {
     return com1_present;
 }
 
+/* Session reseed escape (ADR-0025). A host that restores this VM from a
+ * snapshot sends   ESC ] q s e e d ;  <16 hex digits>  BEL   on COM1 before
+ * handing the console to a user. The sequence is consumed here (it never
+ * reaches the shell) and its value is mixed into the quantum generator, so
+ * every restored copy of one snapshot draws its own stream. Any byte that does
+ * not continue the sequence flushes what was held, in order, as ordinary input
+ * (arrow keys, ESC [ ..., are unaffected). Typing the sequence by hand only
+ * mixes more entropy in, which is harmless. Bounded: at most 25 bytes held. */
+static const char RESEED_PREFIX[] = "\x1b]qseed;";
+#define RESEED_PREFIX_LEN (sizeof(RESEED_PREFIX) - 1)
+#define RESEED_HEX_LEN 16
+static uint8_t reseed_buf[RESEED_PREFIX_LEN + RESEED_HEX_LEN];
+static uint32_t reseed_len;
+
+static int hex_val(uint8_t c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static void reseed_flush(void) {
+    for (uint32_t i = 0; i < reseed_len; i++) {
+        ring_push(reseed_buf[i]);
+    }
+    reseed_len = 0;
+}
+
+/* One received COM1 byte: either part of the reseed escape, or input. */
+static void com1_rx_byte(uint8_t b) {
+    if (reseed_len < RESEED_PREFIX_LEN) {
+        if (b == (uint8_t)RESEED_PREFIX[reseed_len]) {
+            reseed_buf[reseed_len++] = b;
+            return;
+        }
+        reseed_flush();
+        if (b == (uint8_t)RESEED_PREFIX[0]) { /* a fresh ESC may start a new one */
+            reseed_buf[reseed_len++] = b;
+            return;
+        }
+        ring_push(b);
+        return;
+    }
+    if (reseed_len < RESEED_PREFIX_LEN + RESEED_HEX_LEN) {
+        if (hex_val(b) >= 0) {
+            reseed_buf[reseed_len++] = b;
+            return;
+        }
+        reseed_flush();
+        ring_push(b);
+        return;
+    }
+    /* prefix + 16 hex held: BEL completes it, anything else is input */
+    if (b == 0x07) {
+        uint64_t seed = 0;
+        for (uint32_t i = 0; i < RESEED_HEX_LEN; i++) {
+            seed = (seed << 4) | (uint64_t)hex_val(reseed_buf[RESEED_PREFIX_LEN + i]);
+        }
+        reseed_len = 0;
+        quantum_session_reseed(seed);
+        return;
+    }
+    reseed_flush();
+    ring_push(b);
+}
+
 void console_com1_irq(void) {
     if (!com1_present) {
         return;
@@ -134,7 +201,7 @@ void console_com1_irq(void) {
         if (lsr == 0xFF || !(lsr & LSR_DATA_READY)) {
             break;
         }
-        ring_push(io_inb(COM1_PORT_BASE + UART_RBR));
+        com1_rx_byte(io_inb(COM1_PORT_BASE + UART_RBR));
     }
 }
 
