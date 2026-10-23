@@ -42,8 +42,10 @@ static uint64_t prng_state = 0x9E3779B97F4A7C15ULL;
 static uint64_t boot_entropy = 0;
 static uint8_t boot_entropy_present = 0;
 static uint8_t quantum_initialized = 0;
-static uint64_t qrand_bits_served = 0; /* total bits drawn via QRAND/lottery */
-static uint32_t session_reseeds = 0;   /* host reseeds accepted after boot (ADR-0025) */
+static uint64_t qrand_bits_served = 0;     /* total bits drawn via QRAND/lottery */
+static uint8_t boot_qseed_handoff = 0;     /* a qseed= came in on the boot cmdline */
+static volatile uint8_t reseed_notice = 0; /* a host session reseed not yet announced */
+static uint32_t session_reseeds = 0;       /* host reseeds accepted after boot (ADR-0025) */
 
 /* ============================================================================
  * Helpers
@@ -101,6 +103,7 @@ static int qubit_decohered(const sim_qubit_t *q) {
 void quantum_set_boot_entropy(uint64_t seed) {
     boot_entropy = seed;
     boot_entropy_present = 1;
+    boot_qseed_handoff = 1;
 }
 
 quantum_result_t quantum_init(void) {
@@ -126,7 +129,7 @@ quantum_result_t quantum_init(void) {
         boot_log("Quantum entropy: seeded from boot handoff (qBraid quantum lab)");
     } else {
         prng_state = mix_seed_nonzero(prng_state, timer_get_ticks() + 1);
-        boot_log("Quantum entropy: internal default (no boot seed)");
+        boot_log("Entropy: unseeded at boot (timer default; no QPU attached)");
     }
 
     quantum_initialized = 1;
@@ -452,6 +455,18 @@ void quantum_session_reseed(uint64_t seed) {
         boot_entropy_present = 1;
     }
     session_reseeds++;
+    reseed_notice = 1;
+}
+
+const char *quantum_take_reseed_notice(void) {
+    if (!reseed_notice) {
+        return NULL;
+    }
+    reseed_notice = 0;
+    /* Say where this session's numbers actually come from (ADR-0025): the
+     * host's OS random source, unless a qseed= boot handoff is also mixed in. */
+    return boot_qseed_handoff ? "Entropy: session reseed mixed into the boot qseed handoff"
+                              : "Entropy: host-seeded for this session (no QPU attached)";
 }
 
 uint32_t quantum_session_reseeds(void) {

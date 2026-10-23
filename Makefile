@@ -905,7 +905,7 @@ ci-smoke: kernel
 		echo "Boot log:"; cat /tmp/qemu-boot.log 2>/dev/null || true; \
 		echo ""; echo "=== Smoke Test FAILED ==="; exit 1; \
 	fi
-	@echo "SUCCESS: quantumd drew real quantum entropy + amplitude-amplification recall (QUANTUM VERIFIED)"
+	@echo "SUCCESS: quantumd drew pool entropy + amplitude-amplification recall (QUANTUM VERIFIED)"
 	@# fifth citizen: 'run /bin/qtop' renders a snapshot dashboard from the
 	@# uncapped SYS_SYSINFO surface (memory gauge, clock, resonance-field wave,
 	@# live process table); DASHBOARD RENDERED proves the whole render path ran.

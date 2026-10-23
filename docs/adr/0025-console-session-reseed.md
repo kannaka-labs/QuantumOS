@@ -71,3 +71,21 @@ count at restore, heap layout). That is fine for a demo with no network and no s
 - `tools/qos-console/test_qos_console.py`:
   `test_each_restored_session_is_reseeded_before_the_visitor_types` (two restored sessions
   get one distinct seed each, before any visitor input) and `test_reseed_escape_format`.
+
+## Update 2026-10-23: say where the seed came from
+
+The console used to print "quantum-seeded dice" (motd, qsh `help`) and "real quantum
+entropy" (quantumd), but a console VM has no QPU: its seed is the host's OS randomness
+sent by this escape. The kernel now reports the actual source:
+
+- `quantum_set_boot_entropy` (the `qseed=` cmdline handoff) marks the boot seed as a
+  handoff; quantum_init logs "seeded from boot handoff (qBraid quantum lab)" as before, or
+  "Entropy: unseeded at boot (timer default; no QPU attached)" when there is none.
+- `quantum_session_reseed` runs in the COM1 IRQ and must not print, so it only sets a
+  one-shot flag. `const char *quantum_take_reseed_notice(void)` (quantum.h) returns the line
+  once and clears it: "Entropy: host-seeded for this session (no QPU attached)", or
+  "Entropy: session reseed mixed into the boot qseed handoff" when a boot qseed is also
+  present. `SYS_CONS_READ` drains it before reading, so the visitor sees it right after the
+  restore, before typing. No ABI change: `SYS_QSEED`/`SYS_QRAND` are untouched.
+- quantumd, citizens, qsh `help` and the motd no longer call pool entropy quantum unless a
+  qseed handoff happened.

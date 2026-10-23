@@ -52,7 +52,7 @@ void _start(void) {
     /* Beat before the syscall-heavy demo so the watchdog does not restart us
      * mid-run; beat again through the sampling loop below. */
     heartbeat();
-    write_str("quantumd: kannaka-quantum essence — real quantum entropy (SYS_QRAND)");
+    write_str("quantumd: kannaka-quantum essence — pool entropy (SYS_QRAND)");
 
     /* Provenance: every bit below chains to the boot qseed (SYS_QSEED). */
     long present = qrand_seed_present();
@@ -68,7 +68,7 @@ void _start(void) {
         q_ok = 0;
     } else {
         snprintf(line, sizeof(line),
-                 "  provenance: internal quantum entropy (no boot qseed handoff)");
+                 "  provenance: unseeded at boot (no qseed handoff, no QPU attached)");
     }
     write_str(line);
 

@@ -481,6 +481,10 @@ static uint64_t sys_cons(uint32_t pid, uint64_t op, uint64_t user_ptr, uint64_t 
     if (!user_ok(user_ptr, len, 1)) {
         return SYSCALL_EFAULT;
     }
+    const char *seed_notice = quantum_take_reseed_notice();
+    if (seed_notice) {
+        boot_log(seed_notice);
+    }
     uint32_t got = console_read(tmp, (uint32_t)len);
     scheduler_console_reader_note(pid, process_get_generation(pid), got);
     uint8_t *dst = (uint8_t *)user_ptr;
