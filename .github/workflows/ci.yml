@@ -599,6 +599,46 @@ jobs:
     - name: Prove a quiet boot yields a clean, usable console
       run: make ci-smoke-quiet
 
+  firecracker-boot:
+    name: Firecracker Boot (PVH, no COM2 — the public console's VM shape)
+    runs-on: ubuntu-latest
+    needs: [build]
+    # The one gate where COM2 is absent the way Firecracker makes it absent: unhandled
+    # port reads return 0, not QEMU's 0xFF. Before com2_init's scratch-register absence
+    # check, the first COM2 write spun its THR-drain bound in VM exits with interrupts
+    # off and froze the guest ~75 s before qsh greeted (the public console's 80 s boot).
+    # Boots build/x86_64/kernel.elf under a pinned Firecracker release with the
+    # console's config (1 vCPU, 128 MiB, no drives, no NIC) and requires the greeting
+    # within 10 s plus an answer to 'help'.
+    env:
+      FC_VERSION: v1.16.1
+      FC_SHA256: 382a02a869e4d6d5cb14c40577f9545e8458021ea8b0b2d3fc10ec14d9c242e6
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential nasm
+    - name: Build the kernel
+      run: make BUILD_TYPE=release
+    - name: Enable KVM for the runner user
+      run: |
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+        test -r /dev/kvm && test -w /dev/kvm || { echo "no usable /dev/kvm on this runner"; ls -l /dev/kvm; exit 1; }
+    - name: Fetch Firecracker (pinned, sha256-checked)
+      run: |
+        curl -sSL -o fc.tgz "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/firecracker-${FC_VERSION}-x86_64.tgz"
+        echo "${FC_SHA256}  fc.tgz" | sha256sum -c -
+        tar -xzf fc.tgz
+        cp "release-${FC_VERSION}-x86_64/firecracker-${FC_VERSION}-x86_64" ./firecracker
+        chmod +x ./firecracker
+        ./firecracker --version
+    - name: Boot to qsh under Firecracker within 10 s
+      run: python3 scripts/ci_firecracker_boot.py --firecracker ./firecracker --kernel build/x86_64/kernel.elf --max-seconds 10
+
   real-hw-boot:
     name: Real-Hardware Boot Path (GRUB ISO + PS/2 keyboard — epic #101)
     runs-on: ubuntu-latest

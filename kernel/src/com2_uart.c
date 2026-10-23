@@ -21,6 +21,7 @@
 #define UART_LCR 3 /* Line Control Register */
 #define UART_MCR 4 /* Modem Control Register */
 #define UART_LSR 5 /* Line Status Register */
+#define UART_SCR 7 /* Scratch Register */
 
 #define LSR_DATA_READY 0x01 /* a byte is waiting in the RBR */
 #define LSR_THR_EMPTY 0x20  /* the THR can accept another byte */
@@ -42,6 +43,16 @@ static uint8_t com2_ready = 0;
 /* Sticky: set once COM2's THR fails to drain within the spin cap, so a wedged
  * or absent peer is not paid for on every subsequent byte (cli'd) forever. */
 static uint8_t com2_dead = 0;
+
+/* Set by com2_init when the scratch register does not hold a written value:
+ * no UART decodes 0x2F8 at all. Unbacked ports do not all read 0xFF —
+ * Firecracker has no COM2 and returns 0 for every read, with an expensive
+ * VM exit (and a host log line) each time. LSR=0 means THR never empties, so
+ * the first SYS_COM2 write spun COM2_THR_DRAIN_SPINS exits with interrupts
+ * off and froze the guest for tens of seconds, and every read cost an exit.
+ * With no device, writes go nowhere (as on an unbacked QEMU port) and reads
+ * return nothing, without touching the port. */
+static uint8_t com2_nodev = 0;
 
 static inline void io_outb(uint16_t port, uint8_t value) {
     __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
@@ -69,6 +80,12 @@ void com2_init(void) {
     /* DTR + RTS asserted; OUT2 set (harmless while polling). */
     io_outb(COM2_PORT_BASE + UART_MCR, 0x0B);
 
+    io_outb(COM2_PORT_BASE + UART_SCR, 0x5A);
+    uint8_t a = io_inb(COM2_PORT_BASE + UART_SCR);
+    io_outb(COM2_PORT_BASE + UART_SCR, 0xA5);
+    uint8_t b = io_inb(COM2_PORT_BASE + UART_SCR);
+    com2_nodev = (a != 0x5A || b != 0xA5) ? 1 : 0;
+
     com2_ready = 1;
     boot_log("COM2 serial swarm bridge online (0x2F8, polled, cap-guarded)");
 }
@@ -76,6 +93,9 @@ void com2_init(void) {
 uint32_t com2_write(const uint8_t *buf, uint32_t len) {
     if (!com2_ready || !buf || com2_dead) {
         return 0;
+    }
+    if (com2_nodev) {
+        return len;
     }
     for (uint32_t i = 0; i < len; i++) {
         uint32_t spins = 0;
@@ -94,7 +114,7 @@ uint32_t com2_write(const uint8_t *buf, uint32_t len) {
 }
 
 uint32_t com2_read(uint8_t *buf, uint32_t len) {
-    if (!com2_ready || !buf) {
+    if (!com2_ready || !buf || com2_nodev) {
         return 0;
     }
     uint32_t n = 0;
@@ -115,7 +135,7 @@ uint32_t com2_read(uint8_t *buf, uint32_t len) {
 static uint8_t com2_absent = 0;
 
 int com2_rx_pending(void) {
-    if (!com2_ready || com2_dead || com2_absent) {
+    if (!com2_ready || com2_dead || com2_absent || com2_nodev) {
         return 0;
     }
     uint8_t lsr = io_inb(COM2_PORT_BASE + UART_LSR);
