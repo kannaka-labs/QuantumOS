@@ -482,6 +482,7 @@ static uint64_t sys_cons(uint32_t pid, uint64_t op, uint64_t user_ptr, uint64_t 
         return SYSCALL_EFAULT;
     }
     uint32_t got = console_read(tmp, (uint32_t)len);
+    scheduler_console_reader_note(pid, process_get_generation(pid), got);
     uint8_t *dst = (uint8_t *)user_ptr;
     for (uint32_t n = 0; n < got; n++) {
         dst[n] = tmp[n];
