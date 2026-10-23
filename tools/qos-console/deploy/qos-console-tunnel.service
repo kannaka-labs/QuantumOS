@@ -1,0 +1,29 @@
+[Unit]
+Description=QuantumOS console tunnel (O1 127.0.0.1:8930 -> /run/qos-console/ws.sock), outbound SSH only
+After=network-online.target qos-console.service
+Wants=network-online.target
+BindsTo=qos-console.service
+
+[Service]
+Type=simple
+User=qosconsole
+Group=qosconsole
+# Outbound only: the host opens no inbound port. On O1 the key is restricted to
+# this one listen address (permitlisten) and can run no command.
+ExecStart=/usr/bin/ssh -NT \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/qos-console/known_hosts \
+    -o BatchMode=yes -o IdentitiesOnly=yes \
+    -i /etc/qos-console/tunnel_ed25519 \
+    -R 127.0.0.1:8930:/run/qos-console/ws.sock \
+    qostunnel@170.9.238.136
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
