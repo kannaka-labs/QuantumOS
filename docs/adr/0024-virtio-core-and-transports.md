@@ -23,8 +23,9 @@ Two latent bugs blocked the MMIO path on a real Firecracker guest:
    I/O port, where QEMU returns 0xFF. `LSR=0` means "THR never empties", so the swarm
    bridge's first `SYS_COM2` write spun 2,000,000 polls (each one a VM exit) with
    interrupts off. The guest stopped servicing interrupts, the NIC included, for tens
-   of seconds. This is also why a NIC-less Firecracker boot took "about a minute" to
-   reach qsh.
+   of seconds. This is also why a NIC-less Firecracker boot took 75 s to reach the
+   qsh prompt. With the check below it takes 1.6 s (measured on debain2: main's
+   kernel 75.5 s, main plus only this fix 1.6 s).
 
 ## Decision
 

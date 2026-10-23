@@ -29,7 +29,8 @@ first and refuses 64-bit images).
 firecracker --no-api --config-file qos.json     # serial console (COM1) on stdio
 ```
 
-Boot reaches `qsh` in about a minute on a CPU-only host; the holographic field works
+Boot reaches the `qsh` prompt in about 1.6 s (it took about 75 s before the COM2
+absence check below); the holographic field works
 inside the microVM:
 
 ```

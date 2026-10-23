@@ -161,6 +161,14 @@ for source in $(find "$KERNEL_DIR/src" -name "*.c" 2>/dev/null); do
             in_block_comment=1
         fi
 
+        # Calls through a struct member (ops.fn(), ops->fn()) go through a
+        # function pointer the compiler type-checks against its struct; they
+        # name no global symbol, so they cannot be phantom APIs. Drop the
+        # member name and keep the paren.
+        while [[ "$line" =~ (\.|->)[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*\( ]]; do
+            line="${line/"${BASH_REMATCH[0]}"/ (}"
+        done
+
         # Find function calls: identifier followed by (
         # This is a simplified check - production would use proper parsing
         while [[ "$line" =~ ([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*\( ]]; do
