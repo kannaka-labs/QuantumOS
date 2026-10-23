@@ -17,7 +17,8 @@ ExecStart=/usr/bin/python3 -u /opt/qos-console/qos_console.py \
     --firecracker /usr/local/bin/firecracker \
     --run-dir /run/qos-console \
     --listen-unix /run/qos-console/ws.sock \
-    --max-vms 4 --per-ip 1 --max-seconds 600 --mem-mib 128 \n    --state-file /var/lib/qos-console/metrics.json
+    --max-vms 4 --per-ip 1 --max-seconds 600 --mem-mib 128 \
+    --state-file /var/lib/qos-console/metrics.json
 Restart=on-failure
 RestartSec=5
 # Every VM is a child of this unit, so these limits cap all of them together.
