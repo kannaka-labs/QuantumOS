@@ -40,6 +40,7 @@ memory file is never written after the snapshot is taken.
 | File | What it is |
 |---|---|
 | `qos_console.py` | The launcher. One VM per WebSocket; caps; cleanup; logs start/end/duration only. |
+| `qpu_relay.py` | The COM1 side channel to the host quantum broker (`--qpu-broker`, #262): moves `qpu` requests from the guest to `tools/qpu-broker`, never to the page, and strips OSC escapes from visitor input. |
 | `web/index.html` | The page (xterm.js, pinned with SRI). |
 | `deploy/qos-console.service` | Launcher unit: dedicated user in the `kvm` group, `PrivateNetwork`, `/dev/kvm` only, `MemoryMax=1G`, `CPUQuota=200%` for all VMs together. |
 | `deploy/qos-console-tunnel.service` | Outbound reverse tunnel from the KVM host to O1; the host opens no inbound port. |
