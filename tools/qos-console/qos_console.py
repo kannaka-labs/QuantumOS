@@ -18,13 +18,21 @@ sessions cold-boot as before, and a failed restore falls back to a cold boot.
 
 Wire protocol (one WebSocket, path /ws):
   server -> client  binary frames: raw bytes from the guest's COM1
-  server -> client  text frames:   JSON control ({"type": "hello"|"expired"|"refused"|"exited", ...})
+  server -> client  text frames:   JSON control ({"type": "hello"|"expired"|"idle"|"output_cap"|
+                                   "refused"|"exited", ...})
   client -> server  binary or text frames: keystrokes for COM1 (max 1 KiB per frame)
 
-Caps: --max-vms concurrent VMs in total, --per-ip per client address (taken
+Caps (#257): --max-vms concurrent VMs in total, --per-ip per client address (taken
 from X-Real-IP, which only the fronting nginx sets; the launcher is reachable
-only through a Unix socket that nginx reaches over an SSH tunnel), and
---max-seconds per session.
+only through a Unix socket that nginx reaches over an SSH tunnel), --max-seconds per
+session, --idle-seconds with no input and no output (a warning line goes to the terminal
+--idle-warn-seconds before), --input-frames-per-s and --input-bytes-per-s per session
+(excess input is dropped with one notice, never a disconnect), and --max-output-bytes
+per session. When every VM is in use the visitor is refused with the number of machines
+and a retry-after: the time until the soonest running session reaches its hard cap, an
+upper bound since idle sessions end sooner. There is no queue, so nothing is held open
+waiting. A TCP listen address other than loopback is refused unless
+--trust-forwarded-for says the listener really is behind a proxy that sets X-Real-IP.
 
 The log records session start, end, duration, reason and a salted hash of the
 client address. It never records anything the visitor types or the guest prints.
@@ -38,6 +46,11 @@ calibration series (#275) read-only, as JSON and as a plain-text table.
 Unique visitors per UTC day are counted from an HMAC of the address under a salt that
 lives only in memory and is replaced every UTC day. Those hashes are never written
 anywhere and are dropped when the day ends.
+Our own traffic (ad captures, smoke tests, demos) carries the token from
+--internal-token-file, as an X-QOS-Internal header or an ?internal= query parameter on
+/ws and /beacon. Such sessions and beacons count only as internal_sessions and
+internal_beacons, never in the visitor funnel, so /stats shows outside visitors alone.
+The token is compared in constant time and never logged.
 
   qos_console.py --kernel /opt/qos-console/kernel.elf --run-dir /run/qos-console \
                  --listen-unix /run/qos-console/ws.sock
@@ -78,6 +91,30 @@ READ_CHUNK = 4096         # bytes per guest read
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
 SAVE_EVERY_S = 30         # how often changed metrics are written to --state-file
 SNAPSHOT_RETRY_S = 300    # after a failed snapshot build, cold-boot this long before retrying
+LOOPBACK = ("127.0.0.1", "::1", "[::1]", "localhost")
+
+IDLE_WARNING = "\r\n\x1b[33m[console] no activity: this machine closes in {s} s unless you type something\x1b[0m\r\n"
+INPUT_NOTICE = ("\r\n\x1b[33m[console] input is arriving faster than this console accepts; "
+                "some of it was dropped\x1b[0m\r\n")
+
+
+class TokenBucket:
+    """A rate with one second of burst. take() is False when the cost does not fit."""
+
+    def __init__(self, rate: float, clock=time.monotonic):
+        self.rate = float(rate)
+        self.level = float(rate)
+        self.clock = clock
+        self.t = clock()
+
+    def take(self, cost: float = 1.0) -> bool:
+        now = self.clock()
+        self.level = min(self.rate, self.level + (now - self.t) * self.rate)
+        self.t = now
+        if cost > self.level:
+            return False
+        self.level -= cost
+        return True
 
 
 class FirecrackerError(RuntimeError):
@@ -226,14 +263,21 @@ class Metrics:
     Nothing here holds an address, a session id, or anything typed. The one piece of
     per-visitor state is the set of today's visitor hashes: an HMAC under a salt that
     exists only in memory and is replaced each UTC day. It counts unique visitors and is
-    then forgotten. It is never saved, so a restart can count a visitor twice that day."""
+    then forgotten. It is never saved, so a restart can count a visitor twice that day.
+
+    Our own traffic (the internal token) is counted apart, in internal_sessions and
+    internal_beacons, and touches nothing else: not the funnel, the timings or the
+    unique visitors."""
     EVENTS = ("load", "boot")
     COUNTERS = ("page_loads", "boot_clicks", "sessions_started", "sessions_refused",
-                "boots_completed", "sessions_with_input", "sessions_ended")
+                "boots_completed", "sessions_with_input", "sessions_ended",
+                "internal_sessions", "internal_beacons")
     LABELLED = ("sessions_started", "sessions_refused", "boots_completed", "sessions_ended")
     DAY_FIELDS = ("page_loads", "boot_clicks", "unique_visitors", "sessions_started",
-                  "sessions_refused", "boots_completed", "sessions_with_input")
+                  "sessions_refused", "boots_completed", "sessions_with_input",
+                  "internal_sessions", "internal_beacons")
     KEEP_DAYS = 60
+    INTERNAL_SINCE = "2026-10-24"   # tagging began here; earlier counts include our own traffic
 
     def __init__(self, state_file: Path | None = None, clock=time.time):
         self.clock = clock
@@ -276,16 +320,22 @@ class Metrics:
             row["unique_visitors"] += 1
             self.dirty = True
 
-    def event(self, name: str, ip: str) -> bool:
+    def event(self, name: str, ip: str, internal: bool = False) -> bool:
         """A page beacon. Only the two known events count; anything else is ignored."""
         if name not in self.EVENTS:
             return False
+        if internal:
+            self._bump("internal_beacons", day_field="internal_beacons")
+            return True
         self.visitor(ip)
         if name == "load":
             self._bump("page_loads", day_field="page_loads")
         else:
             self._bump("boot_clicks", day_field="boot_clicks")
         return True
+
+    def internal_session(self) -> None:
+        self._bump("internal_sessions", day_field="internal_sessions")
 
     def refused(self, reason: str) -> None:
         self._bump("sessions_refused", reason, "sessions_refused")
@@ -314,7 +364,10 @@ class Metrics:
         return {
             "about": ("QuantumOS public console funnel. Counts and timings only: no addresses, "
                       "no session ids, nothing typed. Unique visitors are counted per UTC day "
-                      "from a hash under a salt that is never stored and is replaced daily."),
+                      "from a hash under a salt that is never stored and is replaced daily. "
+                      "Our own test and capture traffic is counted only in internal_sessions "
+                      "and internal_beacons (tagged from internal_since on), never in the funnel."),
+            "internal_since": self.INTERNAL_SINCE,
             "since": datetime.datetime.fromtimestamp(self.since, datetime.timezone.utc)
                      .isoformat(timespec="seconds"),
             "now": {"active": active, "max_vms": max_vms, "snapshot": snapshot},
@@ -375,8 +428,17 @@ class Console:
                  per_ip: int, max_seconds: float, mem_mib: int, boot_args: str,
                  snapshot: str = "auto", ready_marker: str = "qsh>", boot_timeout: float = 60,
                  metrics: Metrics | None = None, qpu_broker: str | None = None,
-                 calibration_file: Path | None = None):
+                 calibration_file: Path | None = None, idle_seconds: float = 120,
+                 idle_warn_seconds: float = 15, input_frames_per_s: float = 64,
+                 input_bytes_per_s: float = 4096, max_output_bytes: int = 2 << 20,
+                 internal_token: str = ""):
         self.calibration_file = calibration_file   # daily QPU calibration series (#275), read-only
+        self.idle_seconds = idle_seconds           # #257: no input and no output for this long ends it
+        self.idle_warn_seconds = min(idle_warn_seconds, idle_seconds)
+        self.input_frames_per_s = input_frames_per_s
+        self.input_bytes_per_s = input_bytes_per_s
+        self.max_output_bytes = max_output_bytes
+        self.internal_token = internal_token       # tags our own traffic out of the funnel; never logged
         self.kernel = kernel
         self.firecracker = firecracker
         self.run_dir = run_dir
@@ -390,6 +452,7 @@ class Console:
         self.boot_timeout = boot_timeout
         self.qpu_broker = qpu_broker      # host quantum broker socket (#262), or None
         self.active: dict[str, str] = {}   # session id -> client address
+        self.started_at: dict[str, float] = {}   # session id -> monotonic admit time (for retry-after)
         self.salt = secrets.token_bytes(16)  # per process: hashes do not link across restarts
         self.snap: Snapshot | None = None
         self._build_task: asyncio.Task | None = None
@@ -409,6 +472,26 @@ class Console:
         if sum(1 for a in self.active.values() if a == ip) >= self.per_ip:
             return "one-per-visitor"
         return None
+
+    def refusal(self, reason: str) -> dict:
+        """The refusal control message. A busy console says how many machines there are and
+        how long until one is certainly free: the soonest running session's hard cap. Idle
+        sessions end sooner, so this is an upper bound, never a promise of a wait."""
+        msg = {"type": "refused", "reason": reason}
+        if reason == "busy":
+            now = time.monotonic()
+            left = [self.max_seconds - (now - t) for t in self.started_at.values()]
+            msg["message"] = f"all {self.max_vms} machines are busy"
+            msg["retry_after_s"] = max(5, int(min(left, default=self.max_seconds)) + 1)
+        return msg
+
+    def is_internal(self, request: Request | None) -> bool:
+        """Our own traffic: the internal token as an X-QOS-Internal header or ?internal=."""
+        if not self.internal_token or request is None:
+            return False
+        given = request.headers.get("X-QOS-Internal", "") or \
+            (parse_qs(urlsplit(request.path).query).get("internal") or [""])[0]
+        return bool(given) and hmac.compare_digest(given.encode(), self.internal_token.encode())
 
     def sweep(self) -> int:
         """Remove session and snapshot directories left by a previous run (crash, kill -9)."""
@@ -600,16 +683,20 @@ class Console:
     # ---- one session -------------------------------------------------------
     async def session(self, ws: ServerConnection) -> None:
         ip = ws.request.headers.get("X-Real-IP", "unknown") if ws.request else "unknown"
+        internal = self.is_internal(ws.request)   # our own traffic: kept out of the funnel
         reason = self.admit(ip)
         if reason:
-            self.metrics.refused(reason)
-            await ws.send(json.dumps({"type": "refused", "reason": reason}))
+            if not internal:
+                self.metrics.refused(reason)
+            await ws.send(json.dumps(self.refusal(reason)))
             await ws.close(1013, reason)
-            log.info("refused ip=%s reason=%s active=%d", self.ip_hash(ip), reason, len(self.active))
+            log.info("refused ip=%s reason=%s active=%d internal=%d", self.ip_hash(ip), reason,
+                     len(self.active), internal)
             return
         sid = uuid.uuid4().hex[:12]
         self.active[sid] = ip
         t0 = time.monotonic()
+        self.started_at[sid] = t0
         end_reason = "disconnect"
         started = False
         d: Path | None = None
@@ -630,18 +717,28 @@ class Console:
                     snap = None
             if vm is None:
                 vm = await self._cold_boot(d)
-            log.info("start sid=%s ip=%s pid=%d mode=%s ready_ms=%d active=%d", sid, self.ip_hash(ip),
-                     vm.pid, mode, (time.monotonic() - t0) * 1000, len(self.active))
+            log.info("start sid=%s ip=%s pid=%d mode=%s ready_ms=%d active=%d internal=%d", sid,
+                     self.ip_hash(ip), vm.pid, mode, (time.monotonic() - t0) * 1000, len(self.active),
+                     internal)
             started = True
-            self.metrics.started(mode)
-            self.metrics.visitor(ip)
+            if internal:
+                self.metrics.internal_session()
+            else:
+                self.metrics.started(mode)
+                self.metrics.visitor(ip)
             # Funnel timings, from the moment the session was admitted: the first guest
             # byte the visitor gets, and the shell prompt reaching them (boot completed).
             seen = {"output": False, "ready": False, "typed": False}
             tail = b""
+            last = [time.monotonic()]    # last input or guest output, for the idle timeout
+            out_bytes = 0                # guest bytes sent to the visitor, for the output cap
 
             def sent(data: bytes) -> None:
-                nonlocal tail
+                nonlocal tail, out_bytes
+                out_bytes += len(data)
+                last[0] = time.monotonic()
+                if internal:
+                    return
                 if not seen["output"] and data:
                     seen["output"] = True
                     self.metrics.first_output(time.monotonic() - t0)
@@ -675,14 +772,29 @@ class Console:
                         data = relay.from_guest(data)   # qpu requests go to the broker, not the page
                         if not data:
                             continue
+                    room = self.max_output_bytes - out_bytes
+                    if len(data) >= room:              # the output cap: send up to it, then end
+                        if room > 0:
+                            await ws.send(data[:room])
+                            sent(data[:room])
+                        return "output_cap"
                     await ws.send(data)
                     sent(data)
 
             async def ws_to_guest():
+                frames = TokenBucket(self.input_frames_per_s)
+                volume = TokenBucket(self.input_bytes_per_s)
+                noticed = False
                 async for msg in ws:
+                    last[0] = time.monotonic()
                     data = msg.encode() if isinstance(msg, str) else msg
                     data = data[:MAX_INPUT].replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-                    if not seen["typed"] and data:
+                    if not (frames.take() and volume.take(len(data))):
+                        if not noticed:                # dropped, with one notice; never a disconnect
+                            noticed = True
+                            await ws.send(INPUT_NOTICE.encode())
+                        continue
+                    if not seen["typed"] and data and not internal:
                         seen["typed"] = True
                         self.metrics.typed()
                     if relay is not None:
@@ -691,7 +803,25 @@ class Console:
                     await vm.stdin.drain()
                 return "disconnect"
 
-            tasks = {asyncio.create_task(guest_to_ws()), asyncio.create_task(ws_to_guest())}
+            async def idle_watch():
+                warn_at = self.idle_seconds - self.idle_warn_seconds
+                warned = False
+                while True:
+                    idle = time.monotonic() - last[0]
+                    if idle >= self.idle_seconds:
+                        return "idle"
+                    if idle < warn_at:
+                        warned = False
+                        wait = warn_at - idle
+                    else:
+                        if not warned and self.idle_warn_seconds > 0:
+                            warned = True     # the warning is console output, not guest activity
+                            await ws.send(IDLE_WARNING.format(s=round(self.idle_seconds - idle)).encode())
+                        wait = self.idle_seconds - idle
+                    await asyncio.sleep(min(max(wait, 0.02), 1.0))
+
+            tasks = {asyncio.create_task(guest_to_ws()), asyncio.create_task(ws_to_guest()),
+                     asyncio.create_task(idle_watch())}
             done, pending = await asyncio.wait(tasks, timeout=self.max_seconds,
                                                return_when=asyncio.FIRST_COMPLETED)
             for t in pending:
@@ -704,9 +834,12 @@ class Console:
                     pass
             else:
                 end_reason = end_reason_of(done)
-                if end_reason == "guest-exited":
+                ctl = {"guest-exited": {"type": "exited"},
+                       "idle": {"type": "idle", "seconds": self.idle_seconds},
+                       "output_cap": {"type": "output_cap", "bytes": self.max_output_bytes}}.get(end_reason)
+                if ctl is not None:
                     try:
-                        await ws.send(json.dumps({"type": "exited"}))
+                        await ws.send(json.dumps(ctl))
                     except ConnectionClosed:
                         pass
             await asyncio.gather(*pending, return_exceptions=True)
@@ -724,11 +857,12 @@ class Console:
             if snap is not None:
                 self.release_snapshot(snap)
             self.active.pop(sid, None)
+            self.started_at.pop(sid, None)
             try:
                 await ws.close()
             except Exception:  # noqa: BLE001
                 pass
-            if started:
+            if started and not internal:
                 self.metrics.ended(end_reason, time.monotonic() - t0)
             log.info("end sid=%s ip=%s reason=%s duration_s=%.1f active=%d",
                      sid, self.ip_hash(ip), end_reason, time.monotonic() - t0, len(self.active))
@@ -737,6 +871,15 @@ class Console:
     async def _stop(vm: asyncio.subprocess.Process | None) -> None:
         if vm is None or vm.returncode is not None:
             return
+
+        async def discard(stream: asyncio.StreamReader) -> None:
+            # wait() returns only once the pipes close. A guest that was still printing when
+            # the bridge stopped reading (output cap, time cap) leaves stdout full and paused,
+            # so without this the kill is only reaped by the SIGKILL fallback 5 s later.
+            with contextlib.suppress(Exception):
+                while await stream.read(65536):
+                    pass
+        drain = asyncio.ensure_future(discard(vm.stdout)) if vm.stdout is not None else None
         try:
             os.killpg(vm.pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError, AttributeError, OSError):
@@ -749,6 +892,10 @@ class Console:
             except (ProcessLookupError, PermissionError, AttributeError, OSError):
                 vm.kill()
             await vm.wait()
+        finally:
+            if drain is not None:
+                drain.cancel()
+                await asyncio.gather(drain, return_exceptions=True)
 
     # ---- HTTP side ---------------------------------------------------------
     def snapshot_ready(self) -> bool:
@@ -784,7 +931,8 @@ class Console:
             return self._respond(ws, json.dumps(doc, indent=1) + "\n", "application/json")
         if path == "/beacon":
             event = (parse_qs(url.query).get("e") or [""])[0]
-            ok = self.metrics.event(event, request.headers.get("X-Real-IP", "unknown"))
+            ok = self.metrics.event(event, request.headers.get("X-Real-IP", "unknown"),
+                                    internal=self.is_internal(request))
             return self._respond(ws, "ok\n" if ok else "unknown event\n", "text/plain",
                                  http.HTTPStatus.OK if ok else http.HTTPStatus.BAD_REQUEST)
         return None
@@ -862,12 +1010,44 @@ def calibration_table(doc: dict) -> str:
     return "\n".join(out) + "\n"
 
 
+def listen_problem(a: argparse.Namespace) -> str | None:
+    """Why this listen address is unsafe, or None. --per-ip trusts X-Real-IP, which only a
+    fronting proxy can be trusted to set: a public TCP listener without one would let any
+    client claim any address. A Unix socket or loopback is reachable only through the proxy."""
+    if not a.listen_tcp or a.trust_forwarded_for:
+        return None
+    host = a.listen_tcp.rsplit(":", 1)[0]
+    if host in LOOPBACK:
+        return None
+    return (f"refusing to listen on {a.listen_tcp}: --per-ip trusts X-Real-IP, so a non-loopback "
+            "listener must sit behind a proxy that sets it; pass --trust-forwarded-for if it does")
+
+
+def read_token(path: str | None) -> str:
+    """The internal-traffic token (one line). Empty when unset, missing or unreadable, which
+    only means nothing is tagged internal; the console itself runs as before."""
+    if not path:
+        return ""
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError as e:
+        log.warning("internal token unreadable (%s): no traffic will be tagged internal", type(e).__name__)
+        return ""
+
+
 async def amain(a: argparse.Namespace, stop: asyncio.Future | None = None) -> int:
+    problem = listen_problem(a)
+    if problem:
+        log.error("%s", problem)
+        return 2
     metrics = Metrics(Path(a.state_file) if a.state_file else None)
     con = Console(Path(a.kernel), a.firecracker, Path(a.run_dir), a.max_vms, a.per_ip,
                   a.max_seconds, a.mem_mib, a.boot_args, a.snapshot, a.ready_marker,
                   metrics=metrics, qpu_broker=a.qpu_broker,
-                  calibration_file=Path(a.calibration_file) if a.calibration_file else None)
+                  calibration_file=Path(a.calibration_file) if a.calibration_file else None,
+                  idle_seconds=a.idle_seconds, idle_warn_seconds=a.idle_warn_seconds,
+                  input_frames_per_s=a.input_frames_per_s, input_bytes_per_s=a.input_bytes_per_s,
+                  max_output_bytes=a.max_output_bytes, internal_token=read_token(a.internal_token_file))
     swept = con.sweep()
     if swept:
         log.info("swept %d stale session dirs", swept)
@@ -917,7 +1097,21 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--listen-tcp", help="host:port (tests only)")
     ap.add_argument("--max-vms", type=int, default=4)
     ap.add_argument("--per-ip", type=int, default=1)
-    ap.add_argument("--max-seconds", type=float, default=600)
+    ap.add_argument("--max-seconds", type=float, default=600, help="hard cap per session")
+    ap.add_argument("--idle-seconds", type=float, default=120,
+                    help="end a session after this long with no input and no output")
+    ap.add_argument("--idle-warn-seconds", type=float, default=15,
+                    help="warn on the terminal this long before the idle timeout (0: no warning)")
+    ap.add_argument("--input-frames-per-s", type=float, default=64,
+                    help="input frames per second per session (1 s burst); excess is dropped")
+    ap.add_argument("--input-bytes-per-s", type=float, default=4096,
+                    help="input bytes per second per session (1 s burst); excess is dropped")
+    ap.add_argument("--max-output-bytes", type=int, default=2 << 20,
+                    help="guest output per session; reaching it ends the session (reason output_cap)")
+    ap.add_argument("--trust-forwarded-for", action="store_true",
+                    help="allow a non-loopback --listen-tcp: a proxy in front really sets X-Real-IP")
+    ap.add_argument("--internal-token-file", default=None,
+                    help="file holding the token that tags our own traffic out of the visitor funnel")
     ap.add_argument("--mem-mib", type=int, default=128)
     ap.add_argument("--boot-args", default="quiet")
     ap.add_argument("--snapshot", choices=("auto", "off"), default="auto",

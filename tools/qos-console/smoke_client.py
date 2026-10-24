@@ -29,8 +29,12 @@ async def main() -> int:
     ap.add_argument("--expect", default="imprinted", help="text the command's own output must contain")
     ap.add_argument("--settle", type=float, default=8, help="seconds of console silence before typing")
     ap.add_argument("--boot-timeout", type=float, default=240)
+    ap.add_argument("--internal-token-file",
+                    help="tag this session as our own traffic, kept out of the visitor counts")
     a = ap.parse_args()
     headers = {}
+    if a.internal_token_file:
+        headers["X-QOS-Internal"] = open(a.internal_token_file).read().strip()
     if a.user:
         pw = open(a.password_file).read().strip()
         headers["Authorization"] = "Basic " + base64.b64encode(f"{a.user}:{pw}".encode()).decode()

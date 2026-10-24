@@ -84,9 +84,16 @@
   const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
   const decoder = new TextDecoder();
   // Funnel counts (#258): the launcher counts "load" and "boot" and keeps no address,
-  // cookie or identifier. Totals are public at ./stats.
+  // cookie or identifier. Totals are public at ./stats. Our own captures open the page
+  // with ?internal=<token>; it is passed on so they are counted apart from visitors.
+  const internal = new URLSearchParams(location.search).get("internal");
+  const tagged = (path) => {
+    const u = new URL(path, location.href);
+    if (internal) u.searchParams.set("internal", internal);
+    return u;
+  };
   const beacon = (e) => {
-    try { fetch(new URL("beacon?e=" + e, location.href), { cache: "no-store", keepalive: true })
+    try { fetch(tagged("beacon?e=" + e), { cache: "no-store", keepalive: true })
             .catch(() => {}); } catch (err) {}
   };
   beacon("load");
@@ -100,7 +107,7 @@
     if (ws) return;
     beacon("boot");
     term.reset();
-    const url = new URL("ws", location.href); url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const url = tagged("ws"); url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
     ws = new WebSocket(url); ws.binaryType = "arraybuffer";
     bootBtn.disabled = true; stopBtn.disabled = false; setStatus("connecting…", "warn");
     ws.onmessage = (ev) => {
@@ -110,9 +117,12 @@
           deadline = Date.now() + m.max_seconds * 1000; setStatus(m.restored ? "booting…" : "booting (a few seconds)…", "warn");
           tick = setInterval(() => { timerEl.textContent = fmt(Math.max(0, (deadline - Date.now()) / 1000)); }, 500);
         } else if (m.type === "refused") {
-          end(m.reason === "busy" ? "all machines are in use, try again in a few minutes"
-                                  : "you already have a machine running", "bad");
+          end(m.reason === "busy"
+                ? `${m.message || "all machines are busy"}; one is free in at most ${fmt(m.retry_after_s || 600)}, often sooner`
+                : "you already have a machine running", "bad");
         } else if (m.type === "expired") { term.writeln("\r\n\x1b[33m[time is up, the machine was deleted]\x1b[0m");
+        } else if (m.type === "idle") { term.writeln(`\r\n\x1b[33m[no activity for ${fmt(m.seconds)}, the machine was deleted]\x1b[0m`);
+        } else if (m.type === "output_cap") { term.writeln("\r\n\x1b[33m[the machine printed more than this console carries, so it was deleted]\x1b[0m");
         } else if (m.type === "exited") { term.writeln("\r\n\x1b[33m[the machine halted]\x1b[0m"); }
         return;
       }

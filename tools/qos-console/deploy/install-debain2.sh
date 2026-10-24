@@ -23,6 +23,13 @@ sudo install -m 644 -o root -g root "$SRC/README.md" /opt/qos-console/README.md
 sudo install -m 644 -o root -g root /srv/qos/kernel.elf /opt/qos-console/kernel.elf
 
 sudo install -d -m 750 -o qosconsole -g qosconsole /etc/qos-console
+# The token that tags our own traffic (captures, smoke tests) out of the visitor counts.
+# URL-safe, since browser captures pass it as ?internal=. Never printed.
+if ! sudo test -s /etc/qos-console/internal.token; then
+    head -c 24 /dev/urandom | base64 | tr '+/' '-_' | sudo tee /etc/qos-console/internal.token >/dev/null
+fi
+sudo chown root:qosconsole /etc/qos-console/internal.token
+sudo chmod 640 /etc/qos-console/internal.token
 if ! sudo test -f /etc/qos-console/tunnel_ed25519; then
     sudo -u qosconsole ssh-keygen -q -t ed25519 -N "" -C "qos-console-tunnel@debain2" -f /etc/qos-console/tunnel_ed25519
 fi

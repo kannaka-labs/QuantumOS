@@ -22,7 +22,8 @@ ExecStart=/usr/bin/python3 -u /opt/qos-console/qos_console.py \
     --max-vms 4 --per-ip 1 --max-seconds 600 --mem-mib 128 \
     --state-file /var/lib/qos-console/metrics.json \
     --qpu-broker /run/qos-qpu/broker.sock \
-    --calibration-file /var/lib/qos-qpu/calibration.json
+    --calibration-file /var/lib/qos-qpu/calibration.json \
+    --internal-token-file /etc/qos-console/internal.token
 Restart=on-failure
 RestartSec=5
 # Every VM is a child of this unit, so these limits cap all of them together.

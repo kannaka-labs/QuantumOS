@@ -15,6 +15,7 @@ back. A restored guest prints nothing until it gets input.
 
 Commands on stdin, one per line:
   echo <text>     prints <text>
+  spew <n>        prints n bytes of output
   imprint <text>  stores <text> in guest memory
   recall          prints every stored text
   whoami          prints the kernel sha the memory was booted from
@@ -125,7 +126,14 @@ for raw in sys.stdin.buffer:
     if line == "hang":
         while True:
             time.sleep(1)
-    if line.startswith("echo "):
+    if line.startswith("spew "):       # a program that prints a lot (output cap test)
+        n = int(line[5:])
+        while n > 0:
+            chunk = min(n, 4096)
+            out.write(b"x" * (chunk - 1) + b"\n")
+            out.flush()
+            n -= chunk
+    elif line.startswith("echo "):
         out.write(line[5:].encode() + b"\n")
     elif line.startswith("imprint "):
         mem["imprints"].append(line[8:])
