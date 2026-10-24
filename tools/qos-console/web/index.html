@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>QuantumOS Console</title>
-<meta name="description" content="Boot a real QuantumOS microVM on KVM and type into its shell. The machine is yours for ten minutes and is thrown away when you leave.">
+<meta name="description" content="Boot a real QuantumOS microVM on KVM and type into its shell. The machine is yours for ten minutes; keep it with a key if you want to come back to it.">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css"
       integrity="sha384-tStR1zLfWgsiXCF3IgfB3lBa8KmBe/lG287CL9WCeKgQYcp1bjb4/+mwN6oti4Co" crossorigin="anonymous">
 <style>
@@ -35,6 +35,15 @@
            font-variant-numeric: tabular-nums; color: var(--ink); }
   #term { background: #05080b; border: 1px solid var(--line); border-radius: 8px; padding: 8px;
           height: min(70vh, 640px); overflow: hidden; }
+  .keep { display: grid; gap: 8px; background: var(--panel); border: 1px solid var(--line);
+          border-radius: 8px; padding: 10px 12px; font-size: 14px; }
+  .keep[hidden] { display: none; }
+  .keep p { margin: 0; color: var(--muted); max-width: 75ch; }
+  .keyrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .key { font: 600 14px "IBM Plex Mono", ui-monospace, monospace; color: var(--accent);
+         overflow-wrap: anywhere; background: #05080b; border: 1px solid var(--line);
+         border-radius: 6px; padding: 6px 8px; }
+  input.key { color: var(--ink); min-width: 0; flex: 1 1 22ch; }
   footer { color: var(--muted); font-size: 13px; }
   footer a { color: var(--accent); }
   footer code { font: 12px "IBM Plex Mono", ui-monospace, monospace; }
@@ -46,14 +55,30 @@
     <h1>QuantumOS Console</h1>
     <span class="tag">staging · real KVM microVM</span>
   </header>
-  <p class="note">Each boot starts a fresh QuantumOS virtual machine on Firecracker, with no disk and no network.
-    It is at the <code>qsh&gt;</code> prompt within a second or two. You get ten minutes;
-    the machine is deleted when you close the page or the timer runs out. Nothing you type is logged.</p>
+  <p class="note">Each boot starts a fresh QuantumOS virtual machine on Firecracker, with a small blank disk
+    and no network. It is at the <code>qsh&gt;</code> prompt within a second or two. You get ten minutes;
+    the machine is deleted when you close the page or the timer runs out, unless you keep it.
+    Nothing you type is logged.</p>
   <div class="bar">
     <button id="boot">Boot QuantumOS</button>
+    <button id="keepbtn" class="secondary" hidden>Keep this machine</button>
     <button id="stop" class="secondary" disabled>Power off</button>
     <span id="status">idle</span>
     <span id="timer" aria-live="polite">10:00</span>
+  </div>
+  <div id="keyed" class="keep" hidden>
+    <div class="keyrow"><span>Your machine key:</span> <span id="key" class="key"></span>
+      <button id="copy" class="secondary">Copy</button></div>
+    <p>This key is shown once and is the only way back to this machine. Copy it now.
+      Type <code>sync</code> to save; when you come back with the key you get what you last synced.
+      A machine that was never synced is not kept.</p>
+  </div>
+  <div class="keep">
+    <div class="keyrow"><label for="resumekey">Have a machine key?</label>
+      <input id="resumekey" class="key" autocomplete="off" spellcheck="false" placeholder="paste it here">
+      <button id="resumebtn" class="secondary">Resume my machine</button></div>
+    <p id="keepnote">Kept machines are deleted after 7 days without use. They are stored on our server
+      without encryption, so the operator can read them: don't keep anything private.</p>
   </div>
   <div id="term" role="application" aria-label="QuantumOS serial console"></div>
   <footer>Try <code>help</code>, <code>ls /</code>, <code>imprint a cat sat on the mat</code> then
@@ -82,7 +107,17 @@
   let ws = null, deadline = 0, tick = null;
   const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = cls || ""; };
   const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder(), encoder = new TextEncoder();
+  const keepBtn = $("keepbtn"), keyed = $("keyed"), keyEl = $("key"), resumeBtn = $("resumebtn"),
+        resumeKey = $("resumekey");
+  let kept = false;
+  const why = {
+    unknown_machine: "no machine with that key: it was never synced, it expired, or the key is mistyped",
+    machine_open: "that machine is already open in another window",
+    no_token: "no key was sent", saving_off: "keeping machines is not available on this server",
+    storage_full: "the store for kept machines is full right now",
+    too_many_today: "you have kept as many machines as allowed today",
+  };
   // Funnel counts (#258): the launcher counts "load" and "boot" and keeps no address,
   // cookie or identifier. Totals are public at ./stats. Our own captures open the page
   // with ?internal=<token>; it is passed on so they are counted apart from visitors.
@@ -99,27 +134,39 @@
   beacon("load");
 
   function end(msg, cls) {
-    setStatus(msg, cls); bootBtn.disabled = false; stopBtn.disabled = true;
-    clearInterval(tick); tick = null; ws = null;
+    setStatus(msg, cls); bootBtn.disabled = false; resumeBtn.disabled = false; stopBtn.disabled = true;
+    keepBtn.hidden = true; clearInterval(tick); tick = null; ws = null;
   }
 
-  bootBtn.onclick = () => {
+  function open(key) {
     if (ws) return;
     beacon("boot");
-    term.reset();
+    term.reset(); kept = !!key; keyed.hidden = true; keyEl.textContent = "";
     const url = tagged("ws"); url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    if (key) url.searchParams.set("resume", "1");   // the key itself goes in the first frame, never the URL
     ws = new WebSocket(url); ws.binaryType = "arraybuffer";
-    bootBtn.disabled = true; stopBtn.disabled = false; setStatus("connecting…", "warn");
+    if (key) ws.onopen = () => ws.send(JSON.stringify({ type: "resume", token: key }));
+    bootBtn.disabled = true; resumeBtn.disabled = true; stopBtn.disabled = false; setStatus("connecting…", "warn");
     ws.onmessage = (ev) => {
       if (typeof ev.data === "string") {
         let m = {}; try { m = JSON.parse(ev.data); } catch (e) {}
         if (m.type === "hello") {
           deadline = Date.now() + m.max_seconds * 1000; setStatus(m.restored ? "booting…" : "booting (a few seconds)…", "warn");
+          keepBtn.hidden = !m.can_keep || m.resumed; keepBtn.disabled = false;
+          if (m.resumed) term.writeln("\x1b[90m[your kept machine, booting with its disk]\x1b[0m");
           tick = setInterval(() => { timerEl.textContent = fmt(Math.max(0, (deadline - Date.now()) / 1000)); }, 500);
         } else if (m.type === "refused") {
           end(m.reason === "busy"
                 ? `${m.message || "all machines are busy"}; one is free in at most ${fmt(m.retry_after_s || 600)}, often sooner`
-                : "you already have a machine running", "bad");
+                : why[m.reason] || "you already have a machine running", "bad");
+        } else if (m.type === "kept") {
+          kept = true; keepBtn.disabled = true;
+          if (m.token) { keyEl.textContent = m.token; keyed.hidden = false; }
+          term.writeln("\r\n\x1b[36m[kept: type sync to save what you have so far]\x1b[0m");
+        } else if (m.type === "keep_refused") {
+          keepBtn.disabled = true; term.writeln(`\r\n\x1b[33m[not kept: ${why[m.reason] || m.reason}]\x1b[0m`);
+        } else if (m.type === "saved") { term.writeln("\r\n\x1b[36m[your machine was kept, as of your last sync]\x1b[0m");
+        } else if (m.type === "not_saved") { term.writeln("\r\n\x1b[33m[nothing was synced, so nothing was kept]\x1b[0m");
         } else if (m.type === "expired") { term.writeln("\r\n\x1b[33m[time is up, the machine was deleted]\x1b[0m");
         } else if (m.type === "idle") { term.writeln(`\r\n\x1b[33m[no activity for ${fmt(m.seconds)}, the machine was deleted]\x1b[0m`);
         } else if (m.type === "output_cap") { term.writeln("\r\n\x1b[33m[the machine printed more than this console carries, so it was deleted]\x1b[0m");
@@ -127,13 +174,20 @@
         return;
       }
       const text = decoder.decode(new Uint8Array(ev.data), { stream: true });
-      if (/qsh/.test(text) && statusEl.textContent.startsWith("booting")) setStatus("running", "ok");
+      if (/qsh/.test(text) && statusEl.textContent.startsWith("booting")) setStatus(kept ? "running (kept)" : "running", "ok");
+      if (kept && /sync ok/.test(text)) setStatus(`running (kept, synced ${new Date().toLocaleTimeString()})`, "ok");
       term.write(text);
     };
-    ws.onclose = () => { if (ws) end("disconnected, the machine was deleted", ""); };
+    ws.onclose = () => { if (ws) end(kept ? "disconnected" : "disconnected, the machine was deleted", ""); };
     ws.onerror = () => setStatus("connection error", "bad");
-  };
-  term.onData((d) => { if (ws && ws.readyState === 1) ws.send(d); });
+  }
+
+  bootBtn.onclick = () => open(null);
+  resumeBtn.onclick = () => { const k = resumeKey.value.trim(); if (k) { resumeKey.value = ""; open(k); } };
+  keepBtn.onclick = () => { if (ws && ws.readyState === 1) { keepBtn.disabled = true; ws.send(JSON.stringify({ type: "keep" })); } };
+  $("copy").onclick = () => { try { navigator.clipboard.writeText(keyEl.textContent); $("copy").textContent = "Copied"; } catch (e) {} };
+  // Keystrokes go as binary frames; text frames carry only control messages (keep, resume).
+  term.onData((d) => { if (ws && ws.readyState === 1) ws.send(encoder.encode(d)); });
   stopBtn.onclick = () => { if (ws) { const w = ws; end("powered off", ""); w.close(); } };
   window.addEventListener("beforeunload", () => { if (ws) ws.close(); });
 })();

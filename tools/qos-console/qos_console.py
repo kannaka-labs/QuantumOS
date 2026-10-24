@@ -2,10 +2,18 @@
 """QuantumOS public console: one throwaway Firecracker microVM per visitor.
 
 Each WebSocket session gets its own microVM (docs/FIRECRACKER.md: PVH entry, serial
-console on Firecracker's stdio). The VM has no drives and no network interface; its
-serial console is the only I/O, and it is bridged to the WebSocket byte for byte. The
-VM and its directory are deleted when the visitor disconnects, when the hard time cap
-runs out, or when the guest exits.
+console on Firecracker's stdio). The VM has no network interface; its serial console is
+the only I/O, and it is bridged to the WebSocket byte for byte. The VM and its directory
+are deleted when the visitor disconnects, when the hard time cap runs out, or when the
+guest exits.
+
+Saved machines (#256, with --save-dir): every VM also gets a small blank virtio-blk
+disk (--save-mib) in its own directory. A visitor who sends {"type": "keep"} gets a
+resume token, shown once; whatever they `sync` inside QuantumOS is kept when the session
+ends (saves.py: retention, caps, what is stored). A later session opened with
+/ws?resume=1 sends {"type": "resume", "token": ...} as its first frame (never in the URL,
+so no proxy log holds it) and cold-boots with that disk, so its files, field and audit
+ledger come back. Without --save-dir, VMs have no drives at all, as before.
 
 Fast start (--snapshot auto, the default): at startup the launcher boots one VM to the
 shell prompt, pauses it and writes a Firecracker snapshot (vmstate + guest memory) under
@@ -20,7 +28,9 @@ Wire protocol (one WebSocket, path /ws):
   server -> client  binary frames: raw bytes from the guest's COM1
   server -> client  text frames:   JSON control ({"type": "hello"|"expired"|"idle"|"output_cap"|
                                    "refused"|"exited", ...})
-  client -> server  binary or text frames: keystrokes for COM1 (max 1 KiB per frame)
+  client -> server  binary frames: keystrokes for COM1 (max 1 KiB per frame); text frames
+                   are keystrokes too, except the JSON control messages {"type": "keep"}
+                   and (first frame of a /ws?resume=1 session) {"type": "resume", ...}
 
 Caps (#257): --max-vms concurrent VMs in total, --per-ip per client address (taken
 from X-Real-IP, which only the fronting nginx sets; the launcher is reachable
@@ -83,6 +93,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from qpu_relay import QpuRelay
+from saves import SaveRefused, SaveStore
 
 log = logging.getLogger("qos-console")
 
@@ -91,6 +102,9 @@ READ_CHUNK = 4096         # bytes per guest read
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
 SAVE_EVERY_S = 30         # how often changed metrics are written to --state-file
 SNAPSHOT_RETRY_S = 300    # after a failed snapshot build, cold-boot this long before retrying
+SAVE_SWEEP_S = 3600       # how often expired saved machines are deleted
+RESUME_WAIT_S = 10        # a /ws?resume=1 session must send its token this soon
+DISK = "disk.img"         # the VM's disk, relative to its own directory (and Firecracker's cwd)
 LOOPBACK = ("127.0.0.1", "::1", "[::1]", "localhost")
 
 IDLE_WARNING = "\r\n\x1b[33m[console] no activity: this machine closes in {s} s unless you type something\x1b[0m\r\n"
@@ -271,11 +285,11 @@ class Metrics:
     EVENTS = ("load", "boot")
     COUNTERS = ("page_loads", "boot_clicks", "sessions_started", "sessions_refused",
                 "boots_completed", "sessions_with_input", "sessions_ended",
-                "internal_sessions", "internal_beacons")
+                "internal_sessions", "internal_beacons", "machines_kept", "machines_resumed")
     LABELLED = ("sessions_started", "sessions_refused", "boots_completed", "sessions_ended")
     DAY_FIELDS = ("page_loads", "boot_clicks", "unique_visitors", "sessions_started",
                   "sessions_refused", "boots_completed", "sessions_with_input",
-                  "internal_sessions", "internal_beacons")
+                  "internal_sessions", "internal_beacons", "machines_kept", "machines_resumed")
     KEEP_DAYS = 60
     INTERNAL_SINCE = "2026-10-24"   # tagging began here; earlier counts include our own traffic
 
@@ -354,13 +368,23 @@ class Metrics:
     def typed(self) -> None:
         self._bump("sessions_with_input", day_field="sessions_with_input")
 
+    def kept(self) -> None:
+        """A saved machine was kept at the end of a session (it had been synced)."""
+        self._bump("machines_kept", day_field="machines_kept")
+
+    def resumed(self) -> None:
+        self._bump("machines_resumed", day_field="machines_resumed")
+
     def ended(self, reason: str, seconds: float) -> None:
         self._bump("sessions_ended", "error" if reason.startswith("error") else reason)
         self.h["session_seconds"].observe(seconds)
 
     # ---- output ----
-    def stats(self, active: int, max_vms: int, snapshot: bool) -> dict:
+    def stats(self, active: int, max_vms: int, snapshot: bool, saved: int | None = None) -> dict:
         self._today()
+        now = {"active": active, "max_vms": max_vms, "snapshot": snapshot}
+        if saved is not None:
+            now["saved_machines"] = saved
         return {
             "about": ("QuantumOS public console funnel. Counts and timings only: no addresses, "
                       "no session ids, nothing typed. Unique visitors are counted per UTC day "
@@ -370,7 +394,7 @@ class Metrics:
             "internal_since": self.INTERNAL_SINCE,
             "since": datetime.datetime.fromtimestamp(self.since, datetime.timezone.utc)
                      .isoformat(timespec="seconds"),
-            "now": {"active": active, "max_vms": max_vms, "snapshot": snapshot},
+            "now": now,
             "totals": {k: dict(v) if k in self.LABELLED else sum(v.values()) for k, v in self.c.items()},
             "timings_s": {k.removesuffix("_seconds"): v.summary() for k, v in self.h.items()},
             "days": dict(sorted(self.days.items(), reverse=True)),
@@ -431,7 +455,8 @@ class Console:
                  calibration_file: Path | None = None, idle_seconds: float = 120,
                  idle_warn_seconds: float = 15, input_frames_per_s: float = 64,
                  input_bytes_per_s: float = 4096, max_output_bytes: int = 2 << 20,
-                 internal_token: str = ""):
+                 internal_token: str = "", saves: SaveStore | None = None):
+        self.saves = saves                         # saved machines (#256), or None: no disks at all
         self.calibration_file = calibration_file   # daily QPU calibration series (#275), read-only
         self.idle_seconds = idle_seconds           # #257: no input and no output for this long ends it
         self.idle_warn_seconds = min(idle_warn_seconds, idle_seconds)
@@ -507,17 +532,28 @@ class Console:
         d = self.run_dir / f"s-{sid}"
         d.mkdir(mode=0o700)
         (d / "fc.log").touch()
+        if self.saves is not None:
+            self.blank_disk(d)
         return d
+
+    def blank_disk(self, d: Path) -> None:
+        """A zero-filled (sparse) disk: a fresh QuantumOS volume, written only on `sync`."""
+        with open(d / DISK, "wb") as f:
+            f.truncate(self.saves.image_mib << 20)
 
     def write_cold_config(self, d: Path) -> Path:
         shutil.copyfile(self.kernel, d / "kernel.elf")
         cfg = {
             "boot-source": {"kernel_image_path": str(d / "kernel.elf"), "boot_args": self.boot_args},
-            "drives": [],
+            "drives": [self.drive(str(d / DISK))] if self.saves is not None else [],
             "machine-config": {"vcpu_count": 1, "mem_size_mib": self.mem_mib},
         }
         (d / "vm.json").write_text(json.dumps(cfg))
         return d / "vm.json"
+
+    @staticmethod
+    def drive(path: str) -> dict:
+        return {"drive_id": "data", "path_on_host": path, "is_root_device": False, "is_read_only": False}
 
     # ---- snapshot ----------------------------------------------------------
     def kernel_sha(self) -> str:
@@ -597,6 +633,11 @@ class Console:
             await fc_api(sock, "PUT", "/boot-source",
                          {"kernel_image_path": str(d / "kernel.elf"), "boot_args": self.boot_args})
             await fc_api(sock, "PUT", "/machine-config", {"vcpu_count": 1, "mem_size_mib": self.mem_mib})
+            if self.saves is not None:
+                # A RELATIVE path: Firecracker opens it against its own cwd, so every VM
+                # restored from this snapshot opens the disk in its own session directory.
+                self.blank_disk(d)
+                await fc_api(sock, "PUT", "/drives/data", self.drive(DISK))
             await fc_api(sock, "PUT", "/actions", {"action_type": "InstanceStart"})
             transcript = b""
             deadline = time.monotonic() + self.boot_timeout
@@ -631,7 +672,7 @@ class Console:
                           "mem_file_path": str(d / "vm.mem")}, timeout=60)
             await self._stop(vm)
             vm = None
-            for f in ("kernel.elf", "fc.sock"):
+            for f in ("kernel.elf", "fc.sock", DISK):
                 (d / f).unlink(missing_ok=True)
             if self.kernel_sha() != sha:      # the kernel changed during the build
                 raise FirecrackerError("kernel changed during the build")
@@ -684,7 +725,9 @@ class Console:
     async def session(self, ws: ServerConnection) -> None:
         ip = ws.request.headers.get("X-Real-IP", "unknown") if ws.request else "unknown"
         internal = self.is_internal(ws.request)   # our own traffic: kept out of the funnel
-        reason = self.admit(ip)
+        resume = ws.request is not None and \
+            (parse_qs(urlsplit(ws.request.path).query).get("resume") or [""])[0] == "1"
+        reason = "saving_off" if resume and self.saves is None else self.admit(ip)
         if reason:
             if not internal:
                 self.metrics.refused(reason)
@@ -703,9 +746,15 @@ class Console:
         vm: asyncio.subprocess.Process | None = None
         snap: Snapshot | None = None
         relay: QpuRelay | None = None
+        save_id: str | None = None       # the saved machine this session kept or resumed
+        new_keep = False
         try:
             d = self.prepare(sid)
-            snap = self.take_snapshot()
+            if resume:
+                save_id = await self.resume_machine(ws, d, ip)
+                if save_id is None:
+                    return
+            snap = self.take_snapshot() if save_id is None else None   # a resumed disk must boot
             mode = "cold"
             if snap is not None:
                 try:
@@ -726,6 +775,8 @@ class Console:
             else:
                 self.metrics.started(mode)
                 self.metrics.visitor(ip)
+                if save_id is not None:
+                    self.metrics.resumed()
             # Funnel timings, from the moment the session was admitted: the first guest
             # byte the visitor gets, and the shell prompt reaching them (boot completed).
             seen = {"output": False, "ready": False, "typed": False}
@@ -748,8 +799,12 @@ class Console:
                     if self.ready_marker in ANSI.sub(b"", window):
                         seen["ready"] = True
                         self.metrics.booted(mode, time.monotonic() - t0)
-            await ws.send(json.dumps({"type": "hello", "session": sid, "max_seconds": self.max_seconds,
-                                      "restored": mode == "restore"}))
+            hello = {"type": "hello", "session": sid, "max_seconds": self.max_seconds,
+                     "restored": mode == "restore"}
+            if self.saves is not None:
+                hello.update(can_keep=True, resumed=save_id is not None, keep_days=self.saves.days,
+                             keep_mib=self.saves.image_mib)
+            await ws.send(json.dumps(hello))
             if snap is not None:
                 # Every restored copy of the snapshot resumes the same generator state;
                 # give this one its own entropy before the visitor can type (ADR-0025).
@@ -785,8 +840,26 @@ class Console:
                 frames = TokenBucket(self.input_frames_per_s)
                 volume = TokenBucket(self.input_bytes_per_s)
                 noticed = False
+                nonlocal save_id, new_keep
                 async for msg in ws:
                     last[0] = time.monotonic()
+                    if isinstance(msg, str) and self.saves is not None and msg.startswith("{"):
+                        ctl = control_message(msg)
+                        if ctl is not None:
+                            if ctl.get("type") == "keep":
+                                if save_id is not None:
+                                    await ws.send(json.dumps({"type": "kept", "already": True}))
+                                    continue
+                                try:
+                                    token, save_id = self.saves.keep(self.ip_hash(ip))
+                                except SaveRefused as e:
+                                    await ws.send(json.dumps({"type": "keep_refused", "reason": str(e)}))
+                                    continue
+                                new_keep = True
+                                log.info("keep sid=%s save=%s", sid, save_id[:8])
+                                await ws.send(json.dumps({"type": "kept", "token": token,
+                                                          "days": self.saves.days}))
+                            continue    # a control message is never keystrokes
                     data = msg.encode() if isinstance(msg, str) else msg
                     data = data[:MAX_INPUT].replace(b"\r\n", b"\n").replace(b"\r", b"\n")
                     if not (frames.take() and volume.take(len(data))):
@@ -852,6 +925,13 @@ class Console:
             if relay is not None:
                 await relay.close()
             await self._stop(vm)
+            if save_id is not None and d is not None:
+                kept = self.saves.checkin(save_id, d / DISK)
+                log.info("save end sid=%s save=%s kept=%d", sid, save_id[:8], kept)
+                if kept and new_keep and not internal:
+                    self.metrics.kept()
+                with contextlib.suppress(Exception):
+                    await ws.send(json.dumps({"type": "saved" if kept else "not_saved"}))
             if d is not None:
                 shutil.rmtree(d, ignore_errors=True)
             if snap is not None:
@@ -866,6 +946,29 @@ class Console:
                 self.metrics.ended(end_reason, time.monotonic() - t0)
             log.info("end sid=%s ip=%s reason=%s duration_s=%.1f active=%d",
                      sid, self.ip_hash(ip), end_reason, time.monotonic() - t0, len(self.active))
+
+    async def resume_machine(self, ws: ServerConnection, d: Path, ip: str) -> str | None:
+        """The first frame of a /ws?resume=1 session names the machine. Returns its id with
+        its disk copied into `d`, or None after sending the refusal."""
+        reason = "no_token"
+        try:
+            ctl = control_message(await asyncio.wait_for(ws.recv(), RESUME_WAIT_S))
+            token = ctl.get("token") if ctl and ctl.get("type") == "resume" else None
+            if isinstance(token, str) and token:
+                save_id = self.saves.checkout(token)
+                try:
+                    shutil.copyfile(self.saves.image(save_id), d / DISK)
+                except OSError:
+                    self.saves.open.discard(save_id)
+                    raise SaveRefused("unknown_machine")
+                return save_id
+        except SaveRefused as e:
+            reason = str(e)
+        except (asyncio.TimeoutError, TypeError):
+            pass
+        await ws.send(json.dumps({"type": "refused", "reason": reason}))
+        log.info("resume refused ip=%s reason=%s", self.ip_hash(ip), reason)
+        return None
 
     @staticmethod
     async def _stop(vm: asyncio.subprocess.Process | None) -> None:
@@ -914,8 +1017,9 @@ class Console:
                                "snapshot_kernel": snap.kernel_sha[:12] if snap else None})
             return ws.respond(http.HTTPStatus.OK, body + "\n")
         if path == "/stats":
-            body = json.dumps(self.metrics.stats(len(self.active), self.max_vms, self.snapshot_ready()),
-                              indent=1)
+            saved = self.saves.count() if self.saves is not None else None
+            body = json.dumps(self.metrics.stats(len(self.active), self.max_vms, self.snapshot_ready(),
+                                                 saved), indent=1)
             return self._respond(ws, body + "\n", "application/json")
         if path == "/metrics":
             return self._respond(ws, self.metrics.prometheus(len(self.active), self.max_vms,
@@ -945,6 +1049,17 @@ class Console:
         r.headers["Content-Type"] = ctype if "charset" in ctype else ctype + "; charset=utf-8"
         r.headers["Cache-Control"] = "no-store"
         return r
+
+
+def control_message(msg) -> dict | None:
+    """A JSON control frame from the page ({"type": ...}), or None if `msg` is keystrokes."""
+    if not isinstance(msg, str) or not msg.startswith("{") or len(msg) > MAX_INPUT:
+        return None
+    try:
+        d = json.loads(msg)
+    except ValueError:
+        return None
+    return d if isinstance(d, dict) and d.get("type") in ("keep", "resume") else None
 
 
 def calibration_doc(path: Path | None, today: datetime.date | None = None) -> dict | None:
@@ -1047,10 +1162,14 @@ async def amain(a: argparse.Namespace, stop: asyncio.Future | None = None) -> in
                   calibration_file=Path(a.calibration_file) if a.calibration_file else None,
                   idle_seconds=a.idle_seconds, idle_warn_seconds=a.idle_warn_seconds,
                   input_frames_per_s=a.input_frames_per_s, input_bytes_per_s=a.input_bytes_per_s,
-                  max_output_bytes=a.max_output_bytes, internal_token=read_token(a.internal_token_file))
+                  max_output_bytes=a.max_output_bytes, internal_token=read_token(a.internal_token_file),
+                  saves=SaveStore(Path(a.save_dir), a.save_mib, a.save_days, a.save_total_mib,
+                                  a.saves_per_ip_day) if a.save_dir else None)
     swept = con.sweep()
     if swept:
         log.info("swept %d stale session dirs", swept)
+    if con.saves is not None:
+        log.info("saved machines: %d kept, %d expired", con.saves.count(), con.saves.sweep())
     con.ensure_snapshot()
     if stop is None:
         stop = asyncio.get_running_loop().create_future()
@@ -1075,13 +1194,23 @@ async def amain(a: argparse.Namespace, stop: asyncio.Future | None = None) -> in
             await asyncio.sleep(SAVE_EVERY_S)
             metrics.save()
 
+    async def sweep_loop():
+        while True:
+            await asyncio.sleep(SAVE_SWEEP_S)
+            n = con.saves.sweep()
+            if n:
+                log.info("saved machines: %d expired", n)
+
     saver = asyncio.create_task(save_loop())
+    sweeper = asyncio.create_task(sweep_loop()) if con.saves is not None else None
     try:
         async with server:
             await stop
     finally:
         saver.cancel()
-        await asyncio.gather(saver, return_exceptions=True)
+        if sweeper is not None:
+            sweeper.cancel()
+        await asyncio.gather(saver, *([sweeper] if sweeper else []), return_exceptions=True)
         metrics.save()
         await con.shutdown()
     return 0
@@ -1122,6 +1251,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="guest output (ANSI colour stripped) that means the shell is ready to snapshot")
     ap.add_argument("--qpu-broker", default=None,
                     help="Unix socket of the host quantum broker (tools/qpu-broker); unset: no qpu relay")
+    ap.add_argument("--save-dir", default=None,
+                    help="keep visitors' machines here (#256); unset: VMs have no disk and nothing is kept")
+    ap.add_argument("--save-mib", type=int, default=4, help="size of each VM's disk")
+    ap.add_argument("--save-days", type=float, default=7,
+                    help="delete a saved machine after this many days without use")
+    ap.add_argument("--save-total-mib", type=int, default=2048,
+                    help="most disk the saved machines may use; new keeps are refused beyond it")
+    ap.add_argument("--saves-per-ip-day", type=int, default=3,
+                    help="machines one visitor address may keep per UTC day")
     ap.add_argument("--calibration-file", default=None,
                     help="daily QPU calibration series JSON (tools/qpu-broker/qpu_calibrate.py), "
                          "served read-only at /calibration.json and /calibration")

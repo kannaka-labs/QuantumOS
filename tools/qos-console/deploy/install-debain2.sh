@@ -18,6 +18,7 @@ sudo usermod -aG qosqpu qosconsole
 sudo install -d -m 755 -o root -g root /opt/qos-console
 sudo install -m 644 -o root -g root "$SRC/qos_console.py" /opt/qos-console/qos_console.py
 sudo install -m 644 -o root -g root "$SRC/qpu_relay.py" /opt/qos-console/qpu_relay.py
+sudo install -m 644 -o root -g root "$SRC/saves.py" /opt/qos-console/saves.py
 sudo install -m 644 -o root -g root "$SRC/README.md" /opt/qos-console/README.md
 # The kernel the production microVMs already run (docs/FIRECRACKER.md: ELF64, PVH entry).
 sudo install -m 644 -o root -g root /srv/qos/kernel.elf /opt/qos-console/kernel.elf

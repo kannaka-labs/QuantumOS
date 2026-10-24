@@ -754,3 +754,187 @@ def test_token_bucket_allows_a_one_second_burst_then_the_rate():
     now[0] += 0.5
     assert [b.take() for _ in range(3)] == [True, True, False]
     assert not b.take(5), "a cost above one second of rate never fits"
+
+
+# ---- saved machines (#256) -------------------------------------------------
+
+def saved(store: Path) -> list[Path]:
+    return sorted(store.glob("*.img")) if store.exists() else []
+
+
+async def keep(ws) -> dict:
+    await ws.send(json.dumps({"type": "keep"}))
+    return await control(ws)
+
+
+async def resume(s, token: str, ip: str):
+    ws = await connect(s.url() + "?resume=1", additional_headers=h(ip))
+    with contextlib.suppress(websockets.exceptions.ConnectionClosed):   # a refusal may close first
+        await ws.send(json.dumps({"type": "resume", "token": token}))
+    return ws
+
+
+@pytest.mark.asyncio
+async def test_kept_machine_comes_back_with_what_was_synced(env, tmp_path, caplog):
+    caplog.set_level("INFO", logger="qos-console")
+    store = tmp_path / "saves"
+    async with Server(env, save_dir=store) as s:
+        await s.wait_snapshot()
+        async with connect(s.url(), additional_headers=h("10.9.0.1")) as ws:
+            hello = await control(ws)
+            assert hello["can_keep"] is True and hello["resumed"] is False and hello["restored"] is True
+            await read_until(ws, b"qsh> ")
+            k = await keep(ws)
+            assert k["type"] == "kept" and len(k["token"]) >= 22 and k["days"] == 7
+            token = k["token"]
+            assert (await keep(ws)) == {"type": "kept", "already": True}, "a token is shown once"
+            await ws.send("imprint the tide remembers\n")
+            await read_until(ws, b"qsh> ")
+            await ws.send("sync\n")
+            await read_until(ws, b"sync ok")
+            assert saved(store) == [], "nothing is stored until the session ends"
+        await asyncio.sleep(0.5)
+        (img,) = saved(store)
+        assert img.read_bytes().startswith(b"QDSK1")
+        assert img.stat().st_size == 4 << 20
+        assert token not in img.name, "the store is keyed by a hash, never the token"
+        assert all(stat.S_IMODE(f.stat().st_mode) == 0o600 for f in store.iterdir())
+        assert stat.S_IMODE(store.stat().st_mode) == 0o700
+        async with await resume(s, token, "10.9.0.2") as ws:
+            hello = await control(ws)
+            assert hello["resumed"] is True and hello["restored"] is False, "a resumed disk must cold-boot"
+            assert b"FS: restored persisted files from disk" in await read_until(ws, b"qsh> ")
+            await ws.send("recall\n")
+            assert b"the tide remembers" in await read_until(ws, b"recall:")
+        await asyncio.sleep(0.5)
+        _, body = await s.get("/stats")
+        st = json.loads(body)
+        assert st["totals"]["machines_kept"] == 1 and st["totals"]["machines_resumed"] == 1
+        assert st["now"]["saved_machines"] == 1
+        assert sessions(env["run"]) == [] and not fake_pids(env["run"])
+    assert token not in caplog.text, "the resume token is never logged"
+
+
+@pytest.mark.asyncio
+async def test_keep_without_sync_stores_nothing(env, tmp_path):
+    store = tmp_path / "saves"
+    async with Server(env, save_dir=store) as s:
+        async with connect(s.url(), additional_headers=h("10.9.1.1")) as ws:
+            await control(ws)
+            await read_until(ws, b"qsh> ")
+            token = (await keep(ws))["token"]
+        await asyncio.sleep(0.5)
+        assert saved(store) == [] and list(store.iterdir()) == []
+        async with await resume(s, token, "10.9.1.1") as ws:
+            assert (await control(ws)) == {"type": "refused", "reason": "unknown_machine"}
+
+
+@pytest.mark.asyncio
+async def test_resume_refusals(env, tmp_path, monkeypatch):
+    monkeypatch.setattr(qos_console, "RESUME_WAIT_S", 0.5)
+    store = tmp_path / "saves"
+    async with Server(env, save_dir=store, per_ip=2) as s:
+        async with await resume(s, "not-a-real-token", "10.9.2.1") as ws:
+            assert (await control(ws))["reason"] == "unknown_machine"
+        async with connect(s.url() + "?resume=1", additional_headers=h("10.9.2.1")) as ws:
+            assert (await control(ws, timeout=3))["reason"] == "no_token"   # no first frame
+        # a machine is open in one session at a time
+        async with connect(s.url(), additional_headers=h("10.9.2.2")) as ws:
+            await control(ws)
+            await read_until(ws, b"qsh> ")
+            token = (await keep(ws))["token"]
+            await ws.send("sync\n")
+            await read_until(ws, b"sync ok")
+        await asyncio.sleep(0.5)
+        async with await resume(s, token, "10.9.2.3") as a:
+            assert (await control(a))["resumed"] is True
+            async with await resume(s, token, "10.9.2.4") as b:
+                assert (await control(b))["reason"] == "machine_open"
+        await asyncio.sleep(0.5)
+        assert sessions(env["run"]) == [] and not fake_pids(env["run"])
+
+
+@pytest.mark.asyncio
+async def test_restored_sessions_get_private_disks(env, tmp_path):
+    store = tmp_path / "saves"
+    async with Server(env, save_dir=store, per_ip=2) as s:
+        await s.wait_snapshot()
+        assert not (bases(env["run"])[0] / "disk.img").exists(), "the snapshot keeps no disk"
+        async with connect(s.url(), additional_headers=h("10.9.3.1")) as a, \
+                connect(s.url(), additional_headers=h("10.9.3.2")) as b:
+            for ws, word in ((a, "alpha"), (b, "beta")):
+                assert (await control(ws))["restored"]
+                await read_until(ws, b"qsh> ")
+                await ws.send(f"imprint {word}\n")
+                await read_until(ws, b"qsh> ")
+                await ws.send("sync\n")
+                await read_until(ws, b"sync ok")
+            disks = [(env["run"] / d / "disk.img").read_bytes() for d in sessions(env["run"])]
+            assert len(disks) == 2
+            assert sorted(b"alpha" in x for x in disks) == [False, True]
+            assert sorted(b"beta" in x for x in disks) == [False, True]
+        await asyncio.sleep(0.5)
+        assert saved(store) == [], "synced but never kept: nothing is stored"
+
+
+@pytest.mark.asyncio
+async def test_keep_limits(env, tmp_path):
+    store = tmp_path / "saves"
+    async with Server(env, save_dir=store, save_total_mib=4, saves_per_ip_day=1, per_ip=2) as s:
+        async with connect(s.url(), additional_headers=h("10.9.4.1")) as ws:
+            await control(ws)
+            await read_until(ws, b"qsh> ")
+            assert (await keep(ws))["type"] == "kept"
+            async with connect(s.url(), additional_headers=h("10.9.4.2")) as other:
+                await control(other)
+                await read_until(other, b"qsh> ")
+                assert (await keep(other)) == {"type": "keep_refused", "reason": "storage_full"}
+        await asyncio.sleep(0.5)    # the unsynced keep was released, so there is room again
+        async with connect(s.url(), additional_headers=h("10.9.4.1")) as ws:
+            await control(ws)
+            await read_until(ws, b"qsh> ")
+            assert (await keep(ws)) == {"type": "keep_refused", "reason": "too_many_today"}
+
+
+@pytest.mark.asyncio
+async def test_without_save_dir_keep_is_just_input(env):
+    async with Server(env) as s:
+        async with connect(s.url(), additional_headers=h("10.9.5.1")) as ws:
+            hello = await control(ws)
+            assert "can_keep" not in hello
+            await read_until(ws, b"qsh> ")
+            await ws.send(json.dumps({"type": "keep"}))     # no store: it is keystrokes
+            await ws.send("\necho still-here\n")
+            out = await read_until(ws, b"still-here")
+            assert b"kept" not in out
+            sdir = env["run"] / sessions(env["run"])[0]
+            assert not (sdir / "disk.img").exists()
+        # a resume without a store is refused before any VM starts: the token frame
+        # that follows must never reach a guest as keystrokes
+        async with await resume(s, "some-token", "10.9.5.2") as ws:
+            assert (await control(ws)) == {"type": "refused", "reason": "saving_off"}
+        await asyncio.sleep(0.3)
+        assert sessions(env["run"]) == []
+
+
+def test_save_store_retention_and_sweep(tmp_path):
+    from saves import SaveRefused, SaveStore
+    now = [1_800_000_000.0]
+    st = SaveStore(tmp_path / "s", image_mib=4, days=7, total_mib=64, per_ip_day=5, clock=lambda: now[0])
+    disk = tmp_path / "disk.img"
+    disk.write_bytes(b"QDSK1" + bytes(100))
+    token, sid = st.keep("ip1")
+    assert st.checkin(sid, disk) is True and st.count() == 1
+    now[0] += 6 * 86400
+    assert st.checkout(token) == sid
+    assert st.checkin(sid, disk) is True          # use refreshes last_used
+    now[0] += 6 * 86400
+    assert st.sweep() == 0 and st.count() == 1
+    now[0] += 2 * 86400
+    with pytest.raises(SaveRefused, match="unknown_machine"):
+        st.checkout(token)                         # expired, even before the sweep runs
+    assert st.sweep() == 1 and st.count() == 0 and list((tmp_path / "s").iterdir()) == []
+    # a reservation left by a crash (no image, not open) is swept
+    st.keep("ip1")
+    st2 = SaveStore(tmp_path / "s", clock=lambda: now[0])
+    assert st2.sweep() == 1 and st2.count() == 0
