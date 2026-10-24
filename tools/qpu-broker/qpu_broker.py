@@ -142,13 +142,16 @@ class Policy:
     sim_max_shots: int = 1000
     sim_default_shots: int = 100
     real_max_shots: int = 100
-    real_default_shots: int = 20
+    real_default_shots: int = 10
     # Per-minute-priced QPUs bill execution time, which the SDK does not quote before
-    # submit. Model: shots x ms_per_shot + overhead_ms, times margin (measured on Rigetti
-    # Cepheus-1-108Q 2026-09-07: 100 shots ran 35 ms and billed 7.13 credits).
-    ms_per_shot: float = 0.4
-    overhead_ms: float = 5.0
-    time_margin: float = 1.5
+    # submit. Model: shots x ms_per_shot + overhead_ms, times margin. Fitted to two billed
+    # Bell jobs on Rigetti Cepheus-1-108Q at 12000 credits/min: 100 shots billed 7.13
+    # credits (35.6 ms, 2026-09-07) and 20 shots billed 4.1724 (20.9 ms, 2026-10-24),
+    # so about 0.19 ms per shot plus 17 ms per job. The first model (0.4 ms, 5 ms, x1.5)
+    # estimated 3.90 for the 20-shot job, 7% under what it billed.
+    ms_per_shot: float = 0.19
+    overhead_ms: float = 17.0
+    time_margin: float = 1.2
     allow: tuple[str, ...] = ()        # optional allow-list of QPU device ids
     device_cache_s: float = 300.0
 
@@ -356,10 +359,15 @@ class Broker:
     def info(self, req: dict) -> dict:
         day = utc_day()
         sid = str(req.get("sid", ""))
+        client = str(req.get("client", ""))
         used = self.store.count("kind='qpu' AND sid=? AND state!='refused'", sid)
+        left = self.pol.real_per_session - used
+        if client:
+            left = min(left, self.pol.real_per_client_per_day - self.store.count(
+                "kind='qpu' AND client=? AND day=? AND state!='refused'", client, day))
         return {"ok": True, "real": self.pol.real, "budget_per_day": self.pol.budget_per_day,
                 "spent_today": round(self.store.spent(day), 4), "max_job_credits": self.pol.max_job_credits,
-                "real_left_this_session": max(0, self.pol.real_per_session - used),
+                "real_left": max(0, left),
                 "real_max_shots": self.pol.real_max_shots, "sim_max_shots": self.pol.sim_max_shots}
 
     def validate(self, req: dict) -> tuple[str, int, bytes, int, str]:

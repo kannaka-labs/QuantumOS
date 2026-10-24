@@ -206,7 +206,7 @@ def test_launcher_relays_through_a_real_session(tmp_path):
         async with FakeBroker(sock, answer=lambda req: {"ok": True, "real": True, "budget_per_day": 10,
                                                         "spent_today": 0, "max_job_credits": 5,
                                                         "real_max_shots": 100, "sim_max_shots": 1000,
-                                                        "real_left_this_session": 1}) as fb:
+                                                        "real_left": 1}) as fb:
             import socket as so
             s = so.socket()
             s.bind(("127.0.0.1", 0))

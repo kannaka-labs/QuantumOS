@@ -46,4 +46,4 @@ sudo systemctl enable --now qos-qpu-broker.service
 sudo systemctl restart qos-qpu-broker.service
 sleep 2
 systemctl is-active qos-qpu-broker.service
-ls -l /run/qos-qpu/broker.sock
+sudo ls -l /run/qos-qpu/broker.sock
