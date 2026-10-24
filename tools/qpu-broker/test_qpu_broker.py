@@ -210,6 +210,41 @@ def test_one_real_job_per_session_and_client_and_daily_budget(tmp_path):
     assert a["ok"]
 
 
+def test_refusals_say_the_simulator_is_free_and_when_limits_reset(tmp_path):
+    b, be = make(tmp_path, real=True, budget_per_day=5.0)
+    assert run(b.handle(sub("qpu", shots=10, sid="s1", client="c1")))["ok"]     # 4.536 of 5
+    a = run(b.handle(sub("qpu", shots=10, sid="s1", client="c9")))
+    assert "this session has used it" in a["error"] and "qpu run" in a["error"]
+    a = run(b.handle(sub("qpu", shots=10, sid="s2", client="c1")))
+    assert "per visitor" in a["error"] and "qpu run" in a["error"] and "Resets 00:00 UTC" in a["error"]
+    a = run(b.handle(sub("qpu", shots=10, sid="s3", client="c3")))
+    assert a["error"].startswith("today's QPU budget is used: 0.46 of 5 credits left, "
+                                 "this job is estimated at 4.54. The simulator is still free")
+    assert "Resets 00:00 UTC, in " in a["error"]
+    assert len("refused: " + a["error"]) <= 200     # the relay keeps 200 characters
+    assert run(b.handle(sub(sid="s3", client="c3")))["ok"]                     # simulator still runs
+    assert len(be.submitted) == 2
+
+
+def test_spent_budget_is_refused_before_asking_qbraid(tmp_path):
+    b, be = make(tmp_path, real=True, budget_per_day=4.0)
+    b.store.insert(id="q0000000001", kind="qpu", device="d", provider_job="p", sid="s0", client="c0",
+                   shots=10, n_qubits=2, circuit="", qasm="", state="done", detail=None, est_cost=4.5,
+                   cost=4.17, cost_source="billed", counts=None, submitted=0.0, finished=0.0,
+                   day=qb.utc_day())
+    be.status_calls.clear()
+    a = run(b.handle(sub("qpu", shots=10, sid="s1", client="c1")))
+    assert a["error"].startswith("today's QPU budget is used: 0.00 of 4 credits left. ")
+    assert be.status_calls == [] and be.submitted == []
+
+
+def test_until_reset():
+    day = 86400 * 20000
+    assert qb.until_reset(day) == "Resets 00:00 UTC, in 24h00m."
+    assert qb.until_reset(day + 86400 - 61) == "Resets 00:00 UTC, in 0h02m."
+    assert qb.until_reset(day + 86400 - 1) == "Resets 00:00 UTC, in 0h01m."
+
+
 async def _first_id(b):
     return b.store.q("SELECT id FROM jobs ORDER BY submitted LIMIT 1")[0][0]
 
