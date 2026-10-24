@@ -169,9 +169,13 @@ static int write_sector(uint32_t lba, const uint8_t *buf) {
 }
 
 /* Flush the write cache once, after a run of writes has fully drained.
- * Its own generous budget: a real drive's flush latency depends on host
- * storage, unlike the microsecond command/DRQ handshakes. */
-#define ATA_FLUSH_SPIN_MAX 10000000u
+ * Its own generous budget: a flush waits for the backing store (the ATA
+ * spec allows FLUSH CACHE up to 30 s), unlike the microsecond command/DRQ
+ * handshakes. 10M polls was about 1 s under QEMU TCG on a loaded CI runner,
+ * and a host fsync outlasted it (a spurious "fault - flush"). 300M polls is
+ * about 30 s there; on real hardware, where a status read is slower, a
+ * drive that never finishes costs a few minutes at most. Still bounded. */
+#define ATA_FLUSH_SPIN_MAX 300000000u
 static int cache_flush(void) {
     io_outb(ATA_IO_BASE + ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
     for (uint32_t i = 0; i < ATA_FLUSH_SPIN_MAX; i++) {

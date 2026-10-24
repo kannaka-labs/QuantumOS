@@ -59,8 +59,11 @@
 #define CHUNK_SECTORS 64
 
 /* Bounded spin for one request's completion: a `pause` per pass, so a
- * dead device costs a few seconds at most, never a hang. */
+ * dead device costs a few seconds at most, never a hang. A FLUSH waits for
+ * the host's storage to sync, so it gets a longer bound, as ata.c's flush
+ * does (the ATA spec allows 30 s; a loaded host's fsync can take seconds). */
 #define VBLK_SPIN_MAX 20000000u
+#define VBLK_FLUSH_SPIN_MAX 300000000u
 
 typedef struct __attribute__((packed)) {
     uint64_t addr;
@@ -130,9 +133,9 @@ static void *alloc_aligned(uint32_t size, uint32_t align) {
     return (void *)((a + (align - 1)) & ~(uintptr_t)(align - 1));
 }
 
-/* Submit one request and wait for it. `data` may be 0 (FLUSH). Returns 0
- * when the device completed it with S_OK, -1 otherwise. */
-static int submit(uint32_t type, uint64_t sector, uint8_t *data, uint32_t len) {
+/* Submit one request and wait for it, at most `spins` passes. `data` may be
+ * 0 (FLUSH). Returns 0 when the device completed it with S_OK, -1 otherwise. */
+static int submit(uint32_t type, uint64_t sector, uint8_t *data, uint32_t len, uint32_t spins) {
     hdr->type = type;
     hdr->reserved = 0;
     hdr->sector = sector;
@@ -163,7 +166,7 @@ static int submit(uint32_t type, uint64_t sector, uint8_t *data, uint32_t len) {
     tp.notify(&tp, REQ_Q);
 
     int done = 0;
-    for (uint32_t s = 0; s < VBLK_SPIN_MAX; s++) {
+    for (uint32_t s = 0; s < spins; s++) {
         if (used->idx != last_used) { /* volatile read: re-fetched each pass */
             last_used = used->idx;
             done = 1;
@@ -295,7 +298,7 @@ int virtio_blk_read(uint32_t lba, void *buf, uint32_t count) {
     while (count) {
         uint32_t n = count < CHUNK_SECTORS ? count : CHUNK_SECTORS;
         uint32_t bytes = n * BLK_SECTOR_SIZE;
-        if (submit(T_IN, lba, bounce, bytes) != 0) {
+        if (submit(T_IN, lba, bounce, bytes, VBLK_SPIN_MAX) != 0) {
             return -1;
         }
         for (uint32_t i = 0; i < bytes; i++) {
@@ -319,7 +322,7 @@ int virtio_blk_write(uint32_t lba, const void *buf, uint32_t count) {
         for (uint32_t i = 0; i < bytes; i++) {
             bounce[i] = p[i];
         }
-        if (submit(T_OUT, lba, bounce, bytes) != 0) {
+        if (submit(T_OUT, lba, bounce, bytes, VBLK_SPIN_MAX) != 0) {
             return -1;
         }
         p += bytes;
@@ -327,7 +330,7 @@ int virtio_blk_write(uint32_t lba, const void *buf, uint32_t count) {
         count -= n;
     }
     /* One flush for the whole run, as ata_write does. */
-    if (can_flush && submit(T_FLUSH, 0, 0, 0) != 0) {
+    if (can_flush && submit(T_FLUSH, 0, 0, 0, VBLK_FLUSH_SPIN_MAX) != 0) {
         return -1;
     }
     return 0;
