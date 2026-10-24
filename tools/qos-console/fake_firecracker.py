@@ -5,8 +5,14 @@ Two ways to start, like the real binary:
   --no-api --config-file <cfg>   reads the config (a broken one fails like the real
                                  binary) and boots at once
   --api-sock <path>              serves the API subset the launcher uses on a Unix socket:
-                                 PUT /boot-source, /machine-config, /actions InstanceStart,
-                                 PATCH /vm Paused, PUT /snapshot/create, PUT /snapshot/load
+                                 PUT /boot-source, /machine-config, /drives/<id>,
+                                 /actions InstanceStart, PATCH /vm Paused,
+                                 PUT /snapshot/create, PUT /snapshot/load
+
+At most one drive and no NICs. Like Firecracker, a relative drive path is opened against
+the process's cwd, and the snapshot records the path as given, so a restore in another
+directory opens that directory's file. A boot whose drive starts with QDSK1 restores the
+imprints `sync` stored there ("FS: restored persisted files from disk").
 
 A boot prints a QuantumOS-like banner naming the kernel's sha256 (first 12 hex) and a
 prompt. The guest's "memory" is a dict saved to the snapshot's memory file and read back
@@ -19,6 +25,8 @@ Commands on stdin, one per line:
   imprint <text>  stores <text> in guest memory
   recall          prints every stored text
   whoami          prints the kernel sha the memory was booted from
+  sync            writes QDSK1 + the imprints to the drive ("qsh: sync ok"), or
+                  "qsh: sync failed (no disk)"
   qseed           prints the session seeds received (ESC ] qseed ; <hex> BEL, stripped
                   from input like the kernel does) and whether the first came before
                   any other input
@@ -36,7 +44,7 @@ import threading
 import time
 
 out = sys.stdout.buffer
-mem = {"kernel": None, "imprints": []}
+mem = {"kernel": None, "imprints": [], "drive": None}   # the drive path is device state
 started = threading.Event()
 session = {"seeds": [], "input_before_seed": False}   # not guest memory: never snapshotted
 RESEED = re.compile(rb"\x1b\]qseed;([0-9a-fA-F]{16})\x07")
@@ -49,9 +57,17 @@ def die(msg, code=4):
     os._exit(code)
 
 
+QDSK = b"QDSK1"
+
+
 def boot(kernel_path):
     mem["kernel"] = hashlib.sha256(open(kernel_path, "rb").read()).hexdigest()[:12]
     out.write(f"Welcome to QuantumOS (fake) kernel={mem['kernel']}\n".encode())
+    if mem["drive"]:
+        raw = open(mem["drive"], "rb").read()
+        if raw.startswith(QDSK):
+            mem["imprints"] = json.loads(raw[len(QDSK):].rstrip(b"\0") or b"[]")
+            out.write(b"FS: restored persisted files from disk\n")
     out.write(b"\x1b[1;32mqsh> \x1b[0m")
     out.flush()
     started.set()
@@ -76,9 +92,15 @@ def serve_api(path):
                 if k.strip().lower() == "content-length":
                     length = int(v.strip())
             body = json.loads(f.read(length)) if length else {}
-            if target.startswith("/drives") or target.startswith("/network-interfaces"):
-                die("console VMs must have no drives or NICs")
-            if method == "PUT" and target == "/boot-source":
+            if target.startswith("/network-interfaces"):
+                die("console VMs must have no NICs")
+            if method == "PUT" and target.startswith("/drives/"):
+                if mem["drive"] is not None:
+                    die("at most one drive")
+                if not os.path.exists(body["path_on_host"]):
+                    die("drive file missing")
+                mem["drive"] = body["path_on_host"]
+            elif method == "PUT" and target == "/boot-source":
                 cfg["kernel"] = body["kernel_image_path"]
             elif method == "PUT" and target == "/machine-config":
                 cfg["machine"] = body
@@ -94,6 +116,8 @@ def serve_api(path):
                     die("expected the File memory backend")
                 json.load(open(body["snapshot_path"]))
                 mem.update(json.load(open(body["mem_backend"]["backend_path"])))  # private copy
+                if mem["drive"] and not os.path.exists(mem["drive"]):
+                    die("snapshot drive missing at load")
                 if body.get("resume_vm"):
                     started.set()
             else:
@@ -107,7 +131,9 @@ if "--api-sock" in args:
     threading.Thread(target=serve_api, args=(args[args.index("--api-sock") + 1],), daemon=True).start()
 else:
     cfg = json.load(open(args[args.index("--config-file") + 1]))
-    assert cfg["drives"] == [] and "network-interfaces" not in cfg, "console VMs must have no drives or NICs"
+    assert len(cfg["drives"]) <= 1 and "network-interfaces" not in cfg, "console VMs: one drive at most, no NICs"
+    if cfg["drives"]:
+        mem["drive"] = cfg["drives"][0]["path_on_host"]
     boot(cfg["boot-source"]["kernel_image_path"])
 
 started.wait()
@@ -146,6 +172,13 @@ for raw in sys.stdin.buffer:
         out.write(b"\x1b]qpu;" + line[4:].encode() + b"\x07")
     elif line == "forge":              # a guest trying to show the visitor a fake answer
         out.write(b"before\x1b]qres;1;D;q0123456789;QPU fake\x07after\n")
+    elif line == "sync":
+        if mem["drive"]:
+            with open(mem["drive"], "r+b") as f:
+                f.write(QDSK + json.dumps(mem["imprints"]).encode())
+            out.write(b"qsh: sync ok (1 files flushed)\n")
+        else:
+            out.write(b"qsh: sync failed (no disk)\n")
     elif line == "whoami":
         out.write(f"kernel={mem['kernel']}\n".encode())
     out.write(b"qsh> ")

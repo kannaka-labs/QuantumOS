@@ -144,6 +144,46 @@ python3 bench_console.py ws://127.0.0.1:8931/ws --runs 10 --pause 1 --json out.j
 python3 bench_console.py wss://qos.ninja-portal.com/ws --runs 10 --pause 11   # public; 6 boots/min/address
 ```
 
+## Saved machines (#256)
+
+With `--save-dir`, every VM gets a small blank virtio-blk disk (`--save-mib`, 4 MiB) in
+its own session directory. Restored VMs share one snapshot, which was taken with the
+drive at a *relative* path (`disk.img`); Firecracker opens it against its own working
+directory, which is the session directory, so each visitor writes only their own disk.
+
+- **Keep.** The page sends `{"type": "keep"}`. The launcher answers once with a resume
+  key (128 random bits, `secrets.token_urlsafe(16)`): `{"type": "kept", "token": ...}`.
+  Nothing is stored yet.
+- **Save.** The visitor types `sync` in QuantumOS (the OS's own persistence, ADR-0007).
+  When the session ends, the disk is kept only if it carries a synced QuantumOS volume
+  (the `QDSK1` superblock). A keep that was never synced stores nothing, and its key
+  stops working. The page gets `{"type": "saved"}` or `{"type": "not_saved"}` if it is
+  still connected.
+- **Resume.** The page opens `/ws?resume=1` and sends `{"type": "resume", "token": ...}`
+  as its first frame, so the key never appears in a URL or a proxy log. The VM
+  cold-boots (about 2 s) with a copy of the kept disk, and the kernel restores the files,
+  the field and the audit ledger at boot. When the session ends the disk is written back.
+- **Refusals:** `unknown_machine` (wrong, expired or never-synced key), `machine_open`
+  (open in another session), `no_token` (no first frame within 10 s), `saving_off` (a
+  resume to a launcher without `--save-dir`, refused before any VM starts so the key is
+  never typed into a guest); for keep: `storage_full`, `too_many_today`.
+
+What is stored, in `--save-dir` (mode 0700, files 0600): `<sha256 of the key>.img` and
+`<same>.json` (created and last-used times). No key, no address, nothing about the
+visitor. The images are not encrypted, so the operator can read them; the page says so.
+The log carries the first 8 hex digits of the hash, never the key.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--save-dir` | unset | where kept machines live; unset means VMs have no disk at all |
+| `--save-mib` | 4 | size of each VM's disk |
+| `--save-days` | 7 | a machine unused this long is deleted (checked hourly and at start) |
+| `--save-total-mib` | 2048 | new keeps are refused when the store would exceed this; nobody's machine is evicted |
+| `--saves-per-ip-day` | 3 | keeps per visitor address per UTC day (in memory, per-process address hash) |
+
+`/stats` adds `machines_kept` (kept at session end, so synced), `machines_resumed` and
+`now.saved_machines`.
+
 ## Limits
 
 Every limit, with its flag and default (#257):
