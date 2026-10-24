@@ -59,7 +59,7 @@ void quantum_set_boot_entropy(uint64_t seed);
 void quantum_session_reseed(uint64_t seed);
 
 /* One-shot, non-IRQ: the line describing the seed source after a session reseed
- * ("host-seeded ... (no QPU attached)" unless a boot qseed is also mixed in),
+ * ("host-seeded ... (host OS random, not a QPU)" unless a boot qseed is mixed in),
  * or NULL when there is nothing new to say. Printed from the console read path. */
 const char *quantum_take_reseed_notice(void);
 
