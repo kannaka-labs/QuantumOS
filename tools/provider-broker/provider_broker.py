@@ -35,6 +35,7 @@ billed(rid) -> float | None, find(tag) -> [rid].
   provider_broker.py envelope --db broker.db --per-day 5 --per-action 2 --classes storage,compute --max-lease 24h
   provider_broker.py approve  --db broker.db <approval id>
   provider_broker.py ledger   --db broker.db
+  provider_broker.py setup oci          (the least-privilege steps for a provider)
 
 Socket protocol: one JSON object per line, one JSON answer per line. Agent ops only:
   {"op": "providers"} | {"op": "quote", "provider", "kind", "spec", "duration_s"}
@@ -453,12 +454,17 @@ class Broker:
 
 # ---- plugins -----------------------------------------------------------------
 
-def load_plugins(names: list[str]) -> dict:
+def load_plugins(names: list[str], a: argparse.Namespace | None = None) -> dict:
     out = {}
     for n in names:
         if n == "mock":
             from plugin_mock import MockProvider
             out["mock"] = MockProvider()
+        elif n == "oci":
+            from plugin_oci import OciProvider
+            if a is None or not a.oci_config or not a.oci_compartment:
+                raise SystemExit("the oci provider needs --oci-config and --oci-compartment")
+            out["oci"] = OciProvider(a.oci_config, a.oci_compartment, a.oci_profile)
         else:
             raise SystemExit(f"unknown provider plugin {n!r}")
     return out
@@ -472,7 +478,7 @@ def parse_duration(s: str) -> int:
 
 
 async def amain(a: argparse.Namespace, broker: Broker | None = None, stop: asyncio.Future | None = None) -> int:
-    broker = broker or Broker(Ledger(a.db), load_plugins(a.providers.split(",")), a.allow_spend)
+    broker = broker or Broker(Ledger(a.db), load_plugins(a.providers.split(","), a), a.allow_spend)
     n = broker.recover()
     if n:
         log.info("recovered %d interrupted leases", n)
@@ -507,7 +513,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("serve")
     s.add_argument("--db", required=True)
     s.add_argument("--socket", required=True)
-    s.add_argument("--providers", default="mock")
+    s.add_argument("--providers", default="mock", help="comma-separated: mock, oci")
+    s.add_argument("--oci-config", help="OCI config file (oci provider)")
+    s.add_argument("--oci-profile", default="DEFAULT")
+    s.add_argument("--oci-compartment", help="OCID of the compartment the broker may use")
     s.add_argument("--allow-spend", action="store_true", help="allow quotes that cost money (off: free only)")
     s.add_argument("--reap-every", type=float, default=30)
     e = sub.add_parser("envelope", help="set the budget envelope (the person, not the agent)")
@@ -520,6 +529,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", required=True)
     p.add_argument("approval")
     p.add_argument("--deny", action="store_true")
+    st = sub.add_parser("setup", help="print a provider's least-privilege setup steps")
+    st.add_argument("provider", choices=("oci",))
     g = sub.add_parser("ledger")
     g.add_argument("--db", required=True)
     g.add_argument("--limit", type=int, default=50)
@@ -531,6 +542,10 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", stream=sys.stdout)
     if a.cmd == "serve":
         return asyncio.run(amain(a))
+    if a.cmd == "setup":
+        from plugin_oci import SETUP
+        print(SETUP, end="")
+        return 0
     b = Broker(Ledger(a.db), {})
     try:
         if a.cmd == "envelope":
