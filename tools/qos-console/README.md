@@ -96,7 +96,7 @@ whole session).
   and timings are saved every 30 s and at shutdown, so they survive restarts.
 - **Our own traffic is kept out.** Ad captures, demos, smoke tests and benches carry the
   token from `--internal-token-file` (the unit uses `/etc/qos-console/internal.token`,
-  root:qosconsole 640): as an `X-QOS-Internal` header from scripts
+  qosconsole 400; the unit runs with `Group=kvm`, so a group-readable file is not enough): as an `X-QOS-Internal` header from scripts
   (`smoke_client.py` and `bench_console.py` take `--internal-token-file`), or by opening
   the page as `https://qos.ninja-portal.com/?internal=<token>` for a browser capture,
   which passes it on to `/ws` and `/beacon`. Those sessions and beacons count only in
