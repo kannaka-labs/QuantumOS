@@ -49,7 +49,7 @@ counts are bitstrings as qBraid returns them, with qubit 0 as the rightmost char
 | Real jobs per session | 1 |
 | Real jobs per visitor per day | 1, keyed by the launcher's salted client hash |
 | Simulator jobs | 10 per session, 500 per day |
-| Qubits / ops / shots | sim up to 8 / 40 / 1000; QPU up to 5 / 40 / 100 (default 20 shots) |
+| Qubits / ops / shots | sim up to 8 / 40 / 1000; QPU up to 5 / 40 / 100 (default 10 shots) |
 
 - **Device choice happens at run time.** The broker reads qBraid's device list and live
   prices through the SDK, sorts the QPUs with enough qubits by estimated cost, and takes
@@ -58,9 +58,11 @@ counts are bitstrings as qBraid returns them, with qubit 0 as the rightmost char
   (for example `openquantum:*`), so the broker cannot bound what it costs.
 - **The cost estimate** is `perTask + perShot × shots + perMinute × time`. qBraid does not
   quote execution time before a job runs, so per-minute devices use
-  `time = (shots × 0.4 ms + 5 ms) × 1.5`. The 0.4 ms comes from Rigetti Cepheus-1-108Q,
-  where 100 shots measured 35 ms and billed 7.13 credits (2026-09-07). The estimate is
-  logged before submit. The billed cost from the finished job then replaces it in the
+  `time = (shots × 0.19 ms + 17 ms) × 1.2`. That model is fitted to two billed Bell
+  jobs on Rigetti Cepheus-1-108Q: 100 shots billed 7.13 credits (2026-09-07), and 20
+  shots billed 4.1724 credits (2026-10-24, the first console job). The first model,
+  `(shots × 0.4 ms + 5 ms) × 1.5`, estimated 3.90 credits for that 20-shot job, which
+  was 7% under the bill. The estimate is logged before submit. The billed cost from the finished job then replaces it in the
   day's spend.
 - A job whose submit fails keeps its estimate counted against the day. Spend is never
   under-counted.

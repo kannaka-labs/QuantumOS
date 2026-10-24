@@ -166,11 +166,11 @@ def test_real_picks_cheapest_online_priced_qpu(tmp_path):
     b, be = make(tmp_path, real=True)
     a = run(b.handle(sub("qpu")))       # default shots
     assert a["ok"], a
-    # Rigetti bills 12000 credits/min = 0.2 credits/ms; (20 x 0.4 + 5) ms x 1.5 = 19.5 ms
-    # -> 3.9 credits, under the 5-credit cap; Garnet's 30-credit task fee is not.
+    # Rigetti bills 12000 credits/min = 0.2 credits/ms; (10 x 0.19 + 17) ms x 1.2 = 22.68 ms
+    # -> 4.536 credits, under the 5-credit cap; Garnet's 30-credit task fee is not.
     assert a["device"] == "rigetti:rigetti:qpu:cepheus-1-108q"
-    assert a["est_cost"] == pytest.approx(3.9)
-    assert be.submitted == [("rigetti:rigetti:qpu:cepheus-1-108q", 20)]
+    assert a["est_cost"] == pytest.approx(4.536)
+    assert be.submitted == [("rigetti:rigetti:qpu:cepheus-1-108q", 10)]
     assert "openquantum:iqm:qpu:garnet" not in be.status_calls       # zero price = unbounded, skipped
     assert "azure:ionq:qpu:forte-1" not in be.status_calls
     assert "azure:pasqal:qpu:fresnel" not in be.status_calls          # cheaper, but analog
@@ -179,7 +179,7 @@ def test_real_picks_cheapest_online_priced_qpu(tmp_path):
 def test_real_refused_when_estimate_over_cap(tmp_path):
     b, be = make(tmp_path, real=True)
     a = run(b.handle(sub("qpu", shots=100)))
-    assert not a["ok"] and "estimated at 13.50 credits" in a["error"] and "per-job cap" in a["error"]
+    assert not a["ok"] and "estimated at 8.64 credits" in a["error"] and "per-job cap" in a["error"]
     assert be.submitted == []
 
 
@@ -191,14 +191,14 @@ def test_offline_device_is_skipped(tmp_path):
 
 
 def test_one_real_job_per_session_and_client_and_daily_budget(tmp_path):
-    b, be = make(tmp_path, real=True, budget_per_day=6.0, real_per_client_per_day=5)
+    b, be = make(tmp_path, real=True, budget_per_day=10.0, real_per_client_per_day=5)
     a = run(b.handle(sub("qpu", shots=10, sid="s1", client="c1")))
     assert a["ok"]
     est1 = a["est_cost"]
     a = run(b.handle(sub("qpu", shots=10, sid="s1", client="c2")))
     assert not a["ok"] and "per session" in a["error"]
     a = run(b.handle(sub("qpu", shots=10, sid="s2", client="c2")))
-    assert a["ok"]                       # 2 x 2.7 = 5.4 of 6
+    assert a["ok"]                       # 2 x 4.536 = 9.07 of 10
     a = run(b.handle(sub("qpu", shots=10, sid="s3", client="c3")))
     assert not a["ok"] and "budget" in a["error"]
     assert len(be.submitted) == 2
@@ -278,7 +278,7 @@ def test_info_and_socket_protocol(tmp_path):
         w.write(b'{"op": "info", "sid": "x"}\nnot json\n' + b"x" * 5000 + b"\n")
         await w.drain()
         info = json.loads(await r.readline())
-        assert info["ok"] and info["real"] and info["budget_per_day"] == 10 and info["real_left_this_session"] == 1
+        assert info["ok"] and info["real"] and info["budget_per_day"] == 10 and info["real_left"] == 1
         assert json.loads(await r.readline()) == {"ok": False, "error": "bad request"}
         w.close()
         stop.set_result(None)

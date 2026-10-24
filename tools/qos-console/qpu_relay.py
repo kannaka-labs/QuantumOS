@@ -111,7 +111,7 @@ def format_info(a: dict) -> list[str]:
         lines.append(f"real QPU: on, {a.get('budget_per_day'):g} credits/day for all visitors "
                      f"({a.get('spent_today', 0):.2f} used today), at most {a.get('max_job_credits'):g} "
                      f"per job, up to {a.get('real_max_shots')} shots")
-        lines.append(f"real QPU jobs left in this session: {a.get('real_left_this_session')}")
+        lines.append(f"real QPU jobs you can still run (this session, today): {a.get('real_left')}")
     else:
         lines.append("real QPU: switched off on this host")
     return lines
