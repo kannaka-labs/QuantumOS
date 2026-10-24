@@ -44,12 +44,13 @@
 
 /* What actually executes a brokered circuit, as printed on every result line
  * (qpu_test, agentd) and by qpud at startup. Today that is qpud's exact integer
- * state-vector engine (qsv_engine.h) in ring 3: a local simulator, with no QPU
- * attached. This is the ONE place the label lives. When qpud dispatches to a
- * real backend (#262, qBraid), change it here, and only if that is true for
- * the build. CI gates match the text after the label ("bell via broker job="),
- * so the label can change without touching them. */
-#define QPU_BACKEND_LABEL "QSIM (local simulator, no QPU attached)"
+ * state-vector engine (qsv_engine.h) in ring 3: a simulator inside the guest. The
+ * console's real-QPU path (qsh `qpu real`, #262) goes to the host broker and
+ * never through qpud, so it does not change this label. This is the ONE place
+ * the label lives. If qpud ever dispatches to a real backend, change it here,
+ * and only if that is true for the build. CI gates match the text after the
+ * label ("bell via broker job="), so the label can change without touching them. */
+#define QPU_BACKEND_LABEL "QSIM (in-guest simulator, not a QPU)"
 
 #define QC_STATUS_OK 0
 #define QC_STATUS_EINVAL 1 /* malformed circuit — fail closed */

@@ -226,8 +226,8 @@ and checks the EXACT integer results `qpud` returned through the broker
 (`p=1/2`, `p=121/128`) — a submitter that does not include the engine —
 then proves the quota (a third submit refused) and both cross-perm
 denials. Result lines name the backend that ran the circuit
-(`QPU_BACKEND_LABEL` in `user/qpu_circuit.h`; today "QSIM (local simulator, no QPU
-attached)"). `ghost_test` proves a capless submit is refused. Later backends
+(`QPU_BACKEND_LABEL` in `user/qpu_circuit.h`; today "QSIM (in-guest simulator, not a
+QPU)"). `ghost_test` proves a capless submit is refused. Later backends
 (simulation past 12 qubits, real QPUs — Phases 2–3) are dispatched from
 `qpud` to the host gateway; the kernel surface is unchanged. That host
 gateway (`scripts/qsv_gateway.py`) terminates the SAME opaque circuit wire

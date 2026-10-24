@@ -104,3 +104,19 @@ backend is dispatched from `qpud` (#262), that string changes, and only for buil
 it is true. The CI gates match the text after the label ("bell via broker job="). The
 authority lines ("QPU: quota ENFORCED", "QPU: capless submit denied") are about the
 broker and are unchanged.
+
+## Update 2026-10-24: "no QPU attached" is no longer true on the console
+
+Since #269 the public console's qsh has `qpu real`, which sends a circuit through the host
+broker and qBraid to a real QPU. The boot lines that said "no QPU attached" then contradicted
+the `qpu` command's own "real QPU: on". The words now say what is true: the seed is not from
+a QPU, whether or not a QPU is reachable.
+
+- Session reseed: "Entropy: host-seeded for this session (host OS random, not a QPU)".
+- Cold boot without a qseed: "Entropy: unseeded at boot (timer default, not from a QPU)".
+- motd: "dice seeded by the host, not by a QPU."
+- `QPU_BACKEND_LABEL`: "QSIM (in-guest simulator, not a QPU)". The in-guest self-test still
+  runs on qpud's exact engine; `qpu real` never goes through qpud.
+- The swarm console gate line prints `seed=` instead of `qseed=`, because on the console
+  that value is the host session seed. The COM2 wire format (`QOS-BOOT|qseed=...`), the
+  verifier and every CI gate are unchanged (the gates match "SWARM: boot attestation emitted").

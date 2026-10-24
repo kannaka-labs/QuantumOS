@@ -1,2 +1,2 @@
-Welcome to QuantumOS — wave-interference memory; dice quantum-seeded when a QPU is attached.
+Welcome to QuantumOS — wave-interference memory; dice seeded by the host, not by a QPU.
 Type 'help' for commands; 'ls /' to browse the initrd.

@@ -129,7 +129,7 @@ quantum_result_t quantum_init(void) {
         boot_log("Quantum entropy: seeded from boot handoff (qBraid quantum lab)");
     } else {
         prng_state = mix_seed_nonzero(prng_state, timer_get_ticks() + 1);
-        boot_log("Entropy: unseeded at boot (timer default; no QPU attached)");
+        boot_log("Entropy: unseeded at boot (timer default, not from a QPU)");
     }
 
     quantum_initialized = 1;
@@ -466,7 +466,7 @@ const char *quantum_take_reseed_notice(void) {
     /* Say where this session's numbers actually come from (ADR-0025): the
      * host's OS random source, unless a qseed= boot handoff is also mixed in. */
     return boot_qseed_handoff ? "Entropy: session reseed mixed into the boot qseed handoff"
-                              : "Entropy: host-seeded for this session (no QPU attached)";
+                              : "Entropy: host-seeded for this session (host OS random, not a QPU)";
 }
 
 uint32_t quantum_session_reseeds(void) {

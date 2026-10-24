@@ -262,7 +262,7 @@ message bit). `SYS_QSEED` (#13), gated on the same quantum cap, lets the
 service bind the record to the exact qseed the kernel booted with.
 
 ```
-[user pid=...] SWARM: boot attestation emitted (lamport-signed, qseed=DEADBEEFCAFEBABE)
+[user pid=...] SWARM: boot attestation emitted (lamport-signed, seed=DEADBEEFCAFEBABE)
 ```
 
 The host verifier `scripts/verify_attestation.py` (stdlib only) parses the COM2

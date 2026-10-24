@@ -247,7 +247,7 @@ static void emit_boot_attestation(void) {
 
     /* COM1 console gate line (CI greps "SWARM: boot attestation emitted"). */
     char line[96];
-    int o = ghost_put(line, 0, "SWARM: boot attestation emitted (lamport-signed, qseed=");
+    int o = ghost_put(line, 0, "SWARM: boot attestation emitted (lamport-signed, seed=");
     if (seed_present)
         o = put_hex_u64(line, o, qseed);
     else
