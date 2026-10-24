@@ -17,11 +17,14 @@ StateDirectory=qos-qpu
 StateDirectoryMode=0750
 # The money rules are these flags. Real QPU jobs: 10 credits/day across all visitors,
 # at most 5 credits per job (estimated before submit), 1 per session, 1 per visitor/day.
+# Calibration (#275): the daily Bell job is 20 shots, and 5 credits stay held back from
+# visitors until it has been tried that day (qos-qpu-calibrate.timer, 00:05 UTC).
 ExecStart=/opt/qos-qpu/venv/bin/python -u /opt/qos-qpu/qpu_broker.py \
     --socket /run/qos-qpu/broker.sock \
     --db /var/lib/qos-qpu/broker.db \
     --real --budget-per-day 10 --max-job-credits 5 \
-    --real-per-session 1 --real-per-client-per-day 1
+    --real-per-session 1 --real-per-client-per-day 1 \
+    --calib-shots 20 --calib-reserve 5 --calib-from 2026-10-25
 Restart=on-failure
 RestartSec=5
 UMask=0007

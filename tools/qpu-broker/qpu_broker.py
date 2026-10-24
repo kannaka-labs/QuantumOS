@@ -19,6 +19,11 @@ from a root-only EnvironmentFile), and every money rule lives here, not in the U
     cannot bound it). The estimate is logged before submit and the billed cost after.
   * Real jobs are asynchronous: submit returns "queued on <device>, job <id>" at once and
     the result is fetched later (`qpu job <id>`), from any session.
+  * Daily calibration (#275): once per UTC day the `calibrate` op submits one fixed Bell
+    circuit at a fixed shot count (--calib-shots) through the same device choice, caps and
+    budget. Until that day's calibration has been tried, visitor jobs may spend only the
+    budget minus --calib-reserve, so the calibration job cannot be crowded out. Only the
+    host's timer sends `calibrate`; the console relay cannot (its grammar has no such op).
 
 Every answer carries provenance: kind (simulator or QPU), device id, broker job id,
 provider job id, shots, timestamps and cost.
@@ -27,6 +32,7 @@ Protocol: one JSON object per line on the Unix socket, one JSON answer per line.
   {"op": "info", "sid": ..., "client": ...}
   {"op": "submit", "sid": ..., "client": ..., "mode": "sim"|"qpu", "shots": N, "circuit": "<hex>"}
   {"op": "job", "id": "<broker job id>"}
+  {"op": "calibrate"[, "sim": true]}   (host timer only; idempotent per UTC day unless sim)
 
   qpu_broker.py --socket /run/qos-qpu/broker.sock --db /var/lib/qos-qpu/broker.db [--real]
 """
@@ -154,6 +160,14 @@ class Policy:
     time_margin: float = 1.2
     allow: tuple[str, ...] = ()        # optional allow-list of QPU device ids
     device_cache_s: float = 300.0
+    # Daily calibration circuit (#275): Bell at a fixed shot count. Until it has been tried
+    # today, visitors may not spend the last calib_reserve credits of the day's budget.
+    calib_shots: int = 20
+    calib_reserve: float = 0.0
+    calib_from: str = ""               # first UTC day (YYYY-MM-DD) of the series; "" = no start date
+
+
+CALIB_CLIENT = "calibration"       # the client key of the daily calibration job
 
 
 @dataclass
@@ -228,6 +242,12 @@ class Store:
         r = self.q("SELECT COALESCE(SUM(COALESCE(cost, est_cost)), 0) FROM jobs "
                    "WHERE kind='qpu' AND day=? AND state != 'refused'", day)
         return float(r[0][0])
+
+    def calibration(self, day: str) -> dict | None:
+        """The day's calibration record (a real job, or a refused row saying why it was skipped)."""
+        r = self.q("SELECT id FROM jobs WHERE kind='qpu' AND client=? AND day=? ORDER BY submitted LIMIT 1",
+                   CALIB_CLIENT, day)
+        return self.get(r[0][0]) if r else None
 
     def open_jobs(self) -> list[dict]:
         ids = [r[0] for r in self.q("SELECT id FROM jobs WHERE state IN ('queued','running')")]
@@ -408,13 +428,21 @@ class Broker:
         n2, qasm = to_qasm2(circuit)
         return mode, shots, circuit, n2, qasm
 
-    async def submit(self, req: dict) -> dict:
+    def held(self, day: str) -> float:
+        """Credits visitors may not spend yet: the calibration reserve, until today's
+        calibration has been tried (submitted, or refused and recorded as skipped)."""
+        if self.pol.calib_reserve <= 0 or day < self.pol.calib_from or self.store.calibration(day) is not None:
+            return 0.0
+        return self.pol.calib_reserve
+
+    async def submit(self, req: dict, calibration: bool = False) -> dict:
         sid = str(req.get("sid", ""))[:64]
         client = str(req.get("client", ""))[:64]
         if not sid:
             raise Refused("no session")
         mode, shots, circuit, n, qasm = self.validate(req)
         day = utc_day()
+        hold = 0.0 if calibration else self.held(day)
         async with self.submit_lock:
             if mode == "sim":
                 if self.store.count("kind='sim' AND sid=?", sid) >= self.pol.sim_per_session:
@@ -431,12 +459,12 @@ class Broker:
                                                client, day) >= self.pol.real_per_client_per_day:
                     raise Refused(f"one real QPU job per visitor per day; this visitor has used today's. "
                                   f"{SIM_STILL}. {until_reset()}")
-                left = self.pol.budget_per_day - self.store.spent(day)
+                left = self.pol.budget_per_day - self.store.spent(day) - hold
                 if left <= 0:   # spent: say so before asking qBraid for devices or status
                     raise Refused(self._budget_used(left))
             dev, est = await self.pick(mode, n, shots)
             if mode == "qpu":
-                left = self.pol.budget_per_day - self.store.spent(day)
+                left = self.pol.budget_per_day - self.store.spent(day) - hold
                 if est > left:
                     raise Refused(self._budget_used(left, est))
             jid = "q" + secrets.token_hex(5)
@@ -460,8 +488,45 @@ class Broker:
 
     def _budget_used(self, left: float, est: float | None = None) -> str:
         need = f", this job is estimated at {est:.2f}" if est is not None else ""
+        calib = (" 1 job/day is for calibration."
+                 if self.pol.calib_reserve > 0 and utc_day() >= self.pol.calib_from else "")
         return (f"today's QPU budget is used: {max(left, 0):.2f} of {self.pol.budget_per_day:g} credits "
-                f"left{need}. {SIM_STILL}. {until_reset()}")
+                f"left{need}.{calib} {SIM_STILL}. {until_reset()}")
+
+    async def calibrate(self, req: dict) -> dict:
+        """The daily calibration job (#275): a fixed Bell circuit at pol.calib_shots, through
+        the same device choice, caps and budget as a visitor's job. Real mode runs at most
+        once per UTC day: a second call returns that day's record (refreshed) instead of
+        submitting. A refusal is recorded as the day's row (state 'refused', reason in
+        detail), so a skipped day is never a silent gap. sim=True runs it on the free
+        simulator, for testing the path; it is not recorded as the day's calibration."""
+        sim = bool(req.get("sim"))
+        day = utc_day()
+        circuit = qc.bell().hex()
+        if sim:
+            return await self.submit({"sid": "calibration-sim-" + secrets.token_hex(4), "client": CALIB_CLIENT + "-sim",
+                                      "mode": "sim", "shots": self.pol.calib_shots, "circuit": circuit},
+                                     calibration=True)
+        if day < self.pol.calib_from:
+            raise Refused(f"the calibration series starts on {self.pol.calib_from}")
+        prev = self.store.calibration(day)
+        if prev is None:
+            try:
+                return await self.submit({"sid": f"calibration-{day}", "client": CALIB_CLIENT, "mode": "qpu",
+                                          "shots": self.pol.calib_shots, "circuit": circuit}, calibration=True)
+            except Refused as e:
+                if self.store.calibration(day) is None:   # a failed submit already left its row
+                    now = time.time()
+                    self.store.insert(id="q" + secrets.token_hex(5), kind="qpu", device=None, provider_job=None,
+                                      sid=f"calibration-{day}", client=CALIB_CLIENT, shots=self.pol.calib_shots,
+                                      n_qubits=2, circuit=circuit, qasm=None, state="refused", detail=str(e),
+                                      est_cost=None, cost=None, cost_source=None, counts=None,
+                                      submitted=now, finished=now, day=day)
+                log.warning("calibration %s skipped: %s", day, e)
+                raise
+        if prev["state"] == "refused":
+            raise Refused(prev["detail"] or "refused")
+        return self.describe(await self.refresh(prev))
 
     def describe(self, j: dict) -> dict:
         return {"ok": True, "job": j["id"], "kind": j["kind"], "device": j["device"],
@@ -522,6 +587,8 @@ class Broker:
                 return await self.submit(req)
             if op == "job":
                 return await self.job(req)
+            if op == "calibrate":
+                return await self.calibrate(req)
             raise Refused("unknown op")
         except Refused as e:
             return {"ok": False, "error": str(e)}
@@ -554,7 +621,8 @@ class Broker:
 async def amain(a: argparse.Namespace, backend=None, stop: asyncio.Future | None = None) -> int:
     pol = Policy(real=a.real, budget_per_day=a.budget_per_day, max_job_credits=a.max_job_credits,
                  real_per_session=a.real_per_session, real_per_client_per_day=a.real_per_client_per_day,
-                 allow=tuple(x for x in a.allow.split(",") if x))
+                 allow=tuple(x for x in a.allow.split(",") if x),
+                 calib_shots=a.calib_shots, calib_reserve=a.calib_reserve, calib_from=a.calib_from)
     Path(a.db).parent.mkdir(parents=True, exist_ok=True)
     broker = Broker(backend or QbraidBackend(), Store(a.db), pol)
     sock = Path(a.socket)
@@ -591,6 +659,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--real-per-client-per-day", type=int, default=1)
     ap.add_argument("--allow", default="", help="comma-separated QPU device ids (empty: any priced QPU)")
     ap.add_argument("--poll-seconds", type=float, default=15.0)
+    ap.add_argument("--calib-shots", type=int, default=20, help="shots of the daily calibration Bell circuit")
+    ap.add_argument("--calib-reserve", type=float, default=0.0,
+                    help="credits held back from visitors until the day's calibration has been tried")
+    ap.add_argument("--calib-from", default="", metavar="YYYY-MM-DD",
+                    help="first UTC day of the calibration series (no reserve, no real calibration before it)")
     return ap
 
 

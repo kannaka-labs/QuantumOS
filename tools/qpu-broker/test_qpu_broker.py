@@ -319,3 +319,79 @@ def test_info_and_socket_protocol(tmp_path):
         stop.set_result(None)
         await task
     run(go())
+
+
+# ---- daily calibration (#275) -------------------------------------------------------
+
+def test_calibration_runs_bell_once_a_day_on_the_cheapest_qpu(tmp_path):
+    b, be = make(tmp_path, real=True)
+    a = run(b.handle({"op": "calibrate"}))
+    assert a["ok"] and a["kind"] == "qpu" and a["shots"] == 20 and a["n_qubits"] == 2
+    assert a["device"] == "rigetti:rigetti:qpu:cepheus-1-108q"
+    assert a["est_cost"] == pytest.approx(4.992)      # (20 x 0.19 + 17) ms x 1.2 x 0.2 cr/ms, under the cap
+    j = b.store.get(a["job"])
+    assert j["circuit"] == qc.bell().hex() and j["client"] == qb.CALIB_CLIENT
+    # a second call the same day returns that job, refreshed; it never submits again
+    be.polls["pj-1"] = {"state": "done", "counts": {"00": 9, "11": 11}, "cost": 4.1724}
+    again = run(b.handle({"op": "calibrate"}))
+    assert again["job"] == a["job"] and again["state"] == "done" and again["counts"] == {"00": 9, "11": 11}
+    assert len(be.submitted) == 1
+    # it is charged to the same daily budget
+    assert b.store.spent(qb.utc_day()) == pytest.approx(4.1724)
+
+
+def test_calibration_reserve_keeps_visitors_from_crowding_it_out(tmp_path):
+    b, be = make(tmp_path, real=True, budget_per_day=10.0, calib_reserve=5.0)
+    assert run(b.handle(sub("qpu", shots=10, sid="s1", client="c1")))["ok"]     # 4.536 of the 5 visitors may use
+    a = run(b.handle(sub("qpu", shots=10, sid="s2", client="c2")))
+    assert not a["ok"] and "for calibration" in a["error"] and "qpu run" in a["error"]
+    assert len("refused: " + a["error"]) <= 200     # the relay keeps 200 characters
+    c = run(b.handle({"op": "calibrate"}))
+    assert c["ok"] and len(be.submitted) == 2         # 4.536 + 4.992 = 9.53 of 10
+    # once tried, the reserve is released (here the budget itself is what refuses)
+    assert b.held(qb.utc_day()) == 0
+
+
+def test_calibration_over_the_cap_is_skipped_and_recorded(tmp_path):
+    b, be = make(tmp_path, real=True, calib_shots=100, calib_reserve=5.0)
+    a = run(b.handle({"op": "calibrate"}))
+    assert not a["ok"] and "per-job cap" in a["error"]
+    assert be.submitted == []
+    row = b.store.calibration(qb.utc_day())
+    assert row["state"] == "refused" and "per-job cap" in row["detail"] and row["cost"] is None
+    assert b.store.spent(qb.utc_day()) == 0
+    # a second call repeats the recorded reason; it does not try again
+    be.status_calls.clear()
+    a2 = run(b.handle({"op": "calibrate"}))
+    assert a2 == a and be.status_calls == []
+    # a skipped calibration releases the reserve for visitors
+    assert b.held(qb.utc_day()) == 0
+    assert run(b.handle(sub("qpu", shots=10, sid="s1", client="c1")))["ok"]
+
+
+def test_calibration_respects_the_spent_budget(tmp_path):
+    b, be = make(tmp_path, real=True, budget_per_day=4.0)
+    a = run(b.handle({"op": "calibrate"}))
+    assert not a["ok"] and "budget" in a["error"] and be.submitted == []
+    assert b.store.calibration(qb.utc_day())["state"] == "refused"
+
+
+def test_calibration_start_date(tmp_path):
+    b, be = make(tmp_path, real=True, calib_reserve=5.0, calib_from="2999-01-01")
+    a = run(b.handle({"op": "calibrate"}))
+    assert not a["ok"] and "starts on 2999-01-01" in a["error"]
+    assert b.held(qb.utc_day()) == 0 and be.submitted == []
+    assert b.store.calibration(qb.utc_day()) is None
+    v = run(b.handle(sub("qpu", shots=10, sid="s1", client="c1")))
+    assert v["ok"]
+    v = run(b.handle(sub("qpu", shots=10, sid="s2", client="c2")))
+    assert v["ok"], "before the start date nothing is held back: two visitor jobs fit in 10 credits"
+
+
+def test_calibration_on_the_simulator_is_free_and_not_the_days_record(tmp_path):
+    b, be = make(tmp_path)                    # real QPUs off: the sim path still works
+    a = run(b.handle({"op": "calibrate", "sim": True}))
+    a2 = run(b.handle({"op": "calibrate", "sim": True}))
+    assert a["ok"] and a2["ok"] and a["kind"] == "sim" and a["shots"] == 20 and a["est_cost"] == 0
+    assert a["job"] != a2["job"]
+    assert b.store.calibration(qb.utc_day()) is None

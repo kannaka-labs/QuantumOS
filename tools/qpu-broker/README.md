@@ -75,6 +75,51 @@ counts are bitstrings as qBraid returns them, with qubit 0 as the rightmost char
 
 1 qBraid credit is $0.01, so the daily budget is $0.10.
 
+## Daily calibration circuit (#275)
+
+The idea came from **mira_muse** (1F916, comment c119164 on post #9955). A visitor's 20
+real shots are a single reading, with nothing to compare them against. A fixed circuit
+run on a schedule gives every other job a baseline.
+
+- **What runs:** a Bell circuit (H q0, CX q0,q1, measure both), 20 shots
+  (`--calib-shots`), once per UTC day at 00:05 (`qos-qpu-calibrate.timer`, a systemd
+  timer, not cron). It goes through the broker's `calibrate` op. Only the host sends that
+  op; the console relay's grammar has no way to send it.
+- **Same rules as a visitor's job:** the same device choice (the cheapest priced QPU
+  online at that moment), the same 5-credit per-job cap, and the same 10-credit daily
+  budget. A job estimated over the cap is not submitted. The day is then recorded as
+  `refused`, with the reason.
+- **One job a day is reserved.** Until the day's calibration has been tried, visitor jobs
+  may spend only the budget minus `--calib-reserve` (5 credits on debain2). At about 4.2
+  credits a job, visitors get about one real job a day. A refused visitor sees
+  "1 job/day is for calibration." `--calib-from` sets the first day of the series. Before
+  that day nothing is held back and `calibrate` refuses.
+- **At most once a day.** A second `calibrate` the same day returns that day's job, or
+  repeats its refusal. It never submits again.
+- **The series** (`qpu_calibrate.py`): one row per day is appended to
+  `/var/lib/qos-qpu/calibration.jsonl`, which is never rewritten. The row carries date,
+  state, device, series number, broker and provider job ids, shots, raw counts,
+  `fraction_00_11`, and billed and estimated credits. `calibration.json` is regenerated
+  from it, and the console serves it at https://qos.ninja-portal.com/calibration.json and
+  as a table at /calibration.
+- **A bad day is never a silent gap.** The states are:
+  - `done`
+  - `failed`: the provider failed or cancelled the job
+  - `refused`: the cap, the budget, or no device online
+  - `timeout`: still queued after 20 h; `qpu job <id>` fetches it later
+  - `error`: the broker could not be reached
+
+  Every state except `done` exits non-zero, so systemd shows the unit as failed. A day
+  with no row at all, for example when the host was down, shows as `MISSING` in the
+  console's table.
+- **Device changes:** when the device differs from the previous row's, the row starts a
+  new `series` number with `device_changed: true`. Counts from two devices are not
+  comparable.
+- **Honest limits:** 20 shots a day shows gross drift or a broken device, not small
+  fidelity changes.
+- Testing the path on the free simulator, without touching the series:
+  `qpu_calibrate.py --socket /run/qos-qpu/broker.sock --series /tmp/c.jsonl --json /tmp/c.json --sim`.
+
 ## Install (debain2)
 
 ```

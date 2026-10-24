@@ -33,6 +33,8 @@ Metrics (#258) are counts and timings only. They are kept in memory and, with
 --state-file, in a small JSON file. GET /metrics answers in Prometheus text format and
 GET /stats in JSON (the public site proxies /stats; /metrics answers only on the
 launcher's own socket). The page reports two events with GET /beacon?e=load|boot.
+With --calibration-file, GET /calibration.json and GET /calibration serve the daily QPU
+calibration series (#275) read-only, as JSON and as a plain-text table.
 Unique visitors per UTC day are counted from an HMAC of the address under a salt that
 lives only in memory and is replaced every UTC day. Those hashes are never written
 anywhere and are dropped when the day ends.
@@ -372,7 +374,9 @@ class Console:
     def __init__(self, kernel: Path, firecracker: str, run_dir: Path, max_vms: int,
                  per_ip: int, max_seconds: float, mem_mib: int, boot_args: str,
                  snapshot: str = "auto", ready_marker: str = "qsh>", boot_timeout: float = 60,
-                 metrics: Metrics | None = None, qpu_broker: str | None = None):
+                 metrics: Metrics | None = None, qpu_broker: str | None = None,
+                 calibration_file: Path | None = None):
+        self.calibration_file = calibration_file   # daily QPU calibration series (#275), read-only
         self.kernel = kernel
         self.firecracker = firecracker
         self.run_dir = run_dir
@@ -770,6 +774,14 @@ class Console:
             return self._respond(ws, self.metrics.prometheus(len(self.active), self.max_vms,
                                                              self.snapshot_ready()),
                                  "text/plain; version=0.0.4")
+        if path in ("/calibration.json", "/calibration"):
+            doc = calibration_doc(self.calibration_file)
+            if doc is None:
+                return self._respond(ws, "no calibration series on this host yet\n", "text/plain",
+                                     http.HTTPStatus.NOT_FOUND)
+            if path == "/calibration":
+                return self._respond(ws, calibration_table(doc), "text/plain")
+            return self._respond(ws, json.dumps(doc, indent=1) + "\n", "application/json")
         if path == "/beacon":
             event = (parse_qs(url.query).get("e") or [""])[0]
             ok = self.metrics.event(event, request.headers.get("X-Real-IP", "unknown"))
@@ -787,11 +799,75 @@ class Console:
         return r
 
 
+def calibration_doc(path: Path | None, today: datetime.date | None = None) -> dict | None:
+    """The calibration series file (written by tools/qpu-broker/qpu_calibrate.py), plus the
+    days since its first row that have no row at all: the timer did not run, which would
+    otherwise be a silent gap. None when there is no file."""
+    if path is None:
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        return {"error": f"calibration file unreadable ({type(e).__name__})", "rows": [], "missing_days": []}
+    rows = doc.get("rows") or []
+    have = {r.get("date") for r in rows}
+    missing = []
+    if rows:
+        try:
+            d = datetime.date.fromisoformat(min(have))
+        except (TypeError, ValueError):
+            d = None
+        today = today or datetime.datetime.now(datetime.timezone.utc).date()
+        while d is not None and d < today:
+            if d.isoformat() not in have:
+                missing.append(d.isoformat())
+            d += datetime.timedelta(days=1)
+    doc["missing_days"] = missing
+    return doc
+
+
+def calibration_table(doc: dict) -> str:
+    """A short readable table of the calibration series."""
+    out = ["QuantumOS daily QPU calibration (#275)",
+           "Bell circuit (H q0; CX q0,q1; measure), the same shots every day, run at 00:05 UTC",
+           "through the console's quantum broker; one job a day is reserved for it.",
+           "frac = (00 + 11) / shots: 1.00 is ideal, about 0.5 is noise. A device change starts a",
+           "new series; compare rows within one series. Idea: mira_muse (1F916, c119164).",
+           "JSON: /calibration.json", ""]
+    if doc.get("error"):
+        out.append("ERROR: " + doc["error"])
+    out.append(f"{'date':<10}  {'state':<8} {'ser':>3}  {'device':<36} {'00':>3} {'01':>3} {'10':>3} {'11':>3}"
+               f"  {'frac':>5}  {'credits':>7}  job / reason")
+    rows = [(r.get("date") or "", r) for r in doc.get("rows") or []]
+    rows += [(d, None) for d in doc.get("missing_days") or []]
+    for d, r in sorted(rows, key=lambda x: x[0]):
+        if r is None:
+            out.append(f"{d:<10}  {'MISSING':<8} {'':>3}  no row: the calibration did not run this day")
+            continue
+        c = r.get("counts") or {}
+        cell = (lambda k: f"{c.get(k, 0):>3}") if c else (lambda k: f"{'-':>3}")
+        frac = r.get("fraction_00_11")
+        cr = r.get("credits_billed")
+        tail = r.get("provider_job") or ""
+        if r.get("state") != "done" and r.get("reason"):
+            tail = (tail + " " if tail else "") + "(" + str(r["reason"])[:160] + ")"
+        if r.get("device_changed"):
+            tail = "NEW DEVICE " + tail
+        out.append(f"{d:<10}  {str(r.get('state')):<8} {str(r.get('series') or '-'):>3}  "
+                   f"{str(r.get('device') or '-'):<36} {cell('00')} {cell('01')} {cell('10')} {cell('11')}"
+                   f"  {(f'{frac:.2f}' if frac is not None else '-'):>5}  "
+                   f"{(f'{cr:.4f}' if cr is not None else '-'):>7}  {tail}")
+    return "\n".join(out) + "\n"
+
+
 async def amain(a: argparse.Namespace, stop: asyncio.Future | None = None) -> int:
     metrics = Metrics(Path(a.state_file) if a.state_file else None)
     con = Console(Path(a.kernel), a.firecracker, Path(a.run_dir), a.max_vms, a.per_ip,
                   a.max_seconds, a.mem_mib, a.boot_args, a.snapshot, a.ready_marker,
-                  metrics=metrics, qpu_broker=a.qpu_broker)
+                  metrics=metrics, qpu_broker=a.qpu_broker,
+                  calibration_file=Path(a.calibration_file) if a.calibration_file else None)
     swept = con.sweep()
     if swept:
         log.info("swept %d stale session dirs", swept)
@@ -852,6 +928,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="guest output (ANSI colour stripped) that means the shell is ready to snapshot")
     ap.add_argument("--qpu-broker", default=None,
                     help="Unix socket of the host quantum broker (tools/qpu-broker); unset: no qpu relay")
+    ap.add_argument("--calibration-file", default=None,
+                    help="daily QPU calibration series JSON (tools/qpu-broker/qpu_calibrate.py), "
+                         "served read-only at /calibration.json and /calibration")
     return ap
 
 
