@@ -9,7 +9,8 @@ ledger come back. The token is the only key: no account, no email, no address.
 What is stored, per machine: <id>.img (the disk image, --save-mib in size) and
 <id>.json (created and last-used times). <id> is the sha256 of the token, so the
 store never holds a token, and a copy of the directory opens nothing. The images are
-not encrypted: the operator can read them, and the page says so.
+not encrypted: the operator can read them, and the page says so. backup_saves.py keeps
+an encrypted off-site copy (#281).
 
 Limits: a machine unused for --save-days is deleted; the store holds at most
 --save-total-mib of images (a new keep is refused when it is full, never by evicting
