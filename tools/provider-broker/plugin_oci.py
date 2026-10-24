@@ -231,6 +231,14 @@ class OciProvider:
         subnet = self._ensure_network()
         image = self._image(v)
         ads = [a.name for a in self.ident.list_availability_domains(self.compartment).data]
+        # Not every region or AD offers every shape (E2.1.Micro is absent from some regions),
+        # and OCI answers a launch for a missing shape with a misleading 404
+        # NotAuthorizedOrNotFound. Ask first, and launch only where the shape exists.
+        ads = [ad for ad in ads if any(sh.shape == SHAPES[v["shape"]]
+                                       for sh in self.compute.list_shapes(self.compartment, availability_domain=ad).data)]
+        if not ads:
+            raise Refused("shape_unavailable", f"{SHAPES[v['shape']]} is not offered in this region; "
+                                               f"try shape {'a1' if v['shape'] == 'micro' else 'micro'}")
         shape_cfg = (m.LaunchInstanceShapeConfigDetails(ocpus=float(v["ocpus"]), memory_in_gbs=float(v["memory_gb"]))
                      if v["shape"] == "a1" else None)
         last = None

@@ -78,10 +78,16 @@ class FakeNet:
 
 
 class FakeCompute:
-    def __init__(self, net, full_ads=()):
-        self.net, self.full_ads = net, set(full_ads)
+    def __init__(self, net, full_ads=(), no_micro=False):
+        self.net, self.full_ads, self.no_micro = net, set(full_ads), no_micro
         self.instances: dict[str, NS] = {}
         self.launches: list[NS] = []
+
+    def list_shapes(self, comp, availability_domain=None):
+        shapes = ["VM.Standard.A1.Flex", "VM.Standard.E4.Flex"]
+        if not self.no_micro:
+            shapes.append("VM.Standard.E2.1.Micro")
+        return NS(data=[NS(shape=x) for x in shapes])
 
     def list_images(self, comp, operating_system=None, shape=None, **kw):
         return NS(data=[NS(id=f"img-{operating_system}-{shape}")])
@@ -121,10 +127,10 @@ class FakeIdentity:
         return NS(data=[NS(name="AD-1"), NS(name="AD-2"), NS(name="AD-3")])
 
 
-def make(tmp_path, full_ads=()):
+def make(tmp_path, full_ads=(), no_micro=False):
     tmp_path.mkdir(parents=True, exist_ok=True)
     net = FakeNet()
-    comp = FakeCompute(net, full_ads)
+    comp = FakeCompute(net, full_ads, no_micro)
     oci = OciProvider("unused", "ocid1.compartment.test", client=FakeClient(), oci_module=FAKE_OCI,
                       compute=comp, network=net, identity=FakeIdentity(), sleep=lambda s: None)
     b = pb.Broker(pb.Ledger(str(tmp_path / "b.db")), {"oci": oci}, allow_spend=True)
@@ -222,3 +228,11 @@ def test_setup_lists_the_vm_policies():
     for fam in ("instance-family", "virtual-network-family", "volume-family"):
         assert f"manage {fam} in compartment qos-broker" in SETUP
     assert " in tenancy" not in SETUP
+
+
+def test_a_shape_the_region_lacks_is_refused_before_launch(tmp_path):
+    b, _, comp, _ = make(tmp_path, no_micro=True)     # like us-chicago-1: no E2.1.Micro
+    with pytest.raises(pb.Refused) as e:
+        b.provision(b.quote("oci", "vm", {"shape": "micro", "ssh_public_key": KEY}, 3600)["quote"])
+    assert e.value.code == "provision_failed" and "not offered in this region" in str(e.value)
+    assert "try shape a1" in str(e.value) and comp.launches == []
