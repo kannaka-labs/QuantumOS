@@ -9,12 +9,14 @@ on:
     paths:
       - "tools/qos-console/**"
       - "tools/qpu-broker/**"
+      - "tools/provider-broker/**"
       - "scripts/qpu_circuit.py"
       - ".github/workflows/qos-console.yml"
   pull_request:
     paths:
       - "tools/qos-console/**"
       - "tools/qpu-broker/**"
+      - "tools/provider-broker/**"
       - "scripts/qpu_circuit.py"
       - ".github/workflows/qos-console.yml"
 
@@ -29,4 +31,4 @@ jobs:
       - name: Install
         run: pip install "websockets==15.0.1" pytest pytest-asyncio cryptography
       - name: Test (resource warnings are errors)
-        run: python -m pytest -q -W error::ResourceWarning tools/qos-console tools/qpu-broker
+        run: python -m pytest -q -W error::ResourceWarning tools/qos-console tools/qpu-broker tools/provider-broker
