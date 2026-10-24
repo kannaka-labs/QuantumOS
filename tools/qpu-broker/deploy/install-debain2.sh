@@ -18,6 +18,7 @@ id qosconsole >/dev/null 2>&1 && sudo usermod -aG qosqpu qosconsole
 
 sudo install -d -m 755 -o root -g root /opt/qos-qpu
 sudo install -m 644 -o root -g root "$SRC/qpu_broker.py" /opt/qos-qpu/qpu_broker.py
+sudo install -m 644 -o root -g root "$SRC/qpu_calibrate.py" /opt/qos-qpu/qpu_calibrate.py
 sudo install -m 644 -o root -g root "$SRC/../../scripts/qpu_circuit.py" /opt/qos-qpu/qpu_circuit.py
 sudo install -m 644 -o root -g root "$SRC/README.md" /opt/qos-qpu/README.md
 if [ ! -x /opt/qos-qpu/venv/bin/python ]; then
@@ -41,9 +42,14 @@ sudo chown root:root /etc/qos-qpu/broker.env
 sudo chmod 600 /etc/qos-qpu/broker.env
 
 sudo install -m 644 -o root -g root "$SRC/deploy/qos-qpu-broker.service" /etc/systemd/system/qos-qpu-broker.service
+# Daily calibration circuit (#275): a oneshot service and its 00:05 UTC timer.
+sudo install -m 644 -o root -g root "$SRC/deploy/qos-qpu-calibrate.service" /etc/systemd/system/qos-qpu-calibrate.service
+sudo install -m 644 -o root -g root "$SRC/deploy/qos-qpu-calibrate.timer" /etc/systemd/system/qos-qpu-calibrate.timer
 sudo systemctl daemon-reload
 sudo systemctl enable --now qos-qpu-broker.service
 sudo systemctl restart qos-qpu-broker.service
+sudo systemctl enable --now qos-qpu-calibrate.timer
 sleep 2
 systemctl is-active qos-qpu-broker.service
 sudo ls -l /run/qos-qpu/broker.sock
+systemctl list-timers qos-qpu-calibrate.timer --no-pager

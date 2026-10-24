@@ -561,3 +561,48 @@ def test_histogram_buckets_and_percentiles():
     assert 'x_bucket{le="0.025"} 1' in lines and 'x_bucket{le="0.5"} 3' in lines
     assert 'x_bucket{le="600"} 3' in lines and 'x_bucket{le="+Inf"} 4' in lines
     assert hist.summary()["p50"] == 0.3 and hist.summary()["max"] == 700
+
+
+# ---- daily QPU calibration series (#275), served read-only ------------------------
+
+CALIB = {"what": "test", "rows": [
+    {"date": "2026-10-25", "state": "done", "device": "rigetti:rigetti:qpu:cepheus-1-108q", "series": 1,
+     "device_changed": False, "counts": {"00": 9, "11": 11}, "fraction_00_11": 1.0, "credits_billed": 4.1724,
+     "provider_job": "pj-1", "reason": None},
+    {"date": "2026-10-27", "state": "refused", "device": None, "series": 1, "device_changed": False,
+     "counts": None, "fraction_00_11": None, "credits_billed": None, "provider_job": None,
+     "reason": "over the 5-credit per-job cap"},
+]}
+
+
+def test_calibration_doc_marks_days_with_no_row():
+    import datetime as dt
+    p = Path(__file__).parent / "_calib_test.json"
+    try:
+        p.write_text(json.dumps(CALIB))
+        doc = qos_console.calibration_doc(p, today=dt.date(2026, 10, 29))
+        assert doc["missing_days"] == ["2026-10-26", "2026-10-28"]     # today is not missing yet
+        t = qos_console.calibration_table(doc)
+        assert "2026-10-26  MISSING" in t and "2026-10-28  MISSING" in t
+        assert "1.00" in t and "4.1724" in t and "per-job cap" in t and "mira_muse" in t
+        assert t.index("2026-10-25") < t.index("2026-10-26") < t.index("2026-10-27")
+    finally:
+        p.unlink(missing_ok=True)
+    assert qos_console.calibration_doc(None) is None
+    assert qos_console.calibration_doc(p) is None
+
+
+@pytest.mark.asyncio
+async def test_calibration_routes_serve_the_series_read_only(env, tmp_path):
+    f = tmp_path / "calibration.json"
+    async with Server(env, calibration_file=f) as s:
+        status, _ = await s.get("/calibration.json")
+        assert b" 404 " in status, "no file yet"
+        f.write_text(json.dumps(CALIB))
+        status, body = await s.get("/calibration.json")
+        assert b" 200 " in status
+        doc = json.loads(body)
+        assert doc["rows"] == CALIB["rows"] and "missing_days" in doc
+        status, body = await s.get("/calibration")
+        assert b" 200 " in status and b"cepheus-1-108q" in body and b"frac" in body
+    assert json.loads(f.read_text()) == CALIB, "serving never writes the file"

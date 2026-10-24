@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the QuantumOS QPU calibration circuit once a day, 5 minutes after the 00:00 UTC budget reset (#275)
+
+[Timer]
+OnCalendar=*-*-* 00:05:00 UTC
+AccuracySec=1min
+# A missed run (host down at 00:05) runs at the next boot; the script records one row per
+# UTC day at most, and the console's table marks a day with no row as MISSING.
+Persistent=true
+Unit=qos-qpu-calibrate.service
+
+[Install]
+WantedBy=timers.target

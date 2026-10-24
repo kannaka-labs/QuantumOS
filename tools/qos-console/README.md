@@ -81,6 +81,11 @@ whole session).
 - `GET /beacon?e=load|boot` returns 200, or 400 for any other event. The nginx
   locations for `/beacon` and `/stats` have `access_log off`, so they add no record of
   addresses. Both share the page's rate limit.
+- `GET /calibration.json` and `GET /calibration` serve the daily QPU calibration series
+  (#275, `--calibration-file`; written by `tools/qpu-broker/qpu_calibrate.py`), as JSON
+  and as a plain-text table. The launcher only reads the file. Days since the first row
+  that have no row at all are listed in `missing_days` and shown as `MISSING`. Public:
+  https://qos.ninja-portal.com/calibration and /calibration.json.
 - **Unique visitors per day.** The count comes from an HMAC-SHA256 of the address under
   a 32-byte salt. The salt exists only in memory and is replaced at each UTC midnight,
   and the set of hashes is dropped at the same time. Nothing derived from an address is
