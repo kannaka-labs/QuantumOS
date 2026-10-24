@@ -64,7 +64,8 @@ no session ids, and nothing typed.
 | `sessions_refused{reason}` | `busy` or `one-per-visitor` |
 | `boots_completed{mode}` | the `qsh>` prompt has been sent to the visitor |
 | `sessions_with_input` | the visitor typed at least one key (only that it happened, never what) |
-| `sessions_ended{reason}` | `disconnect`, `expired`, `guest-exited` or `error` |
+| `sessions_ended{reason}` | `disconnect`, `expired`, `idle`, `output_cap`, `guest-exited` or `error` |
+| `internal_sessions`, `internal_beacons` | our own traffic, tagged with the internal token (below); counted nowhere else |
 
 There are three timings, each measured from the moment the session is admitted:
 `first_output` (the first guest byte sent), `ready` (the prompt sent) and `session` (the
@@ -93,6 +94,16 @@ whole session).
   comes back the same day after a restart is counted twice.
 - With `--state-file` (the unit uses `/var/lib/qos-console/metrics.json`), the counts
   and timings are saved every 30 s and at shutdown, so they survive restarts.
+- **Our own traffic is kept out.** Ad captures, demos, smoke tests and benches carry the
+  token from `--internal-token-file` (the unit uses `/etc/qos-console/internal.token`,
+  root:qosconsole 640): as an `X-QOS-Internal` header from scripts
+  (`smoke_client.py` and `bench_console.py` take `--internal-token-file`), or by opening
+  the page as `https://qos.ninja-portal.com/?internal=<token>` for a browser capture,
+  which passes it on to `/ws` and `/beacon`. Those sessions and beacons count only in
+  `internal_sessions` and `internal_beacons`, so the funnel, the timings and the unique
+  visitors are outside visitors alone. `/stats` says from which day this holds
+  (`internal_since`); counts before it include our own traffic. The token is compared in
+  constant time and never logged. Without the file nothing is tagged.
 
 ## Measured timings
 
@@ -135,8 +146,30 @@ python3 bench_console.py wss://qos.ninja-portal.com/ws --runs 10 --pause 11   # 
 
 ## Limits
 
-- 4 VMs at once in total, 1 per visitor address, 10 minutes each, 128 MiB and 1 vCPU each.
-- Input is capped at 1 KiB per frame. nginx limits page loads to 5/s and boots to 6/min per address.
+Every limit, with its flag and default (#257):
+
+| Limit | Flag | Default | When it is reached |
+|---|---|---|---|
+| VMs at once, in total | `--max-vms` | 4 | refused: `{"reason": "busy", "message": "all 4 machines are busy", "retry_after_s": N}` |
+| VMs per visitor address | `--per-ip` | 1 | refused: `one-per-visitor` |
+| Session length | `--max-seconds` | 600 | session ends: `expired` |
+| No input and no output | `--idle-seconds` | 120 | a warning line on the terminal `--idle-warn-seconds` (15) before, then the session ends: `idle` |
+| Input frames | `--input-frames-per-s` | 64/s, 1 s burst | excess frames are dropped, with one notice per session; never a disconnect |
+| Input bytes | `--input-bytes-per-s` | 4096/s, 1 s burst | as above |
+| Input frame size | `MAX_INPUT` | 1 KiB | the frame is cut to 1 KiB |
+| Guest output | `--max-output-bytes` | 2 MiB | output is sent up to the cap, then the session ends: `output_cap` |
+| Memory and CPU per VM | `--mem-mib` | 128 MiB, 1 vCPU | |
+| All VMs together | systemd `MemoryMax`, `CPUQuota` | 1 GiB, 200 % | |
+| Page loads, boots per address | nginx `qos_page`, `qos_boot` | 5/s, 6/min | |
+
+- **Busy means retry-after, not a queue.** `retry_after_s` is the time until the soonest
+  running session reaches `--max-seconds`. That is an upper bound, since idle sessions end
+  sooner. Nothing is held open waiting, so a crowd can't pile up connections on the
+  launcher. The page shows "one is free in at most M:SS, often sooner".
+- **`X-Real-IP` is trusted only behind a proxy.** `--per-ip` takes the address from
+  `X-Real-IP`, which only nginx sets. The launcher listens on a Unix socket (or loopback
+  in tests). It refuses to start on any other `--listen-tcp` address unless
+  `--trust-forwarded-for` says a proxy in front really sets that header.
 - The guest has no NIC and no drives, so a visitor can reach nothing but the guest.
 - The launcher log records session id, a per-process salted hash of the address, start,
   end, reason and duration. It never records keystrokes or guest output. The metrics

@@ -10,6 +10,7 @@ log carries no keystrokes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -60,7 +61,8 @@ class Server:
         self.args = ["--kernel", env["kernel"], "--firecracker", env["fake"], "--run-dir", str(env["run"]),
                      "--listen-tcp", f"127.0.0.1:{self.port}"]
         for k, v in kw.items():
-            self.args += [f"--{k.replace('_', '-')}", str(v)]
+            flag = f"--{k.replace('_', '-')}"
+            self.args += [flag] if v is True else [flag, str(v)]
         self.run = env["run"]
 
     async def __aenter__(self):
@@ -211,7 +213,11 @@ async def test_total_cap(env):
             await control(a)
             await control(b)
             async with connect(s.url(), additional_headers=h("10.1.0.3")) as c:
-                assert await control(c) == {"type": "refused", "reason": "busy"}
+                msg = await control(c)
+                assert msg["type"] == "refused" and msg["reason"] == "busy"
+                assert msg["message"] == "all 2 machines are busy"
+                # the soonest session's hard cap (600 s, just started) bounds the wait
+                assert 590 <= msg["retry_after_s"] <= 601, msg
 
 
 @pytest.mark.asyncio
@@ -606,3 +612,145 @@ async def test_calibration_routes_serve_the_series_read_only(env, tmp_path):
         status, body = await s.get("/calibration")
         assert b" 200 " in status and b"cepheus-1-108q" in body and b"frac" in body
     assert json.loads(f.read_text()) == CALIB, "serving never writes the file"
+
+
+# ---- console hardening (#257) ----------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_idle_session_is_warned_then_ended(env):
+    async with Server(env, idle_seconds=2, idle_warn_seconds=1) as s:
+        async with connect(s.url(), additional_headers=h("10.9.0.1")) as ws:
+            await control(ws)
+            await read_until(ws, b"qsh> ")
+            await read_until(ws, b"closes in", timeout=3)     # the warning, before the end
+            await ws.send("echo still-here\n")                # activity resets the clock
+            await read_until(ws, b"still-here")
+            t = time.monotonic()
+            msg = await control(ws, timeout=5)
+            assert msg == {"type": "idle", "seconds": 2}
+            assert time.monotonic() - t >= 1.5, "typing must have reset the idle clock"
+        await asyncio.sleep(0.5)
+        assert sessions(env["run"]) == [] and not fake_pids(env["run"])
+        st = json.loads((await s.get("/stats"))[1])
+        assert st["totals"]["sessions_ended"] == {"idle": 1}
+
+
+@pytest.mark.asyncio
+async def test_input_flood_is_dropped_with_one_notice(env):
+    async with Server(env, input_frames_per_s=5) as s:
+        async with connect(s.url(), additional_headers=h("10.9.0.2")) as ws:
+            await control(ws)
+            await read_until(ws, b"qsh> ")
+            for i in range(40):
+                await ws.send(f"echo f{i}\n")
+            await asyncio.sleep(1.5)
+            buf = b""
+            with contextlib.suppress(asyncio.TimeoutError):
+                while True:
+                    m = await asyncio.wait_for(ws.recv(), 0.5)
+                    buf += m if isinstance(m, bytes) else b""
+            assert buf.count(b"faster than this console accepts") == 1, "one notice, not one per frame"
+            assert b"f0\n" in buf and b"f39\n" not in buf, "the burst went through, the excess was dropped"
+            await ws.send("echo after-the-flood\n")          # still connected, still working
+            await read_until(ws, b"after-the-flood")
+
+
+@pytest.mark.asyncio
+async def test_output_cap_ends_the_session(env):
+    cap = 50_000
+    async with Server(env, max_output_bytes=cap) as s:
+        async with connect(s.url(), additional_headers=h("10.9.0.3")) as ws:
+            await control(ws)
+            got = len(await read_until(ws, b"qsh> "))
+            await ws.send("spew 400000\n")
+            while True:
+                m = await asyncio.wait_for(ws.recv(), 5)
+                if isinstance(m, str):
+                    assert json.loads(m) == {"type": "output_cap", "bytes": cap}
+                    break
+                got += len(m)
+            assert got <= cap, f"sent {got} bytes past the {cap}-byte cap"
+        # The guest was still printing into a pipe nobody reads: it must be reaped at once,
+        # not by the 5 s SIGKILL fallback (seen before the stop path drained stdout).
+        t = time.monotonic()
+        while (sessions(env["run"]) or fake_pids(env["run"])) and time.monotonic() - t < 2:
+            await asyncio.sleep(0.05)
+        assert sessions(env["run"]) == [] and not fake_pids(env["run"]), "cleanup took over 2 s"
+
+
+def test_public_tcp_listen_needs_trust_forwarded_for(env):
+    base = ["--kernel", env["kernel"], "--run-dir", str(env["run"])]
+    p = qos_console.build_parser()
+    for addr in ("0.0.0.0:8930", "203.0.113.5:8930", "[::]:8930"):
+        assert "X-Real-IP" in qos_console.listen_problem(p.parse_args(base + ["--listen-tcp", addr]))
+        assert qos_console.listen_problem(
+            p.parse_args(base + ["--listen-tcp", addr, "--trust-forwarded-for"])) is None
+    for ok in (["--listen-tcp", "127.0.0.1:8930"], ["--listen-tcp", "[::1]:8930"], ["--listen-unix", "/tmp/x.sock"]):
+        assert qos_console.listen_problem(p.parse_args(base + ok)) is None
+
+
+@pytest.mark.asyncio
+async def test_public_tcp_listen_refuses_to_start(env):
+    a = qos_console.build_parser().parse_args(
+        ["--kernel", env["kernel"], "--run-dir", str(env["run"]), "--listen-tcp", f"0.0.0.0:{free_port()}"])
+    assert await qos_console.amain(a, asyncio.get_running_loop().create_future()) == 2
+
+
+# ---- our own traffic is kept out of the funnel -----------------------------------
+
+@pytest.mark.asyncio
+async def test_internal_traffic_is_not_counted_as_visitors(env, tmp_path, caplog):
+    caplog.set_level("INFO", logger="qos-console")
+    token = "t0k3n-for-tests-only"
+    tf = tmp_path / "internal.token"
+    tf.write_text(token + "\n")
+    async with Server(env, internal_token_file=tf) as s:
+        await s.wait_snapshot()
+        assert b" 200 " in (await s.get(f"/beacon?e=load&internal={token}", h("192.0.2.50")))[0]
+        assert b" 200 " in (await s.get("/beacon?e=boot", {**h("192.0.2.50"), "X-QOS-Internal": token}))[0]
+        async with connect(s.url(), additional_headers={**h("192.0.2.50"), "X-QOS-Internal": token}) as ws:
+            await control(ws)
+            await read_until(ws, b"qsh> ")
+            await ws.send("echo ours\n")
+            await read_until(ws, b"ours")
+        async with connect(s.url() + f"?internal={token}", additional_headers=h("192.0.2.51")) as ws:
+            await control(ws)
+            await read_until(ws, b"qsh> ")
+        # a wrong token is an ordinary visitor
+        await s.get("/beacon?e=load&internal=wrong", h("192.0.2.60"))
+        async with connect(s.url(), additional_headers={**h("192.0.2.60"), "X-QOS-Internal": "wrong"}) as ws:
+            await control(ws)
+            await read_until(ws, b"qsh> ")
+        await asyncio.sleep(0.5)
+        _, body = await s.get("/stats")
+        st = json.loads(body)
+        tot = st["totals"]
+        assert tot["internal_sessions"] == 2 and tot["internal_beacons"] == 2
+        assert tot["page_loads"] == 1 and tot["boot_clicks"] == 0
+        assert tot["sessions_started"] == {"restore": 1} and tot["sessions_ended"] == {"disconnect": 1}
+        assert tot["sessions_with_input"] == 0
+        assert st["timings_s"]["session"]["n"] == 1
+        (today,) = st["days"].values()
+        assert today["unique_visitors"] == 1 and today["internal_sessions"] == 2
+        assert token.encode() not in body
+    assert token not in caplog.text, "the token is never logged"
+
+
+def test_internal_token_file_missing_tags_nothing(tmp_path):
+    assert qos_console.read_token(None) == ""
+    assert qos_console.read_token(str(tmp_path / "absent")) == ""
+    c = qos_console.Console(Path("k"), "fc", tmp_path, 1, 1, 60, 128, "", internal_token="")
+
+    class R:
+        path = "/ws?internal="
+        headers = {"X-QOS-Internal": ""}
+    assert c.is_internal(R()) is False, "an empty token must never match an empty value"
+
+
+def test_token_bucket_allows_a_one_second_burst_then_the_rate():
+    now = [100.0]
+    b = qos_console.TokenBucket(4, clock=lambda: now[0])
+    assert [b.take() for _ in range(5)] == [True] * 4 + [False]
+    now[0] += 0.5
+    assert [b.take() for _ in range(3)] == [True, True, False]
+    assert not b.take(5), "a cost above one second of rate never fits"

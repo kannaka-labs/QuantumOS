@@ -56,10 +56,10 @@ class Session:
                 self.buf += msg
 
 
-async def one_run(url: str, keys: int, settle: float, boot_timeout: float) -> dict:
+async def one_run(url: str, keys: int, settle: float, boot_timeout: float, headers: dict | None = None) -> dict:
     r: dict = {}
     t0 = time.monotonic()
-    async with connect(url, open_timeout=30, max_size=None) as ws:
+    async with connect(url, open_timeout=30, max_size=None, additional_headers=headers or {}) as ws:
         t_open = time.monotonic()
         r["ws_open"] = t_open - t0
         s = Session(ws)
@@ -118,12 +118,15 @@ async def main() -> int:
     ap.add_argument("--pause", type=float, default=11, help="seconds between runs (nginx allows 6 boots/min)")
     ap.add_argument("--boot-timeout", type=float, default=240)
     ap.add_argument("--json")
+    ap.add_argument("--internal-token-file",
+                    help="tag these sessions as our own traffic, kept out of the visitor counts")
     a = ap.parse_args()
+    headers = {"X-QOS-Internal": open(a.internal_token_file).read().strip()} if a.internal_token_file else {}
     runs = []
     for i in range(a.runs):
         if i:
             await asyncio.sleep(a.pause)
-        r = await one_run(a.url, a.keys, a.settle, a.boot_timeout)
+        r = await one_run(a.url, a.keys, a.settle, a.boot_timeout, headers)
         runs.append(r)
         print(f"run {i + 1}: restored={r['restored']} hello={r['connect_to_hello'] * 1000:.0f} ms "
               f"first_output={r['first_output'] * 1000:.0f} ms prompt={r['to_prompt'] * 1000:.0f} ms "
