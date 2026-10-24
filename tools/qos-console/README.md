@@ -184,6 +184,26 @@ The log carries the first 8 hex digits of the hash, never the key.
 `/stats` adds `machines_kept` (kept at session end, so synced), `machines_resumed` and
 `now.saved_machines`.
 
+### Off-site backup (#281)
+
+`backup_saves.py` (run nightly at 03:30 UTC by `deploy/qos-backup.{service,timer}`)
+copies the store into one private OCI Object Storage bucket, **encrypted before upload**
+(AES-256-GCM, object name as associated data; format in the script's docstring). Changed
+machines are re-uploaded and expired ones deleted. Only machines this host recorded
+uploading are ever deleted, so a dead disk (which loses that record) deletes nothing;
+and if more than half the bucket (over two machines) would go at once, nothing is deleted
+and the unit fails with exit 3. A wiped store cannot erase its own backup.
+
+- Host files (all root, 0600, dir 0700): `/etc/qos-backup/backup.key` (32 random bytes;
+  **keep an offline copy**: without it the bucket cannot be read), `oci_api_key.pem`
+  (the API signing key; only its public half was ever pasted into OCI), `oci.conf`,
+  `backup.json`. Upload state: `/var/lib/qos-backup/state.json`.
+- The OCI user `qos-backup` can only read and write objects in bucket
+  `qos-console-saves` (compartment `qos`): listing other buckets and compute are refused.
+- Restore drill: `backup_saves.py restore --to DIR --config /etc/qos-backup/backup.json`,
+  then compare with the store.
+- Runtime: `/opt/qos-backup/venv` (python3 -m venv; `pip install oci cryptography`).
+
 ## Limits
 
 Every limit, with its flag and default (#257):

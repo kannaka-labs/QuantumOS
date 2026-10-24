@@ -1,0 +1,26 @@
+[Unit]
+Description=Encrypted off-site copy of the console's kept machines (#281)
+Documentation=file:///opt/qos-console/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# root only to read the qosconsole-owned store (0700) and the root-only key and OCI config.
+ExecStart=/opt/qos-backup/venv/bin/python /opt/qos-console/backup_saves.py sync \
+    --saves /var/lib/qos-console/saves --config /etc/qos-backup/backup.json
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# The store is only read; the one file written is the upload state.
+ReadOnlyPaths=/var/lib/qos-console
+ReadWritePaths=/var/lib/qos-backup
+StateDirectory=qos-backup
+StateDirectoryMode=0700
