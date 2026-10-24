@@ -134,8 +134,8 @@ static int vq_setup(uint16_t index, vq_t *q) {
     vzero(q->used, (uint32_t)sizeof(vring_used_t));
     q->last_used = 0;
     vbarrier();
-    if (!tp.queue_setup(index, QSZ, (uint64_t)(uintptr_t)q->desc, (uint64_t)(uintptr_t)q->avail,
-                        (uint64_t)(uintptr_t)q->used)) {
+    if (!tp.queue_setup(&tp, index, QSZ, (uint64_t)(uintptr_t)q->desc,
+                        (uint64_t)(uintptr_t)q->avail, (uint64_t)(uintptr_t)q->used)) {
         boot_log("NET: virtio queue setup refused (missing queue, too small, or already live)");
         return 0;
     }
@@ -185,36 +185,36 @@ static int rx_drain(void) {
         rxq.last_used++;
     }
     if (n) {
-        tp.notify(RX_Q);
+        tp.notify(&tp, RX_Q);
     }
     return n;
 }
 
 static int bring_up(void) {
     /* Initialisation sequence (§3.1.1), in order. */
-    tp.set_status(0); /* reset */
-    tp.set_status(VIRTIO_ST_ACKNOWLEDGE);
-    tp.set_status(VIRTIO_ST_ACKNOWLEDGE | VIRTIO_ST_DRIVER);
+    tp.set_status(&tp, 0); /* reset */
+    tp.set_status(&tp, VIRTIO_ST_ACKNOWLEDGE);
+    tp.set_status(&tp, VIRTIO_ST_ACKNOWLEDGE | VIRTIO_ST_DRIVER);
 
-    uint64_t offered = tp.get_features();
+    uint64_t offered = tp.get_features(&tp);
     if (!(offered & (1ULL << VIRTIO_F_VERSION_1))) {
         boot_log("NET: virtio-net is not VERSION_1 - unsupported");
-        tp.set_status(VIRTIO_ST_FAILED);
+        tp.set_status(&tp, VIRTIO_ST_FAILED);
         return 0;
     }
     uint64_t want = (1ULL << VIRTIO_F_VERSION_1) | (offered & (1ULL << F_NET_MAC)) |
                     (offered & (1ULL << F_NET_STATUS));
-    tp.set_features(want);
-    tp.set_status(VIRTIO_ST_ACKNOWLEDGE | VIRTIO_ST_DRIVER | VIRTIO_ST_FEATURES_OK);
-    if (!(tp.get_status() & VIRTIO_ST_FEATURES_OK)) {
+    tp.set_features(&tp, want);
+    tp.set_status(&tp, VIRTIO_ST_ACKNOWLEDGE | VIRTIO_ST_DRIVER | VIRTIO_ST_FEATURES_OK);
+    if (!(tp.get_status(&tp) & VIRTIO_ST_FEATURES_OK)) {
         boot_log("NET: virtio-net refused our feature set");
-        tp.set_status(VIRTIO_ST_FAILED);
+        tp.set_status(&tp, VIRTIO_ST_FAILED);
         return 0;
     }
 
     if (want & (1ULL << F_NET_MAC)) {
         for (int i = 0; i < ETH_ADDR_LEN; i++) {
-            mac[i] = tp.config_read8((uint32_t)i);
+            mac[i] = tp.config_read8(&tp, (uint32_t)i);
         }
     } else {
         /* A locally-administered address so the stack still has one. */
@@ -224,34 +224,34 @@ static int bring_up(void) {
     }
 
     if (!vq_setup(RX_Q, &rxq) || !vq_setup(TX_Q, &txq)) {
-        tp.set_status(VIRTIO_ST_FAILED);
+        tp.set_status(&tp, VIRTIO_ST_FAILED);
         return 0;
     }
     for (int i = 0; i < QSZ; i++) {
         rx_buf[i] = (uint8_t *)kmalloc(NET_HDR_LEN + NET_FRAME_MAX);
         if (!rx_buf[i]) {
             boot_log("NET: virtio-net RX buffer alloc failed - networking disabled");
-            tp.set_status(VIRTIO_ST_FAILED);
+            tp.set_status(&tp, VIRTIO_ST_FAILED);
             return 0;
         }
     }
     tx_buf = (uint8_t *)kmalloc(NET_HDR_LEN + NET_FRAME_MAX);
     if (!tx_buf) {
         boot_log("NET: virtio-net TX buffer alloc failed - networking disabled");
-        tp.set_status(VIRTIO_ST_FAILED);
+        tp.set_status(&tp, VIRTIO_ST_FAILED);
         return 0;
     }
     for (uint16_t i = 0; i < QSZ; i++) {
         rx_publish(i);
     }
 
-    tp.set_status(VIRTIO_ST_ACKNOWLEDGE | VIRTIO_ST_DRIVER | VIRTIO_ST_FEATURES_OK |
-                  VIRTIO_ST_DRIVER_OK);
-    tp.notify(RX_Q);
+    tp.set_status(&tp, VIRTIO_ST_ACKNOWLEDGE | VIRTIO_ST_DRIVER | VIRTIO_ST_FEATURES_OK |
+                           VIRTIO_ST_DRIVER_OK);
+    tp.notify(&tp, RX_Q);
 
     if (want & (1ULL << F_NET_STATUS)) {
-        uint16_t st = (uint16_t)(tp.config_read8(NET_CFG_STATUS) |
-                                 ((uint16_t)tp.config_read8(NET_CFG_STATUS + 1) << 8));
+        uint16_t st = (uint16_t)(tp.config_read8(&tp, NET_CFG_STATUS) |
+                                 ((uint16_t)tp.config_read8(&tp, NET_CFG_STATUS + 1) << 8));
         if (!(st & NET_S_LINK_UP)) {
             boot_log("NET: virtio-net link is down at init (continuing)");
         }
@@ -325,7 +325,7 @@ int virtio_net_transmit(const uint8_t *frame, uint16_t len) {
     vbarrier();
     txq.avail->idx = (uint16_t)(txq.avail->idx + 1);
     vbarrier();
-    tp.notify(TX_Q);
+    tp.notify(&tp, TX_Q);
 
     for (uint32_t s = 0; s < VIRTIO_SPIN_MAX; s++) {
         if (txq.used->idx != before) { /* volatile read: re-fetched each pass */
@@ -340,7 +340,7 @@ void virtio_net_irq(void) {
     if (!nic_present_flag) {
         return;
     }
-    if (tp.isr_ack() == 0) {
+    if (tp.isr_ack(&tp) == 0) {
         return; /* a shared line, not us */
     }
     rx_drain();

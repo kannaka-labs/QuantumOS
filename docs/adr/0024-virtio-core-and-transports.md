@@ -94,3 +94,12 @@ reads return nothing, without touching the port.
   `MRG_RXBUF`; MSI-X; and multiqueue (`MQ`), which needs SMP to matter (ADR-0005).
   Packed virtqueues and `EVENT_IDX` are throughput work this single-core kernel does
   not yet need.
+
+## Amendment (#255): several devices per transport
+
+The transport op table now takes the binding it acts on, and `dev` holds the
+transport's per-device state (a virtio-mmio slot's register window, a
+virtio-pci function's capability windows). Each transport binds up to
+`VIRTIO_MAX_BOUND` devices, and a probe skips devices already bound. The
+first second device is virtio-blk; without this, its probe would have
+re-pointed the transport's single register global away from the NIC.

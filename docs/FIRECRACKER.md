@@ -50,7 +50,28 @@ and the swarm bridge stays idle without touching the port. Before that check, th
 first COM2 write spun its full drain bound in VM exits with interrupts off and froze
 the guest for tens of seconds. Firecracker's logger reports the VGA CRTC writes as
 `MissingAddressRange` at `Warning` level, which is why the config above sets `Error`.
-Storage inside Firecracker needs a virtio-blk driver, which QuantumOS does not have yet.
+
+## Storage (virtio-blk over virtio-mmio, #255)
+
+Give the microVM a drive and QuantumOS binds it as its disk:
+
+```json
+  "drives": [{"drive_id": "data", "path_on_host": "/srv/qos/data.img",
+              "is_root_device": false, "is_read_only": false}],
+```
+
+A zero-filled image is a fresh volume: `sync` writes the QDSK archive, the
+field and the audit ledger to it, and the next boot restores them. Boot lines:
+
+```
+[BOOT] BLK: virtio-blk up (mmio), sectors: 0x2000
+[BOOT] BLK: device offers no FLUSH - writes are durable only as the host makes them
+[BOOT] BLK: sector RW self-test OK (pattern verified, original restored)
+```
+
+The FLUSH line appears with Firecracker's default `cache_type` ("Unsafe"); set
+`"cache_type": "Writeback"` on the drive to have the guest's flush reach the host.
+A drive and a NIC work together (each virtio-mmio slot is its own binding).
 
 ## Networking (virtio-net over virtio-mmio, ADR-0024)
 

@@ -118,7 +118,7 @@ OBJECTS = $(KERNEL_SOURCES:$(KERNEL_DIR)/src/%.c=$(BUILD_DIR)/%.o) \
 -include $(OBJECTS:.o=.d)
 
 # Targets
-.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list
+.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list
 
 all: kernel
 
@@ -1371,6 +1371,12 @@ ci-smoke-mem512: kernel
 #  - The two QEMU runs are strictly sequential (QEMU takes a write lock on the
 #    raw image).
 DISK_IMG = $(BUILD_DIR)/disk.img
+# The disk interface and the boot lines that prove it bound. The defaults
+# are the ATA disk; ci-smoke-disk-virtio re-runs the whole recipe on
+# virtio-blk (#255).
+DISK_IF ?= ide
+DISK_UP ?= ATA: disk present
+DISK_TAG ?= ATA
 ci-smoke-disk: kernel
 	@echo "=== QuantumOS Persistence Smoke Test (two boots, one disk) ==="
 	@# SAFETY gate first: a disk carrying a FOREIGN volume (fake MBR in
@@ -1383,7 +1389,7 @@ ci-smoke-disk: kernel
 	@md5sum /tmp/qemu-foreign.img | cut -d" " -f1 > /tmp/qemu-foreign.before
 	@( printf 'write /data/x probe\nsync\n'; sleep 8 ) | \
 		timeout 10s qemu-system-x86_64 -kernel $(BUILD_DIR)/kernel.elf32 \
-		-drive file=/tmp/qemu-foreign.img,format=raw,if=ide -serial stdio -m 128M \
+		-drive file=/tmp/qemu-foreign.img,format=raw,if=$(DISK_IF) -serial stdio -m 128M \
 		-display none -no-reboot 2>&1 | tee /tmp/qemu-disk-boot0.log || true
 	@if ! grep -q "SYNC: disk carries a foreign volume - refusing to overwrite" /tmp/qemu-disk-boot0.log 2>/dev/null; then \
 		echo "ERROR: sync did not refuse a foreign volume"; \
@@ -1401,15 +1407,15 @@ ci-smoke-disk: kernel
 	@echo "[boot 1] write /data/note + sync to a fresh disk..."
 	@( printf 'write /data/note tide-remembers-x91\nimprint the tide remembers x91\nsync\n'; sleep 8 ) | \
 		timeout 10s qemu-system-x86_64 -kernel $(BUILD_DIR)/kernel.elf32 \
-		-drive file=$(DISK_IMG),format=raw,if=ide -serial stdio -m 128M \
+		-drive file=$(DISK_IMG),format=raw,if=$(DISK_IF) -serial stdio -m 128M \
 		-display none -no-reboot 2>&1 | tee /tmp/qemu-disk-boot1.log || true
-	@if ! grep -q "ATA: disk present" /tmp/qemu-disk-boot1.log 2>/dev/null; then \
-		echo "ERROR: boot 1 did not detect the disk (ATA: disk present)"; \
+	@if ! grep -q "$(DISK_UP)" /tmp/qemu-disk-boot1.log 2>/dev/null; then \
+		echo "ERROR: boot 1 did not detect the disk ($(DISK_UP))"; \
 		echo "Boot log:"; cat /tmp/qemu-disk-boot1.log 2>/dev/null || true; \
 		echo ""; echo "=== Persistence Test FAILED ==="; exit 1; \
 	fi
-	@echo "SUCCESS: boot 1 detected the ATA disk"
-	@if ! grep -q "ATA: sector RW self-test OK" /tmp/qemu-disk-boot1.log 2>/dev/null; then \
+	@echo "SUCCESS: boot 1 detected the disk ($(DISK_UP))"
+	@if ! grep -q "$(DISK_TAG): sector RW self-test OK" /tmp/qemu-disk-boot1.log 2>/dev/null; then \
 		echo "ERROR: boot 1 disk RW self-test did not pass"; \
 		echo "Boot log:"; cat /tmp/qemu-disk-boot1.log 2>/dev/null || true; \
 		echo ""; echo "=== Persistence Test FAILED ==="; exit 1; \
@@ -1439,7 +1445,7 @@ ci-smoke-disk: kernel
 	@echo "[boot 2] cat /data/note off the SAME disk (fresh boot, no write)..."
 	@( printf 'cat /data/note\nrecall the tjde remembers x9j\n'; sleep 8 ) | \
 		timeout 10s qemu-system-x86_64 -kernel $(BUILD_DIR)/kernel.elf32 \
-		-drive file=$(DISK_IMG),format=raw,if=ide -serial stdio -m 128M \
+		-drive file=$(DISK_IMG),format=raw,if=$(DISK_IF) -serial stdio -m 128M \
 		-display none -no-reboot 2>&1 | tee /tmp/qemu-disk-boot2.log || true
 	@if ! grep -q "FS: restored persisted files from disk" /tmp/qemu-disk-boot2.log 2>/dev/null; then \
 		echo "ERROR: boot 2 did not restore the archive from disk"; \
@@ -1499,7 +1505,7 @@ ci-smoke-disk: kernel
 	@dd if=/dev/urandom of=$(DISK_IMG) bs=512 seek=4069 count=1 conv=notrunc 2>/dev/null
 	@( printf 'help\n'; sleep 8 ) | \
 		timeout 10s qemu-system-x86_64 -kernel $(BUILD_DIR)/kernel.elf32 \
-		-drive file=$(DISK_IMG),format=raw,if=ide -serial stdio -m 128M \
+		-drive file=$(DISK_IMG),format=raw,if=$(DISK_IF) -serial stdio -m 128M \
 		-display none -no-reboot 2>&1 | tee /tmp/qemu-disk-bootA.log || true
 	@if ! grep -q "AUDIT:.*cold start" /tmp/qemu-disk-bootA.log 2>/dev/null; then \
 		echo "ERROR: boot A did not detect the corrupted audit blob"; \
@@ -1526,7 +1532,7 @@ ci-smoke-disk: kernel
 	@dd if=/dev/urandom of=$(DISK_IMG) bs=512 seek=4053 count=1 conv=notrunc 2>/dev/null
 	@( printf 'help\n'; sleep 8 ) | \
 		timeout 10s qemu-system-x86_64 -kernel $(BUILD_DIR)/kernel.elf32 \
-		-drive file=$(DISK_IMG),format=raw,if=ide -serial stdio -m 128M \
+		-drive file=$(DISK_IMG),format=raw,if=$(DISK_IF) -serial stdio -m 128M \
 		-display none -no-reboot 2>&1 | tee /tmp/qemu-disk-boot3.log || true
 	@if ! grep -q "FIELD: persisted field checksum mismatch - cold start" /tmp/qemu-disk-boot3.log 2>/dev/null; then \
 		echo "ERROR: boot 3 did not detect the corrupted field blob"; \
@@ -1626,13 +1632,14 @@ ci-smoke-disk-upgrade: kernel
 # for; ci-smoke-net-virtio re-runs this and ci-smoke-http on virtio-net-pci.
 NET_NIC ?= rtl8139
 NET_UP ?= NET: rtl8139 up
+NET_EXTRA ?=
 
 ci-smoke-net: kernel
 	@echo "=== QuantumOS Networking Smoke Test ($(NET_NIC) + user-net) ==="
 	@echo "[1/3] Booting with -device $(NET_NIC) on QEMU user-net (+ shell nslookup + udping)..."
 	@( printf 'nslookup example.com\nudping example.com\n'; sleep 15 ) | timeout 17s qemu-system-x86_64 \
 		-kernel $(BUILD_DIR)/kernel.elf32 \
-		-netdev user,id=n0 -device $(NET_NIC),netdev=n0 -serial stdio -m 128M \
+		-netdev user,id=n0 -device $(NET_NIC),netdev=n0 $(NET_EXTRA) -serial stdio -m 128M \
 		-display none -no-reboot 2>&1 | tee /tmp/qemu-net.log || true
 	@echo ""
 	@echo "[2/3] The NIC must be found and brought up..."
@@ -1749,7 +1756,7 @@ ci-smoke-http: kernel
 	 [ $$ok = 1 ] || { echo "ERROR: loopback httpd never came up"; cat /tmp/qos-httpd.log 2>/dev/null || true; exit 1; }; \
 	 ( printf 'http 10.0.2.2 18080\nhttp example.com\n'; sleep 20 ) | timeout 22s qemu-system-x86_64 \
 		-kernel $(BUILD_DIR)/kernel.elf32 \
-		-netdev user,id=n0 -device $(NET_NIC),netdev=n0 -serial stdio -m 128M \
+		-netdev user,id=n0 -device $(NET_NIC),netdev=n0 $(NET_EXTRA) -serial stdio -m 128M \
 		-display none -no-reboot 2>&1 | tee /tmp/qemu-http.log || true
 	@echo ""
 	@echo "[2/2] Validating the fetch..."
@@ -1780,11 +1787,34 @@ ci-smoke-http: kernel
 	@echo ""
 	@echo "=== TCP Test PASSED ==="
 
+# CI Smoke Test (virtio-blk, #255): the same two-boot persistence proof
+# (foreign-volume refusal, fs + field + audit readback, corruption
+# isolation) as ci-smoke-disk, with the image attached as a virtio-blk-pci
+# disk (-drive if=virtio) instead of ATA. virtio-blk is probed first, so
+# the binding line must be BLK's, and no ATA probe runs at all.
+ci-smoke-disk-virtio: kernel
+	@$(MAKE) --no-print-directory ci-smoke-disk DISK_IF=virtio 'DISK_UP=BLK: virtio-blk up (pci)' DISK_TAG=BLK
+	@if grep -q "ATA: disk present" /tmp/qemu-disk-boot1.log 2>/dev/null; then \
+		echo "ERROR: a virtio-blk boot bound the ATA driver"; exit 1; \
+	fi
+	@echo "SUCCESS: persistence proven on virtio-blk (pci)"
+
 # CI Smoke Test (virtio-net, ADR-0024): the same ARP/DHCP/ping/DNS and
 # HTTP-200 gates as ci-smoke-net + ci-smoke-http, driven through the modern
 # virtio-pci transport (-device virtio-net-pci) instead of the rtl8139.
+# A virtio-blk disk rides along (#255): the NIC must keep working with a
+# second device bound on the same virtio-pci transport, and the disk must
+# bind too. Before #255 the transport held one device's registers, so a
+# second probe would have silently re-pointed the NIC's.
 ci-smoke-net-virtio: kernel
-	@$(MAKE) --no-print-directory ci-smoke-net ci-smoke-http NET_NIC=virtio-net-pci 'NET_UP=NET: virtio-net up (pci)'
+	@rm -f /tmp/qemu-net-disk.img
+	@dd if=/dev/zero of=/tmp/qemu-net-disk.img bs=1M count=2 2>/dev/null
+	@$(MAKE) --no-print-directory ci-smoke-net ci-smoke-http NET_NIC=virtio-net-pci 'NET_UP=NET: virtio-net up (pci)' \
+		'NET_EXTRA=-drive file=/tmp/qemu-net-disk.img,format=raw,if=virtio'
+	@if ! grep -qF "BLK: virtio-blk up (pci)" /tmp/qemu-net.log 2>/dev/null; then \
+		echo "ERROR: the virtio-blk disk did not bind alongside virtio-net"; exit 1; \
+	fi
+	@echo "SUCCESS: virtio-net and virtio-blk bound together on virtio-pci"
 
 # CI Smoke Test (TCP server + httpd — epic #98): the host fetches a live
 # status page FROM QuantumOS. QEMU SLIRP hostfwd maps host 127.0.0.1:18081

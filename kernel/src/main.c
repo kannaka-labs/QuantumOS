@@ -14,7 +14,7 @@
 #include <kernel/com2_uart.h>
 #include <kernel/console.h>
 #include <kernel/initrd.h>
-#include <kernel/ata.h>
+#include <kernel/blkdev.h>
 #include <kernel/ramfs.h>
 #include <kernel/netdev.h>
 #include <kernel/virtio_net.h>
@@ -189,12 +189,14 @@ static void kernel_init(void) {
     // SYS_OPEN/SYS_READ/SYS_CLOSE/SYS_READDIR VFS calls.
     initrd_init();
 
-    // Probe the ATA disk (epic #71): the persistence substrate. A
-    // diskless boot logs itself honestly and changes nothing else.
-    // With a disk carrying a QDSK archive, the RAM filesystem overlay
-    // is restored from it — files written and synced in a previous
-    // boot come back.
-    ata_init();
+    // Probe for a disk (epic #71, #255): the persistence substrate.
+    // blkdev_init binds virtio-blk (Firecracker, QEMU/KVM) or the ATA
+    // disk and self-tests it. A diskless boot logs itself honestly and
+    // changes nothing else. With a disk carrying a QDSK archive, the RAM
+    // filesystem overlay is restored from it — files written and synced
+    // in a previous boot come back. The cmdline (virtio_mmio.device=)
+    // was parsed above, so Firecracker's drive slots are already known.
+    blkdev_init();
     persist_restore();
 
     // Probe for a NIC (epic #73). netdev_init walks the driver list and
@@ -916,7 +918,7 @@ static void parse_boot_cmdline(uint32_t info_addr) {
      * Firecracker guest, so this token IS the device discovery. */
     cmdline_get_virtio_mmio(cmd);
     if (virtio_mmio_device_count() > 0) {
-        boot_log("NET: virtio-mmio device(s) declared on cmdline");
+        boot_log("VIRTIO: virtio-mmio device(s) declared on cmdline");
     }
 
     static const char key[] = "qseed=";

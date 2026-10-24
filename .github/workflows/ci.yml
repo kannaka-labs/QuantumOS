@@ -644,6 +644,8 @@ jobs:
         sudo apt-get install -y build-essential qemu-system-x86 nasm
     - name: Prove persistence across reboots
       run: make ci-smoke-disk
+    - name: Prove the same persistence on virtio-blk (#255)
+      run: make ci-smoke-disk-virtio
     - name: Prove the disk upgrade path (frozen audit home, epic #177)
       run: make ci-smoke-disk-upgrade
 

@@ -13,7 +13,7 @@
 
 #include <kernel/ramfs.h>
 #include <kernel/memory.h>
-#include <kernel/ata.h>
+#include <kernel/blkdev.h>
 #include <kernel/tar.h>
 #include <kernel/field.h>
 #include <kernel/audit.h>
@@ -180,7 +180,7 @@ int ramfs_get(int idx, const char **name_out, const uint8_t **data_out, uint32_t
 }
 
 /* ============================================================================
- * Persistence (epic #71 phase 3): overlay <-> ATA disk as ustar
+ * Persistence (epic #71 phase 3, #255): overlay <-> the bound disk as ustar
  * ============================================================================ */
 
 #define QDSK_MAGIC "QDSK1"
@@ -217,7 +217,7 @@ int ramfs_get(int idx, const char **name_out, const uint8_t **data_out, uint32_t
 _Static_assert(AUDIT_HOME_TOP_OFFSET == 1u + 5u + AUDIT_BLOB_SECTORS,
                "audit home drifted from its frozen legacy derivation");
 static uint32_t audit_home_lba(void) {
-    return ata_sector_count() - AUDIT_HOME_TOP_OFFSET;
+    return blkdev_sector_count() - AUDIT_HOME_TOP_OFFSET;
 }
 
 /* The field blob lives BELOW the audit blob inside a RESERVED growth span:
@@ -244,19 +244,19 @@ static uint32_t field_home_lba(void) {
  * descriptors zero so restore cold-starts) rather than issue writes off
  * the end of a degenerate volume. */
 static int audit_disk_fits(void) {
-    return ata_sector_count() >= AUDIT_HOME_TOP_OFFSET + FIELD_HOME_RESERVE_SECTORS + 2u;
+    return blkdev_sector_count() >= AUDIT_HOME_TOP_OFFSET + FIELD_HOME_RESERVE_SECTORS + 2u;
 }
 
 /* Shared bounce for the field blob (FIELD_BLOB_SECTORS sectors). Boot
  * restore is single-threaded and sync runs cli'd in syscall context, so
  * one static buffer serves both — and unlike a kmalloc, it cannot fail. */
-static uint8_t field_blob_buf[FIELD_BLOB_SECTORS * ATA_SECTOR_SIZE];
+static uint8_t field_blob_buf[FIELD_BLOB_SECTORS * BLK_SECTOR_SIZE];
 
 /* Shared bounce for the audit-ledger blob (AUDIT_BLOB_SECTORS = 21
  * sectors, 10752 bytes). Same rationale as field_blob_buf: one static
  * buffer serves sync and restore and cannot fail like a kmalloc; a
  * stack local this size would risk the guard-page-less kernel stack. */
-static uint8_t audit_blob_buf[AUDIT_BLOB_SECTORS * ATA_SECTOR_SIZE];
+static uint8_t audit_blob_buf[AUDIT_BLOB_SECTORS * BLK_SECTOR_SIZE];
 
 /* Simple additive checksum over the archive. Written into the
  * superblock only after the archive itself is on disk, so a torn sync
@@ -341,7 +341,7 @@ static uint32_t align_block(uint32_t v) {
 }
 
 int persist_sync(void) {
-    if (!ata_present()) {
+    if (!blkdev_present()) {
         return -1;
     }
 
@@ -353,8 +353,8 @@ int persist_sync(void) {
      * all-zero sector 0, e.g. a fresh CI image). Anything else is
      * someone's disk: refuse loudly, destroy nothing. */
     {
-        uint8_t sb0[ATA_SECTOR_SIZE];
-        if (ata_read(0, sb0, 1) != 0) {
+        uint8_t sb0[BLK_SECTOR_SIZE];
+        if (blkdev_read(0, sb0, 1) != 0) {
             boot_log("SYNC: cannot read sector 0 — not flushed");
             return -1;
         }
@@ -368,7 +368,7 @@ int persist_sync(void) {
         }
         if (!is_qdsk) {
             int blank = 1;
-            for (int i = 0; i < ATA_SECTOR_SIZE; i++) {
+            for (int i = 0; i < BLK_SECTOR_SIZE; i++) {
                 if (sb0[i] != 0) {
                     blank = 0;
                     break;
@@ -395,7 +395,7 @@ int persist_sync(void) {
         }
     }
 
-    uint32_t tar_sectors = tar_bytes / ATA_SECTOR_SIZE;
+    uint32_t tar_sectors = tar_bytes / BLK_SECTOR_SIZE;
     /* Fit check: superblock + archive must end BELOW the LOWEST fixed home.
      * The field blob now sits in the reserve below the audit blob, so the
      * field home is the floor — otherwise a large overlay could grow over
@@ -403,7 +403,7 @@ int persist_sync(void) {
      * would then scribble the archive tail and cold-start the fs section
      * at restore. On a disk too small for the fixed homes, both blob
      * persists are skipped, so only the scratch sector bounds the archive. */
-    uint32_t tar_floor = audit_disk_fits() ? field_home_lba() : ata_sector_count() - 1;
+    uint32_t tar_floor = audit_disk_fits() ? field_home_lba() : blkdev_sector_count() - 1;
     if (1 + tar_sectors > tar_floor) {
         boot_log("SYNC: archive does not fit on disk — not flushed");
         return -1;
@@ -436,14 +436,14 @@ int persist_sync(void) {
 
     uint32_t csum = archive_checksum(buf, tar_bytes);
 
-    /* Sections first (each flushed durable by ata_write), superblock
+    /* Sections first (each flushed durable by blkdev_write), superblock
      * LAST — the single commit point. Any tear before the superblock
      * leaves the old superblock authoritative; whatever partial bytes
      * landed in either section fail that section's checksum at restore.
      * The honest guarantee is DETECT-AND-COLD-START, never garbage:
      * sections are overwritten in place, so a tear can lose the old
      * snapshot — it can never be misread as truth. */
-    if (ata_write(1, buf, tar_sectors) != 0) {
+    if (blkdev_write(1, buf, tar_sectors) != 0) {
         kfree(buf);
         boot_log("SYNC: disk write failed — not flushed");
         return -1;
@@ -457,7 +457,7 @@ int persist_sync(void) {
     uint32_t field_slots = field_blob_write(field_blob_buf);
     uint32_t field_csum = archive_checksum(field_blob_buf, FIELD_BLOB_BYTES);
     if (audit_disk_fits()) {
-        if (ata_write(field_home_lba(), field_blob_buf, FIELD_BLOB_SECTORS) != 0) {
+        if (blkdev_write(field_home_lba(), field_blob_buf, FIELD_BLOB_SECTORS) != 0) {
             boot_log("SYNC: field write failed — not flushed");
             return -1;
         }
@@ -472,11 +472,11 @@ int persist_sync(void) {
      * the descriptors zero (restore cold-starts) and MUST NOT abort the
      * fs/field commit; durable authority is an addition, never a hostage of
      * the fs/field snapshot. The serialize snapshots the ring under irqsave;
-     * the ata_write runs here, outside that window. */
+     * the blkdev_write runs here, outside that window. */
     uint32_t audit_lba = 0, audit_bytes = 0, audit_csum = 0;
     if (audit_disk_fits() &&
         audit_serialize(audit_blob_buf, AUDIT_BLOB_BUFSZ) == AUDIT_BLOB_BYTES) {
-        if (ata_write(audit_home_lba(), audit_blob_buf, AUDIT_BLOB_SECTORS) == 0) {
+        if (blkdev_write(audit_home_lba(), audit_blob_buf, AUDIT_BLOB_SECTORS) == 0) {
             audit_lba = audit_home_lba();
             audit_bytes = AUDIT_BLOB_BYTES;
             audit_csum = archive_checksum(audit_blob_buf, AUDIT_BLOB_BYTES);
@@ -485,8 +485,8 @@ int persist_sync(void) {
         }
     }
 
-    uint8_t sb[ATA_SECTOR_SIZE];
-    for (int i = 0; i < ATA_SECTOR_SIZE; i++) {
+    uint8_t sb[BLK_SECTOR_SIZE];
+    for (int i = 0; i < BLK_SECTOR_SIZE; i++) {
         sb[i] = 0;
     }
     const char *magic = QDSK_MAGIC;
@@ -502,7 +502,7 @@ int persist_sync(void) {
     put_u32(sb + QDSK_AUDIT_LBA_OFF, audit_lba);
     put_u32(sb + QDSK_AUDIT_BYTES_OFF, audit_bytes);
     put_u32(sb + QDSK_AUDIT_CSUM_OFF, audit_csum);
-    if (ata_write(0, sb, 1) != 0) {
+    if (blkdev_write(0, sb, 1) != 0) {
         boot_log("SYNC: superblock write failed — not flushed");
         return -1;
     }
@@ -539,7 +539,7 @@ static void restore_fs_section(const uint8_t *sb) {
      * scribbled superblock could otherwise demand a ~4 GB allocation). */
     uint32_t worst = (uint32_t)RAMFS_MAX_FILES * (TAR_BLOCK_SZ + RAMFS_FILE_MAX) + 2 * TAR_BLOCK_SZ;
     if (tar_bytes < 2 * TAR_BLOCK_SZ || tar_bytes % TAR_BLOCK_SZ != 0 || tar_bytes > worst ||
-        tar_bytes / ATA_SECTOR_SIZE > ata_sector_count() - 1) {
+        tar_bytes / BLK_SECTOR_SIZE > blkdev_sector_count() - 1) {
         boot_log("FS: superblock names an implausible archive — starting empty");
         return;
     }
@@ -549,7 +549,7 @@ static void restore_fs_section(const uint8_t *sb) {
         boot_log("FS: out of kernel heap for restore — starting empty");
         return;
     }
-    if (ata_read(1, buf, tar_bytes / ATA_SECTOR_SIZE) != 0) {
+    if (blkdev_read(1, buf, tar_bytes / BLK_SECTOR_SIZE) != 0) {
         kfree(buf);
         boot_log("FS: archive read failed — starting empty");
         return;
@@ -597,7 +597,7 @@ static void restore_field_section(const uint8_t *sb) {
         boot_log("FIELD: superblock names an implausible field section — cold start");
         return;
     }
-    if (ata_read(field_lba, field_blob_buf, FIELD_BLOB_SECTORS) != 0) {
+    if (blkdev_read(field_lba, field_blob_buf, FIELD_BLOB_SECTORS) != 0) {
         boot_log("FIELD: blob read failed — cold start");
         return;
     }
@@ -636,7 +636,7 @@ static void restore_audit_section(const uint8_t *sb) {
         boot_log("AUDIT: superblock names an implausible ledger section - cold start");
         return;
     }
-    if (ata_read(audit_lba, audit_blob_buf, AUDIT_BLOB_SECTORS) != 0) {
+    if (blkdev_read(audit_lba, audit_blob_buf, AUDIT_BLOB_SECTORS) != 0) {
         boot_log("AUDIT: ledger read failed - cold start");
         return;
     }
@@ -664,12 +664,12 @@ static void restore_audit_section(const uint8_t *sb) {
 }
 
 void persist_restore(void) {
-    if (!ata_present()) {
+    if (!blkdev_present()) {
         return;
     }
 
-    uint8_t sb[ATA_SECTOR_SIZE];
-    if (ata_read(0, sb, 1) != 0) {
+    uint8_t sb[BLK_SECTOR_SIZE];
+    if (blkdev_read(0, sb, 1) != 0) {
         boot_log("FS: superblock read failed — starting empty");
         return;
     }
