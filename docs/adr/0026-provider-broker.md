@@ -144,12 +144,12 @@ cloud spend. This is a later phase; the host MCP path comes first, as an honest 
 
 ## First slice (issues)
 
-1. Broker core: plugin interface, quote → provision → teardown lifecycle, leases and
+1. #284 Broker core: plugin interface, quote → provision → teardown lifecycle, leases and
    reaper, envelopes and approval, the ledger. Mocked provider; spending off by default.
-2. OCI plugin: Object Storage buckets, then Always Free compute (E2.1.Micro / A1), with
+2. #285 OCI plugin: Object Storage buckets, then Always Free compute (E2.1.Micro / A1), with
    the least-privilege setup printed for the user.
-3. qBraid plugin: the existing broker behind the interface, with behaviour unchanged.
-4. MCP tools: `providers`, `quote`, `provision`, `status`, `teardown`, `budget` and
+3. #286 qBraid plugin: the existing broker behind the interface, with behaviour unchanged.
+4. #287 MCP tools: `providers`, `quote`, `provision`, `status`, `teardown`, `budget` and
    `ledger`, added to the tool surface with a golden-schema update.
 
 ## Evidence (what this builds on)
