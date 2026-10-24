@@ -28,8 +28,10 @@ sudo install -d -m 750 -o qosconsole -g qosconsole /etc/qos-console
 if ! sudo test -s /etc/qos-console/internal.token; then
     head -c 24 /dev/urandom | base64 | tr '+/' '-_' | sudo tee /etc/qos-console/internal.token >/dev/null
 fi
-sudo chown root:qosconsole /etc/qos-console/internal.token
-sudo chmod 640 /etc/qos-console/internal.token
+# Owned by qosconsole itself, like the tunnel key: the unit runs with Group=kvm, so a
+# group-readable root:qosconsole file is NOT readable by the service (seen on the first deploy).
+sudo chown qosconsole:qosconsole /etc/qos-console/internal.token
+sudo chmod 400 /etc/qos-console/internal.token
 if ! sudo test -f /etc/qos-console/tunnel_ed25519; then
     sudo -u qosconsole ssh-keygen -q -t ed25519 -N "" -C "qos-console-tunnel@debain2" -f /etc/qos-console/tunnel_ed25519
 fi
