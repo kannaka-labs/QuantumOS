@@ -465,6 +465,9 @@ def load_plugins(names: list[str], a: argparse.Namespace | None = None) -> dict:
             if a is None or not a.oci_config or not a.oci_compartment:
                 raise SystemExit("the oci provider needs --oci-config and --oci-compartment")
             out["oci"] = OciProvider(a.oci_config, a.oci_compartment, a.oci_profile)
+        elif n == "qbraid":
+            from plugin_qbraid import QbraidProvider
+            out["qbraid"] = QbraidProvider(a.qpu_socket if a is not None else "/run/qos-qpu/broker.sock")
         else:
             raise SystemExit(f"unknown provider plugin {n!r}")
     return out
@@ -513,7 +516,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("serve")
     s.add_argument("--db", required=True)
     s.add_argument("--socket", required=True)
-    s.add_argument("--providers", default="mock", help="comma-separated: mock, oci")
+    s.add_argument("--providers", default="mock", help="comma-separated: mock, oci, qbraid")
+    s.add_argument("--qpu-socket", default="/run/qos-qpu/broker.sock",
+                   help="the host quantum broker's socket (qbraid provider)")
     s.add_argument("--oci-config", help="OCI config file (oci provider)")
     s.add_argument("--oci-profile", default="DEFAULT")
     s.add_argument("--oci-compartment", help="OCID of the compartment the broker may use")
