@@ -26,19 +26,12 @@
 
 #include <kernel/types.h>
 #include <kernel/netdev.h>
+#include <kernel/virtio.h>
 
-/* Most slots any one guest is given. Firecracker's default is well under
- * this; the array is static so the probe needs no allocator. */
-#define VIRTIO_MMIO_MAX_DEVICES 8
-
-/* Record one `virtio_mmio.device=<size>@<base>:<irq>` slot from the
- * cmdline. Returns 1 if stored, 0 if the table is full or irq >= 16 (the
- * rtl8139 lesson: an unusable line can never deliver RX, so refuse it
- * here rather than unmask a bogus vector later). Idempotent per base. */
-int virtio_mmio_add_device(uint64_t base, uint64_t size, uint8_t irq);
-
-/* How many slots the cmdline gave us (diagnostics / boot log). */
-int virtio_mmio_device_count(void);
+/* virtio_mmio_add_device() is declared in virtio.h (it is transport-level:
+ * every virtio-mmio device, NIC or disk, is named this way). irq >= 16 is
+ * refused there (the rtl8139 lesson: an unusable line can never deliver
+ * RX, so refuse it rather than unmask a bogus vector later). */
 
 /* The netdev entry points. Declared because they are non-static (the ops
  * table below takes their addresses); the stack calls them only through

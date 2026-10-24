@@ -24,6 +24,7 @@
 #define ATA_H
 
 #include <kernel/types.h>
+#include <kernel/blkdev.h>
 
 /* I/O base of the primary ATA channel. Also the capability resource_id
  * for filesystem-write authority (self-identifying, like DEVICE_ID_COM2
@@ -31,10 +32,11 @@
 #define ATA_IO_BASE 0x1F0
 #define DEVICE_ID_DISK ATA_IO_BASE
 
-#define ATA_SECTOR_SIZE 512
+#define ATA_SECTOR_SIZE BLK_SECTOR_SIZE
 
 /* Probe the primary master via IDENTIFY. Logs the outcome; safe to call
- * once at boot. Returns 1 if a usable ATA disk is present, 0 if not. */
+ * once at boot. Returns 1 if a usable ATA disk is present, 0 if not.
+ * Called through blkdev_init(), which then runs the sector RW self-test. */
 int ata_init(void);
 
 /* Non-zero once ata_init() found a disk. */
@@ -49,5 +51,9 @@ uint32_t ata_sector_count(void);
  * followed by a cache flush before returning. */
 int ata_read(uint32_t lba, void *buf, uint32_t count);
 int ata_write(uint32_t lba, const void *buf, uint32_t count);
+
+/* The driver as a blkdev; bound by blkdev_init() via the probe list. The
+ * persistence layer calls it only through blkdev_*, never by name. */
+extern const blkdev_ops_t ata_blkdev;
 
 #endif /* ATA_H */

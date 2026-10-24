@@ -2,8 +2,8 @@
  * QuantumOS virtio-pci transport (virtio 1.2 §4.1, modern layout).
  *
  * Finds the device on PCI bus 0 by its modern id (0x1040 + type, e.g.
- * 0x1041 for net) or its transitional id (0x1000-0x103f, matched by the
- * subsystem id), walks the vendor capabilities for the common, notify,
+ * 0x1041 for net, 0x1042 for block) or its transitional id (0x1000 net,
+ * 0x1001 block, confirmed by the subsystem id), walks the vendor capabilities for the common, notify,
  * ISR and device-config structures, maps the memory BARs they live in,
  * and drives the device through them. Interrupts are the legacy INTx line
  * routed by firmware (config offset 0x3C) — MSI-X is left disabled
@@ -13,6 +13,9 @@
  * The legacy I/O-BAR register layout is not used even on a transitional
  * device: its modern capabilities are always present and are what we
  * negotiate VERSION_1 through.
+ *
+ * Each bound device keeps its own windows in a pci_binding_t (the
+ * binding's `dev`), so the NIC and the disk are driven independently.
  *
  * SPDX-License-Identifier: GPL-2.0-only
  */
@@ -25,6 +28,7 @@
 #define VIRTIO_PCI_VENDOR 0x1AF4
 #define VIRTIO_PCI_MODERN_BASE 0x1040
 #define VIRTIO_PCI_LEGACY_NET 0x1000
+#define VIRTIO_PCI_LEGACY_BLOCK 0x1001
 
 #define PCI_STATUS_DWORD 0x04 /* status is the high half */
 #define PCI_STATUS_CAP_LIST (1u << 20)
@@ -59,12 +63,22 @@
 #define VIRTIO_MSI_NO_VECTOR 0xFFFF
 #define MAX_QUEUES 4
 
-static volatile uint8_t *common;
-static volatile uint8_t *notify_base;
-static uint32_t notify_mult;
-static volatile uint8_t *isr;
-static volatile uint8_t *devcfg;
-static uint16_t notify_off[MAX_QUEUES];
+typedef struct {
+    volatile uint8_t *common;
+    volatile uint8_t *notify_base;
+    uint32_t notify_mult;
+    volatile uint8_t *isr;
+    volatile uint8_t *devcfg;
+    uint16_t notify_off[MAX_QUEUES];
+    uint16_t device; /* PCI device id, so a second probe skips it */
+} pci_binding_t;
+
+static pci_binding_t bindings[VIRTIO_MAX_BOUND];
+static int binding_count;
+
+static inline pci_binding_t *B(const virtio_transport_t *t) {
+    return (pci_binding_t *)t->dev;
+}
 
 static inline void w8(volatile uint8_t *b, uint32_t o, uint8_t v) {
     *(volatile uint8_t *)(b + o) = v;
@@ -112,31 +126,32 @@ static uint64_t bar_base(const pci_device_t *d, uint8_t bar) {
 
 /* ---- transport ops ---- */
 
-static uint8_t p_get_status(void) {
-    return r8(common, C_STATUS);
+static uint8_t p_get_status(const virtio_transport_t *t) {
+    return r8(B(t)->common, C_STATUS);
 }
 
-static void p_set_status(uint8_t s) {
-    w8(common, C_STATUS, s);
+static void p_set_status(const virtio_transport_t *t, uint8_t s) {
+    w8(B(t)->common, C_STATUS, s);
 }
 
-static uint64_t p_get_features(void) {
-    w32(common, C_DFSELECT, 0);
-    uint64_t lo = r32(common, C_DF);
-    w32(common, C_DFSELECT, 1);
-    uint64_t hi = r32(common, C_DF);
+static uint64_t p_get_features(const virtio_transport_t *t) {
+    w32(B(t)->common, C_DFSELECT, 0);
+    uint64_t lo = r32(B(t)->common, C_DF);
+    w32(B(t)->common, C_DFSELECT, 1);
+    uint64_t hi = r32(B(t)->common, C_DF);
     return lo | (hi << 32);
 }
 
-static void p_set_features(uint64_t f) {
-    w32(common, C_GFSELECT, 0);
-    w32(common, C_GF, (uint32_t)f);
-    w32(common, C_GFSELECT, 1);
-    w32(common, C_GF, (uint32_t)(f >> 32));
+static void p_set_features(const virtio_transport_t *t, uint64_t f) {
+    w32(B(t)->common, C_GFSELECT, 0);
+    w32(B(t)->common, C_GF, (uint32_t)f);
+    w32(B(t)->common, C_GFSELECT, 1);
+    w32(B(t)->common, C_GF, (uint32_t)(f >> 32));
 }
 
-static int p_queue_setup(uint16_t index, uint16_t size, uint64_t desc, uint64_t driver,
-                         uint64_t device) {
+static int p_queue_setup(const virtio_transport_t *t, uint16_t index, uint16_t size, uint64_t desc,
+                         uint64_t driver, uint64_t device) {
+    volatile uint8_t *common = B(t)->common;
     if (index >= MAX_QUEUES || index >= r16(common, C_NUM_QUEUES)) {
         return 0;
     }
@@ -153,25 +168,26 @@ static int p_queue_setup(uint16_t index, uint16_t size, uint64_t desc, uint64_t 
     w32(common, C_Q_DRIVER + 4, (uint32_t)(driver >> 32));
     w32(common, C_Q_DEVICE, (uint32_t)device);
     w32(common, C_Q_DEVICE + 4, (uint32_t)(device >> 32));
-    notify_off[index] = r16(common, C_Q_NOTIFY_OFF);
+    B(t)->notify_off[index] = r16(common, C_Q_NOTIFY_OFF);
     __asm__ volatile("" ::: "memory");
     w16(common, C_Q_ENABLE, 1);
     return 1;
 }
 
-static void p_notify(uint16_t index) {
+static void p_notify(const virtio_transport_t *t, uint16_t index) {
     if (index >= MAX_QUEUES) {
         return;
     }
-    w16(notify_base, (uint32_t)notify_off[index] * notify_mult, index);
+    pci_binding_t *b = B(t);
+    w16(b->notify_base, (uint32_t)b->notify_off[index] * b->notify_mult, index);
 }
 
-static uint32_t p_isr_ack(void) {
-    return r8(isr, 0); /* reading the ISR status acknowledges it (§4.1.4.5) */
+static uint32_t p_isr_ack(const virtio_transport_t *t) {
+    return r8(B(t)->isr, 0); /* reading the ISR status acknowledges it (§4.1.4.5) */
 }
 
-static uint8_t p_config_read8(uint32_t off) {
-    return r8(devcfg, off);
+static uint8_t p_config_read8(const virtio_transport_t *t, uint32_t off) {
+    return r8(B(t)->devcfg, off);
 }
 
 /* Map a capability's window and return its kernel address, or 0. */
@@ -188,14 +204,34 @@ static volatile uint8_t *map_cap(const pci_device_t *d, uint8_t bar, uint32_t of
     return (volatile uint8_t *)(uintptr_t)addr;
 }
 
-static pci_device_t find_device(uint32_t device_id) {
-    pci_device_t d = pci_find(VIRTIO_PCI_VENDOR, (uint16_t)(VIRTIO_PCI_MODERN_BASE + device_id));
-    if (d.found) {
-        return d;
+static int already_bound(uint16_t pci_device) {
+    for (int i = 0; i < binding_count; i++) {
+        if (bindings[i].device == pci_device) {
+            return 1;
+        }
     }
-    /* Transitional ids: only net (0x1000) is in scope; confirm by subsystem. */
+    return 0;
+}
+
+static pci_device_t find_device(uint32_t device_id) {
+    pci_device_t d;
+    uint16_t modern = (uint16_t)(VIRTIO_PCI_MODERN_BASE + device_id);
+    if (!already_bound(modern)) {
+        d = pci_find(VIRTIO_PCI_VENDOR, modern);
+        if (d.found) {
+            return d;
+        }
+    }
+    /* Transitional ids: net (0x1000) and block (0x1001) are in scope;
+     * confirm by subsystem. QEMU's plain virtio-*-pci devices are these. */
+    uint16_t legacy = 0;
     if (device_id == VIRTIO_ID_NET) {
-        d = pci_find(VIRTIO_PCI_VENDOR, VIRTIO_PCI_LEGACY_NET);
+        legacy = VIRTIO_PCI_LEGACY_NET;
+    } else if (device_id == VIRTIO_ID_BLOCK) {
+        legacy = VIRTIO_PCI_LEGACY_BLOCK;
+    }
+    if (legacy && !already_bound(legacy)) {
+        d = pci_find(VIRTIO_PCI_VENDOR, legacy);
         if (d.found && (cfg32(&d, PCI_SUBSYSTEM) >> 16) == device_id) {
             return d;
         }
@@ -205,17 +241,23 @@ static pci_device_t find_device(uint32_t device_id) {
 }
 
 int virtio_pci_probe(uint32_t device_id, virtio_transport_t *out) {
+    if (binding_count >= VIRTIO_MAX_BOUND) {
+        return 0;
+    }
     pci_device_t d = find_device(device_id);
     if (!d.found) {
         return 0;
     }
     if (!(cfg32(&d, PCI_STATUS_DWORD) & PCI_STATUS_CAP_LIST)) {
-        boot_log("NET: virtio-pci device has no capability list (legacy-only) - unsupported");
+        boot_log("VIRTIO: virtio-pci device has no capability list (legacy-only) - unsupported");
         return 0;
     }
 
-    common = notify_base = isr = devcfg = 0;
-    notify_mult = 0;
+    /* Fill the next free binding; it is only kept (binding_count bumped)
+     * once the device proved usable, so a failed probe leaves no trace. */
+    pci_binding_t *b = &bindings[binding_count];
+    volatile uint8_t *common = 0, *notify_base = 0, *isr = 0, *devcfg = 0;
+    uint32_t notify_mult = 0;
     uint8_t ptr = cfg8(&d, PCI_CAP_PTR) & 0xFC;
     for (int guard = 0; ptr && guard < 48; guard++) {
         uint8_t id = cfg8(&d, ptr);
@@ -240,20 +282,32 @@ int virtio_pci_probe(uint32_t device_id, virtio_transport_t *out) {
         ptr = next;
     }
     if (!common || !notify_base || !isr || !devcfg) {
-        boot_log("NET: virtio-pci modern capabilities incomplete - unsupported");
+        boot_log("VIRTIO: virtio-pci modern capabilities incomplete - unsupported");
         return 0;
     }
 
     uint8_t irq = (uint8_t)(cfg32(&d, PCI_INTERRUPT_LINE) & 0xFF);
     if (irq >= 16) {
-        boot_log("NET: virtio-pci has no usable IRQ line - networking disabled");
+        boot_log("VIRTIO: virtio-pci has no usable IRQ line - device disabled");
         return 0;
     }
 
     pci_enable_bus_master_mem(&d);
     w16(common, C_MSIX_CONFIG, VIRTIO_MSI_NO_VECTOR);
 
+    b->common = common;
+    b->notify_base = notify_base;
+    b->notify_mult = notify_mult;
+    b->isr = isr;
+    b->devcfg = devcfg;
+    for (int q = 0; q < MAX_QUEUES; q++) {
+        b->notify_off[q] = 0;
+    }
+    b->device = d.device;
+    binding_count++;
+
     out->name = "pci";
+    out->dev = b;
     out->get_status = p_get_status;
     out->set_status = p_set_status;
     out->get_features = p_get_features;

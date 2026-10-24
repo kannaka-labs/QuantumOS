@@ -1,4 +1,4 @@
-# Persistent Storage: ATA disk, writable overlay, survival across reboots
+# Persistent Storage: ATA or virtio-blk disk, writable overlay, survival across reboots
 
 Epic #71. Until now everything QuantumOS held evaporated at power-off:
 the initrd is read-only, and there was no block device. This epic adds
@@ -32,7 +32,43 @@ persistence real.
   destructive write runs *only* when that sector is safe to clobber (all
   zero, or the volume already carries our `QDSK1` superblock). A foreign
   disk gets a non-destructive read probe, so a crash between the pattern
-  write and the restore can never corrupt a user's data.
+  write and the restore can never corrupt a user's data. Since #255 the
+  self-test lives in `blkdev.c` and runs on whichever disk bound, under
+  that driver's tag (`ATA: sector RW self-test OK ...`,
+  `BLK: sector RW self-test OK ...`).
+
+## Block-device indirection and virtio-blk (#255)
+
+Firecracker has no ATA and no PCI, only virtio-mmio devices, so until #255
+nothing persisted under Firecracker (the public console and the debain2
+microVMs). Two pieces fix that:
+
+- **`blkdev_ops_t`** (`kernel/include/kernel/blkdev.h`, `kernel/src/blkdev.c`):
+  `present`, `sector_count`, `read`, `write`, bound once at boot like
+  `netdev`. `ramfs.c` calls only `blkdev_*`. The contract every driver
+  keeps: 512-byte sectors, bounded waits, and **a write is durable when it
+  returns** (the driver flushes before reporting success). Probe order:
+  virtio-blk, then ATA. A diskless boot still logs only `ATA: no disk`.
+- **virtio-blk** (`kernel/src/virtio_blk.c`) over both virtio transports:
+  virtio-mmio (Firecracker `drives`) and virtio-pci (QEMU `-drive
+  ...,if=virtio`). Fully polled: one request in flight, three descriptors
+  (header, data, status), at most 32 KiB per request, bounded wait. The
+  avail ring asks for no interrupts and any that arrives is acknowledged,
+  so a shared INTx line never stays asserted. FLUSH is negotiated when
+  offered and issued once after each write run. A device without FLUSH
+  (Firecracker's default `cache_type` "Unsafe") is logged:
+  `BLK: device offers no FLUSH - writes are durable only as the host makes them`.
+  A read-only drive (`VIRTIO_BLK_F_RO`) binds, and `sync` fails.
+- **Transports bind several devices** (ADR-0024 amended): each virtio-mmio
+  slot and each virtio-pci function is its own binding, and every transport
+  op takes the binding. Before this, each transport kept one device's
+  registers in a global, so probing a disk would have re-pointed the NIC's.
+
+Gates: `ci-smoke-disk-virtio` runs the whole `ci-smoke-disk` recipe
+(foreign-volume refusal, two-boot fs/field/audit readback, both
+corruption-isolation checks) on `if=virtio`. `ci-smoke-net-virtio` now
+attaches a virtio disk next to the virtio NIC and requires both to bind and
+the full network suite to pass.
 
 ## Phase 2 — writable RAM filesystem overlay (`kernel/src/ramfs.c`)
 

@@ -138,5 +138,6 @@ aborts the whole sync before the superblock (ramfs.c:460-463).
 - Shipped in: PR #177 (frozen audit home + 16-sector field growth reserve)
 - Shipped in: PR #183 (disk-upgrade CI gate: frozen home + stale-descriptor cold start)
 - Shipped in: commit 63a3d0a (sync refuses foreign volumes — real-hardware safety)
+- Amended by: #255 (the QDSK layout is unchanged; it now sits on `blkdev_*`, so the same on-disk format is carried by ATA or virtio-blk, mmio or pci; gate `ci-smoke-disk-virtio`)
 - Key code: ramfs.c:186-248 (descriptors, frozen homes, fit guard), ramfs.c:343-521 (`persist_sync`: guard → sections → superblock-last), ramfs.c:579-688 (independent section restores), field.c:360-453 + field.h:159-163 (field blob write/load), audit.c:303-367 + audit.h:119-131 (ledger blob serialize/load)
 - CI gates: `ci-smoke-disk` (two-boot fs/field/audit persistence + both corruption-isolation sub-gates, Makefile:1234-1356); `ci-smoke-disk-upgrade` (frozen-home assert at LBA 4069 + pre-#177 descriptor cold start, Makefile:1374-1428)

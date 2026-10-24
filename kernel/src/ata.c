@@ -235,66 +235,6 @@ uint32_t ata_sector_count(void) {
     return disk_sectors;
 }
 
-/* Boot-time write-path proof. The destructive write happens ONLY when
- * the last sector is safe to clobber — all-zero (a fresh image) or on a
- * volume already carrying our own QDSK superblock. On any foreign disk
- * the test degrades to a non-destructive read probe, so a user's data
- * is never risked by a crash between the pattern write and the restore. */
-static void ata_rw_selftest(void) {
-    static uint8_t original[ATA_SECTOR_SIZE];
-    static uint8_t pattern[ATA_SECTOR_SIZE];
-    static uint8_t readback[ATA_SECTOR_SIZE];
-    static uint8_t sb[ATA_SECTOR_SIZE];
-
-    uint32_t lba = disk_sectors - 1;
-
-    if (ata_read(lba, original, 1) != 0) {
-        boot_log("ATA: RW self-test skipped (last-sector read failed)");
-        return;
-    }
-
-    int last_all_zero = 1;
-    for (int i = 0; i < ATA_SECTOR_SIZE; i++) {
-        if (original[i] != 0) {
-            last_all_zero = 0;
-            break;
-        }
-    }
-    int qdsk_owned = 0;
-    if (ata_read(0, sb, 1) == 0) {
-        static const char m[5] = {'Q', 'D', 'S', 'K', '1'};
-        qdsk_owned =
-            (sb[0] == m[0] && sb[1] == m[1] && sb[2] == m[2] && sb[3] == m[3] && sb[4] == m[4]);
-    }
-    if (!last_all_zero && !qdsk_owned) {
-        boot_log("ATA: foreign volume — destructive RW self-test skipped (read probe OK)");
-        return;
-    }
-
-    for (int i = 0; i < ATA_SECTOR_SIZE; i++) {
-        pattern[i] = (uint8_t)(0xA5 ^ i);
-    }
-    if (ata_write(lba, pattern, 1) != 0) {
-        boot_log("ATA: RW self-test FAILED (write)");
-        return;
-    }
-    if (ata_read(lba, readback, 1) != 0) {
-        boot_log("ATA: RW self-test FAILED (readback)");
-        return;
-    }
-    for (int i = 0; i < ATA_SECTOR_SIZE; i++) {
-        if (readback[i] != pattern[i]) {
-            boot_log("ATA: RW self-test FAILED (verify mismatch)");
-            return;
-        }
-    }
-    if (ata_write(lba, original, 1) != 0) {
-        boot_log("ATA: RW self-test FAILED (restore)");
-        return;
-    }
-    boot_log("ATA: sector RW self-test OK (pattern verified, original restored)");
-}
-
 int ata_init(void) {
     disk_present = 0;
     disk_sectors = 0;
@@ -350,7 +290,17 @@ int ata_init(void) {
     disk_present = 1;
     boot_log("ATA: disk present (LBA28), sectors:");
     early_console_write_hex(disk_sectors);
-
-    ata_rw_selftest();
+    /* The sector RW self-test runs from blkdev_init() once this binds. */
     return 1;
 }
+
+/* ---- blkdev binding ---- */
+const blkdev_ops_t ata_blkdev = {
+    .name = "ata",
+    .tag = "ATA",
+    .init = ata_init,
+    .present = ata_present,
+    .sector_count = ata_sector_count,
+    .read = ata_read,
+    .write = ata_write,
+};
