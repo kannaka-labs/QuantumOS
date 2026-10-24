@@ -66,6 +66,10 @@ counts are bitstrings as qBraid returns them, with qubit 0 as the rightmost char
   day's spend.
 - A job whose submit fails keeps its estimate counted against the day. Spend is never
   under-counted.
+- **A refusal says what still works.** When a visitor's real job is refused (the session or
+  visitor/day job is used, or today's budget is spent), the answer says the simulator is
+  still free (`qpu run bell`) and, for the daily limits, how long until 00:00 UTC. A spent
+  budget is refused before qBraid is asked for devices, so it never waits on the network.
 - QPU jobs are asynchronous, because queues can take minutes to hours. The broker polls
   open jobs every 15 s and keeps every job in SQLite (`/var/lib/qos-qpu/broker.db`).
 

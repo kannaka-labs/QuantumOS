@@ -238,6 +238,16 @@ def utc_day(t: float | None = None) -> str:
     return time.strftime("%Y-%m-%d", time.gmtime(t if t is not None else time.time()))
 
 
+def until_reset(t: float | None = None) -> str:
+    """When the UTC-day limits reset, for a refusal a visitor reads."""
+    now = int(t if t is not None else time.time())
+    mins = -(-(86400 - now % 86400) // 60)
+    return f"Resets 00:00 UTC, in {mins // 60}h{mins % 60:02d}m."
+
+
+SIM_STILL = "The simulator is still free: qpu run bell"
+
+
 def iso(t: float | None) -> str | None:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)) if t else None
 
@@ -353,7 +363,7 @@ class Broker:
             if cheapest is not None and cheapest > self.pol.max_job_credits:
                 raise Refused(f"the cheapest suitable QPU is estimated at {cheapest:.2f} credits for "
                               f"{shots} shots, over the {self.pol.max_job_credits:g}-credit per-job cap")
-            raise Refused("no suitable QPU is online within the per-job cap right now")
+            raise Refused(f"no suitable QPU is online within the per-job cap right now. {SIM_STILL}")
         raise Refused("no free qBraid simulator is online right now")
 
     def info(self, req: dict) -> dict:
@@ -410,21 +420,25 @@ class Broker:
                 if self.store.count("kind='sim' AND sid=?", sid) >= self.pol.sim_per_session:
                     raise Refused(f"simulator limit reached for this session ({self.pol.sim_per_session} jobs)")
                 if self.store.count("kind='sim' AND day=?", day) >= self.pol.sim_per_day:
-                    raise Refused("today's simulator limit is used up; try tomorrow (UTC)")
+                    raise Refused(f"today's simulator limit is used up. {until_reset()}")
             else:
                 if not self.pol.real:
                     raise Refused("real QPU jobs are switched off on this host; `qpu run` uses the simulator")
                 if self.store.count("kind='qpu' AND sid=? AND state!='refused'", sid) >= self.pol.real_per_session:
-                    raise Refused(f"{self.pol.real_per_session} real QPU job per session; this session has used it")
+                    raise Refused(f"{self.pol.real_per_session} real QPU job per session; this session has used it. "
+                                  f"{SIM_STILL}")
                 if client and self.store.count("kind='qpu' AND client=? AND day=? AND state!='refused'",
                                                client, day) >= self.pol.real_per_client_per_day:
-                    raise Refused("one real QPU job per visitor per day; this visitor has used today's")
+                    raise Refused(f"one real QPU job per visitor per day; this visitor has used today's. "
+                                  f"{SIM_STILL}. {until_reset()}")
+                left = self.pol.budget_per_day - self.store.spent(day)
+                if left <= 0:   # spent: say so before asking qBraid for devices or status
+                    raise Refused(self._budget_used(left))
             dev, est = await self.pick(mode, n, shots)
             if mode == "qpu":
                 left = self.pol.budget_per_day - self.store.spent(day)
                 if est > left:
-                    raise Refused(f"today's QPU budget has {max(left, 0):.2f} of {self.pol.budget_per_day:g} "
-                                  f"credits left; this job is estimated at {est:.2f}")
+                    raise Refused(self._budget_used(left, est))
             jid = "q" + secrets.token_hex(5)
             now = time.time()
             self.store.insert(id=jid, kind=mode, device=dev.id, provider_job=None, sid=sid, client=client,
@@ -443,6 +457,11 @@ class Broker:
             self.store.update(jid, provider_job=pj, state="queued")
             log.info("queued job=%s provider_job=%s", jid, pj)
         return self.describe(self.store.get(jid))
+
+    def _budget_used(self, left: float, est: float | None = None) -> str:
+        need = f", this job is estimated at {est:.2f}" if est is not None else ""
+        return (f"today's QPU budget is used: {max(left, 0):.2f} of {self.pol.budget_per_day:g} credits "
+                f"left{need}. {SIM_STILL}. {until_reset()}")
 
     def describe(self, j: dict) -> dict:
         return {"ok": True, "job": j["id"], "kind": j["kind"], "device": j["device"],
