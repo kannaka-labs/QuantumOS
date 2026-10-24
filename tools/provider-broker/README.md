@@ -58,6 +58,28 @@ python3 provider_broker.py serve --db b.db --socket b.sock            # add --al
 printf '%s\n' '{"op":"quote","provider":"mock","kind":"bucket","spec":{},"duration_s":3600}' | nc -U b.sock
 ```
 
+## Point Claude at it (MCP, #287)
+
+`broker_mcp.py` is a small MCP server with seven tools: `broker_providers`, `broker_quote`,
+`broker_provision`, `broker_status`, `broker_teardown`, `broker_budget` and `broker_ledger`.
+None of them can approve a request or change the budget. When a provision needs
+approval, the result carries `tell_your_human`: the exact command for the person to run,
+and an instruction to the agent to wait and retry with the approval id.
+
+```
+# the person, once
+python3 provider_broker.py envelope --db b.db --per-day 2 --per-action 1 --classes storage,qpu --max-lease 24h
+python3 provider_broker.py serve --db b.db --socket b.sock --providers oci,qbraid     --oci-config ~/.oci/broker.conf --oci-compartment ocid1.compartment.oc1..xxxx --allow-spend
+
+# Claude Code
+claude mcp add quantumos-broker --env QOS_BROKER_SOCKET=$PWD/b.sock -- python3 $PWD/broker_mcp.py
+```
+
+Then ask: "make me a 1 GB bucket for a day". Claude quotes it, provisions it if it fits the
+envelope (or tells you the `approve` command to run), and `broker_teardown` removes it.
+It is a separate server from `scripts/qos_mcp.py`, so the frozen v1 tool surface
+(ADR-0020) is unchanged; `test_broker_mcp.py` pins this server's own tool list.
+
 ## Writing a provider plugin
 
 A plugin is an object with:
@@ -75,7 +97,7 @@ is the reference.
 
 ## Tests
 
-`python3 -m pytest -q tools/provider-broker` (13 tests, with the mock provider). They
+`python3 -m pytest -q tools/provider-broker` (the core's 13 tests use the mock provider; the OCI, qBraid and MCP tests are in their own files). They
 cover the full lifecycle; spending off; approval with and without the key; daily,
 per-action and lease-length caps; no envelope; envelope changes needing the key; quote
 expiry; the reaper; failed and half-done provisions; crash recovery; never touching
