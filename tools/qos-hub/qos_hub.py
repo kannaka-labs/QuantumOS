@@ -35,7 +35,9 @@ allowlisted argv templates (cli_connector.py).
 Or {"url": "https://host/api/mcp", "auth": {"bearer_file": "~/token.txt"} | {"bearer_env": "NAME"}}:
 an MCP server over HTTP (streamable HTTP; plain JSON-RPC replies work too). The token is read
 from that file or variable at start, sent as "Authorization: Bearer ...", and never logged or
-stored in the config.
+stored in the config. Short-lived tokens (KAX: 15 minutes) can be renewed: add
+"refresh_url" (POST with the current token, reply {"token": ...}) and "refresh_every_s"; the
+new token is used from the next request on and written back to bearer_file (0600).
 
 Hub tools (always present): hub_tools (every tool with its policy), hub_call_approved,
 hub_ledger. There is deliberately no tool to approve or to change the policy.
@@ -262,6 +264,56 @@ class Hub:
         return out
 
 
+class BearerToken:
+    """The current bearer token for one HTTP server, attached to every request (an httpx
+    Auth), so a refresh takes effect on the open session without reconnecting."""
+
+    def __init__(self, token: str, spec: dict, ledger: "HubLedger", ns: str):
+        self.token, self.ledger, self.ns = token, ledger, ns
+        auth = spec.get("auth") or {}
+        self.refresh_url = auth.get("refresh_url")
+        self.every = float(auth.get("refresh_every_s", 600))
+        self.file = Path(os.path.expanduser(auth["bearer_file"])) if "bearer_file" in auth else None
+
+    def httpx_auth(self):
+        import httpx
+        holder = self
+
+        class _Auth(httpx.Auth):
+            def auth_flow(self, request):
+                request.headers["Authorization"] = f"Bearer {holder.token}"
+                yield request
+        return _Auth()
+
+    async def refresh_once(self) -> bool:
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=20) as c:
+                r = await c.post(self.refresh_url, headers={"Authorization": f"Bearer {self.token}"})
+            r.raise_for_status()
+            new = (r.json() or {}).get("token")
+            if not isinstance(new, str) or not new:
+                raise ValueError("no token in the refresh reply")
+        except Exception as e:  # noqa: BLE001 - keep the current token; never echo either one
+            log.warning("token refresh for %s failed: %s", self.ns, type(e).__name__)
+            self.ledger.event("hub_token_refresh", server=self.ns, ok=False, error=type(e).__name__)
+            return False
+        self.token = new
+        if self.file is not None:
+            tmp = self.file.with_name(self.file.name + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(new)
+            os.replace(tmp, self.file)
+        self.ledger.event("hub_token_refresh", server=self.ns, ok=True)
+        return True
+
+    async def keep_fresh(self) -> None:
+        while True:
+            await asyncio.sleep(self.every)
+            await self.refresh_once()
+
+
 def http_headers(spec: dict) -> dict:
     """The Authorization header for an HTTP server, from a token file or variable named in
     the config. Raises ValueError if the config names one that is missing or empty."""
@@ -318,12 +370,19 @@ async def serve(config: dict, db: str) -> None:
                 yield s
         return ctx()
 
-    def http_ctx(spec):
+    refreshers: list[asyncio.Task] = []
+
+    def http_ctx(ns, spec):
         headers = http_headers(spec)
+        auth = None
+        if headers and (spec.get("auth") or {}).get("refresh_url"):
+            bearer = BearerToken(headers.pop("Authorization").split(" ", 1)[1], spec, ledger, ns)
+            auth = bearer.httpx_auth()
+            refreshers.append(asyncio.create_task(bearer.keep_fresh()))
 
         @contextlib.asynccontextmanager
         async def ctx():
-            async with streamablehttp_client(spec["url"], headers=headers) as (r, w, _sid), \
+            async with streamablehttp_client(spec["url"], headers=headers, auth=auth) as (r, w, _sid), \
                     ClientSession(r, w) as s:
                 await s.initialize()
                 yield s
@@ -339,7 +398,7 @@ async def serve(config: dict, db: str) -> None:
             down[ns] = CliSession(spec["cli"])
             continue
         try:
-            owned = Owned(ns, http_ctx(spec) if "url" in spec else stdio_ctx(spec), ledger)
+            owned = Owned(ns, http_ctx(ns, spec) if "url" in spec else stdio_ctx(spec), ledger)
             down[ns] = await owned.start()
             owners.append(owned)
         except BaseException as e:  # noqa: BLE001 - start what can start; never echo a token
@@ -371,6 +430,8 @@ async def serve(config: dict, db: str) -> None:
         async with stdio_server() as (r, w):
             await server.run(r, w, server.create_initialization_options())
     finally:
+        for t in refreshers:
+            t.cancel()
         for o in owners:
             await o.stop()
 

@@ -92,9 +92,16 @@ The example config wires up:
 - **The example config** adds KAX City (Agent-kax). Looking around and the Joinery catalog are
   allowed; entering, speaking, moving and trading ask.
 
-**Known gap:** KAX identity tokens live 15 minutes, and the hub reads its token once, at
-start. A refresh hook (`POST /auth/token/refresh` on a timer, or a `bearer_cmd`) is next in
-#297, along with the Command Center (OAuth) and PFORK_MCP.
+**Short-lived tokens.** KAX identity tokens last 15 minutes. Add `"refresh_url"` and
+`"refresh_every_s"` to `auth`:
+- the hub POSTs the current token to that URL on a timer and uses the returned token from the
+  next request on, on the same open session (the token is attached per request);
+- it writes the new token back to `bearer_file` (0600);
+- a failed refresh is logged without the token, and the current token is kept.
+
+KAX refuses to refresh an expired token, so the hub has to start with a fresh one.
+
+Next in #297: the Command Center (OAuth) and PFORK_MCP.
 
 ## Trust boundary
 
@@ -104,7 +111,7 @@ you are happy for allowed tools to use.
 
 ## Tests
 
-`python3 -m pytest -q tools/qos-hub`: 30 tests (8 hub, 19 CLI connector, 3 HTTP). They cover the policy matching, allow, deny
+`python3 -m pytest -q tools/qos-hub`: 31 tests (8 hub, 19 CLI connector, 4 HTTP). They cover the policy matching, allow, deny
 never reaching the server, ask holding the exact call and releasing it only with the key and
 only once, a tampered or expired approval refused, unknown tools asking, a broken downstream
 server not hiding the others, the approval CLI, and a full run over real MCP stdio with a
