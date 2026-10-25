@@ -47,6 +47,7 @@ SMP; defer UEFI, a libagent extraction, and a block filesystem — are recorded 
 | [0025](0025-console-session-reseed.md) | Accepted | Reseed each console session after a snapshot restore |
 | [0026](0026-provider-broker.md) | Accepted | QuantumOS as the agent's provider broker (quote, lease, teardown under budgets) |
 | [0027](0027-ecosystem-hub.md) | Accepted | One policy-gated MCP endpoint for the ecosystem (allow / ask / deny per tool) |
+| [0028](0028-sashiko-review-service.md) | Accepted | Sashiko review as a service the person pays for with their own model key |
 
 ## Sequencing of the next phases
 

@@ -41,12 +41,13 @@ qos-qbraid-boot = "qbraid_boot:main"
 qos-broker = "quantumos_agent.broker.provider_broker:main"
 qos-broker-mcp = "quantumos_agent.broker.broker_mcp:main"
 qos-hub = "quantumos_agent.hub.qos_hub:main"
+qos-review = "quantumos_agent.review.sashiko_review:main"
 
 [tool.setuptools]
 # quantumos_agent's two subpackages are the tools/ directories themselves (no copies): the
 # repository keeps running them from tools/, and the wheel ships them as packages.
-package-dir = { "" = "scripts", "quantumos_agent.broker" = "tools/provider-broker", "quantumos_agent.hub" = "tools/qos-hub" }
-packages = ["quantumos_agent", "quantumos_agent.broker", "quantumos_agent.hub"]
+package-dir = { "" = "scripts", "quantumos_agent.broker" = "tools/provider-broker", "quantumos_agent.hub" = "tools/qos-hub", "quantumos_agent.review" = "tools/sashiko-review" }
+packages = ["quantumos_agent", "quantumos_agent.broker", "quantumos_agent.hub", "quantumos_agent.review"]
 py-modules = [
     "qos_bridge",
     "qos_mcp",
@@ -64,3 +65,4 @@ version = { file = "VERSION" }
 [tool.setuptools.package-data]
 "quantumos_agent.hub" = ["hub.example.json", "README.md"]
 "quantumos_agent.broker" = ["README.md"]
+"quantumos_agent.review" = ["review.example.json", "README.md"]

@@ -7,7 +7,15 @@ Full per-PR provenance: `git log` and the PR list on GitHub.
 
 ## [Unreleased]
 
-*(nothing yet)*
+### Sashiko review, with your own model key (ADR-0028)
+
+- `qos-review` (`tools/sashiko-review`): an MCP server and CLI that runs a Sashiko review of a commit in a
+  repository you listed. It runs on your machine, with your own model provider and key, and returns the findings to
+  the caller. Nothing is posted.
+- Your key is handed only to the Sashiko process, and it is redacted from everything else.
+- Every review has a required token cap, which Sashiko enforces. `review_quote` shows the worst case before
+  anything runs.
+- The hub asks before `review_start`.
 
 ## [0.6.0] — 2026-10-25 — Firecracker with storage, a public console, and agents that spend inside a budget
 
