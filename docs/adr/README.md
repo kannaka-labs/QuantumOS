@@ -46,6 +46,7 @@ SMP; defer UEFI, a libagent extraction, and a block filesystem — are recorded 
 | [0024](0024-virtio-core-and-transports.md) | Accepted | virtio-net: one device driver over virtio-pci and virtio-mmio |
 | [0025](0025-console-session-reseed.md) | Accepted | Reseed each console session after a snapshot restore |
 | [0026](0026-provider-broker.md) | Proposed | QuantumOS as the agent's provider broker (quote, lease, teardown under budgets) |
+| [0027](0027-ecosystem-hub.md) | Proposed | One policy-gated MCP endpoint for the ecosystem (allow / ask / deny per tool) |
 
 ## Sequencing of the next phases
 
