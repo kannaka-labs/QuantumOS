@@ -1,5 +1,7 @@
 # QuantumOS hub (#297, ADR-0027)
 
+Installed: `pip install quantumos-host-tools` (add `[oci]` for the OCI plugin) gives the `qos-broker`, `qos-broker-mcp` and `qos-hub` commands; from a checkout, run the scripts in this directory directly.
+
 One MCP endpoint for the whole ecosystem. Instead of configuring your AI with Kannaka's
 MCP server, kannaka-quantum's, Kannaktopus's and the provider broker's one by one, you point
 it at the hub. The hub starts them, re-exports their tools under a namespace

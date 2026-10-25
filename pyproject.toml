@@ -19,12 +19,15 @@ classifiers = [
     "Topic :: System :: Emulators",
 ]
 # qos_bridge is stdlib-only BY CONTRACT (guest CI has no pip); the mcp dependency
-# serves qos_mcp only. Keeping it a hard dep because the MCP server is the headline.
-dependencies = ["mcp>=1.0"]
+# serves the MCP servers (qos_mcp, broker_mcp, the hub). Keeping it a hard dep because the
+# MCP server is the headline. Capped below 2: mcp 2.x renamed FastMCP and the HTTP client,
+# and an unpinned install picked 2.3.0, on which `qos-mcp` could not even import.
+dependencies = ["mcp>=1.10,<2"]
 
 [project.optional-dependencies]
 quantum = ["pennylane>=0.45"]   # qsv_gateway host dispatch
 qbraid = ["qbraid"]             # qbraid_boot real-QPU entropy handoff
+oci = ["oci>=2.100"]            # the provider broker's OCI plugin (buckets, Always Free VMs)
 
 [project.urls]
 Homepage = "https://github.com/flaukowski/QuantumOS"
@@ -35,9 +38,15 @@ Changelog = "https://github.com/flaukowski/QuantumOS/blob/main/CHANGELOG.md"
 qos-mcp = "qos_mcp:main"
 qos-verify-attestation = "verify_attestation:main"
 qos-qbraid-boot = "qbraid_boot:main"
+qos-broker = "quantumos_agent.broker.provider_broker:main"
+qos-broker-mcp = "quantumos_agent.broker.broker_mcp:main"
+qos-hub = "quantumos_agent.hub.qos_hub:main"
 
 [tool.setuptools]
-package-dir = { "" = "scripts" }
+# quantumos_agent's two subpackages are the tools/ directories themselves (no copies): the
+# repository keeps running them from tools/, and the wheel ships them as packages.
+package-dir = { "" = "scripts", "quantumos_agent.broker" = "tools/provider-broker", "quantumos_agent.hub" = "tools/qos-hub" }
+packages = ["quantumos_agent", "quantumos_agent.broker", "quantumos_agent.hub"]
 py-modules = [
     "qos_bridge",
     "qos_mcp",
@@ -51,3 +60,7 @@ py-modules = [
 
 [tool.setuptools.dynamic]
 version = { file = "VERSION" }
+
+[tool.setuptools.package-data]
+"quantumos_agent.hub" = ["hub.example.json", "README.md"]
+"quantumos_agent.broker" = ["README.md"]

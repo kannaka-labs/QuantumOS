@@ -28,7 +28,10 @@ from __future__ import annotations
 import json
 import socket
 
-from provider_broker import Quote, Refused
+try:                                   # installed: quantumos_agent.broker
+    from .provider_broker import Quote, Refused
+except ImportError:                    # run from a checkout (tools/provider-broker on sys.path)
+    from provider_broker import Quote, Refused
 
 USD_PER_CREDIT = 0.01
 CLIENT = "provider-broker"     # the client key the quantum broker counts this broker's jobs under

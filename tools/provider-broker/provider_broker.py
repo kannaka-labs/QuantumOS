@@ -454,20 +454,24 @@ class Broker:
 
 # ---- plugins -----------------------------------------------------------------
 
+def _sibling(name: str):
+    """A plugin module: relative when installed (quantumos_agent.broker), plain from a checkout."""
+    import importlib
+    return importlib.import_module(f".{name}", __package__) if __package__ else importlib.import_module(name)
+
+
 def load_plugins(names: list[str], a: argparse.Namespace | None = None) -> dict:
     out = {}
     for n in names:
         if n == "mock":
-            from plugin_mock import MockProvider
-            out["mock"] = MockProvider()
+            out["mock"] = _sibling("plugin_mock").MockProvider()
         elif n == "oci":
-            from plugin_oci import OciProvider
+            OciProvider = _sibling("plugin_oci").OciProvider
             if a is None or not a.oci_config or not a.oci_compartment:
                 raise SystemExit("the oci provider needs --oci-config and --oci-compartment")
             out["oci"] = OciProvider(a.oci_config, a.oci_compartment, a.oci_profile)
         elif n == "qbraid":
-            from plugin_qbraid import QbraidProvider
-            out["qbraid"] = QbraidProvider(a.qpu_socket if a is not None else "/run/qos-qpu/broker.sock")
+            out["qbraid"] = _sibling("plugin_qbraid").QbraidProvider(a.qpu_socket if a is not None else "/run/qos-qpu/broker.sock")
         else:
             raise SystemExit(f"unknown provider plugin {n!r}")
     return out
@@ -548,8 +552,7 @@ def main(argv=None) -> int:
     if a.cmd == "serve":
         return asyncio.run(amain(a))
     if a.cmd == "setup":
-        from plugin_oci import SETUP
-        print(SETUP, end="")
+        print(_sibling("plugin_oci").SETUP, end="")
         return 0
     b = Broker(Ledger(a.db), {})
     try:

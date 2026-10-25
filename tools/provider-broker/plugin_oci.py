@@ -38,7 +38,10 @@ from __future__ import annotations
 import re
 import time
 
-from provider_broker import Quote, Refused
+try:                                   # installed: quantumos_agent.broker
+    from .provider_broker import Quote, Refused
+except ImportError:                    # run from a checkout (tools/provider-broker on sys.path)
+    from provider_broker import Quote, Refused
 
 STANDARD_USD_PER_GB_MONTH = 0.0255   # Object Storage Standard and block volume storage, list price
 BLOCK_VPU_USD_PER_GB_MONTH = 0.017   # block volume performance, default 10 VPUs/GB at $0.0017
