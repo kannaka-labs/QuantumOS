@@ -261,6 +261,15 @@
         "refresh_url": "https://kax.ninja-portal.com/api/auth/token/refresh",
         "refresh_every_s": 600
       }
+    },
+    "review": {
+      "command": "qos-review",
+      "args": [
+        "serve",
+        "--config",
+        "~/.qos-review/review.json"
+      ],
+      "env": {}
     }
   },
   "policy": {
@@ -316,7 +325,9 @@
     "city.city_leave": "ask",
     "city.joinery_buy": "ask",
     "city.joinery_sell": "ask",
-    "city.joinery_flat": "ask"
+    "city.joinery_flat": "ask",
+    "review.review_start": "ask",
+    "review.*": "allow"
   },
   "default": "ask"
 }

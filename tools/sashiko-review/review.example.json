@@ -1,0 +1,19 @@
+{
+  "_comment": "QuantumOS review server (ADR-0028): Sashiko reviews of your own repositories, with your own model and key. Edit the binary, provider, model, key and repositories, then run `qos-review check --config review.json`. The key is never written here: key_env names a variable that holds it, or key_file an owner-only (chmod 600) file. max_total_tokens is required: the most uncached input plus output tokens one review may use, enforced by Sashiko. Prices are optional, in US dollars per million tokens, and only feed the estimates: the ones below are placeholders, so put in your provider's current prices for your model.",
+  "binary": "~/.cargo/bin/sashiko",
+  "provider": "claude",
+  "model": "claude-sonnet-5-5",
+  "key_env": "ANTHROPIC_API_KEY",
+  "max_total_tokens": 3000000,
+  "max_total_output_tokens": 300000,
+  "price": {
+    "usd_per_mtok_in": 3.0,
+    "usd_per_mtok_out": 15.0,
+    "usd_per_mtok_cached": 0.3
+  },
+  "projects": ["sashiko", "kannaka"],
+  "repos": {
+    "myproject": "~/src/myproject"
+  },
+  "timeout_s": 3600
+}
