@@ -82,6 +82,28 @@ envelope (or tells you the `approve` command to run), and `broker_teardown` remo
 It is a separate server from `scripts/qos_mcp.py`, so the frozen v1 tool surface
 (ADR-0020) is unchanged; `test_broker_mcp.py` pins this server's own tool list.
 
+## qBraid Lab compute (`plugin_qbraid_lab.py`)
+
+`--providers qbraid_lab` covers two kinds, each with spec `{"profile": "<slug>"}`. Prices are
+per minute from qBraid's live list, and quotes are estimates, because Free-plan CPU profiles
+may be covered by qBraid's free CPU-Lab hours.
+
+- **`lab_server`:** the account's one Lab server. The broker starts it only when it is
+  stopped, so it never takes over someone else's session. Teardown stops it.
+- **`instance`:** an on-demand machine. Teardown terminates it, because a stopped instance
+  still bills for its disk.
+- **Crash recovery for instances.** qBraid instances can't be tagged, so before every create
+  an intent journal records the instances that already exist.
+  - With `--qbraid-lab-sole-user` (**option b**), provisioning is refused while any instance
+    the broker didn't start exists. After a crash, a new instance can only be ours, and is
+    terminated.
+  - Without it (**option c**), nothing is terminated on a guess. Recovery logs an error and
+    writes an `orphan_possible` event to the ledger, listing the candidates.
+
+Real run (2026-10-25): a Lab server on `2vCPU_4GB`, quoted at $0.02 for 10 min, ran and
+stopped in 36 s, and cost $0.00: the credit balance was unchanged, covered by the free
+CPU hours.
+
 ## Writing a provider plugin
 
 A plugin is an object with:
