@@ -426,7 +426,10 @@ def _repo_root():
 def _default_kernel():
     """The standard build path, or — if the artifact landed elsewhere (the CI
     integration job unpacks it under an unpredictable build/ subdir) — the
-    first kernel.elf32 found under build/."""
+    first kernel.elf32 found under build/. QOS_KERNEL names one explicitly, which an installed
+    package needs: it has no build/ (download the kernel from a release and point this at it)."""
+    if os.environ.get("QOS_KERNEL"):
+        return os.path.expanduser(os.environ["QOS_KERNEL"])
     root = _repo_root()
     std = os.path.join(root, "build", "x86_64", "kernel.elf32")
     if os.path.exists(std):
@@ -457,11 +460,13 @@ _kannaka_lock = threading.Lock()       # serialize this process's kannaka calls
 
 
 def _default_kannaka_bin():
-    """QOS_KANNAKA_BIN overrides (the CI gate points it at a stub); otherwise
-    the standard release build."""
-    return os.environ.get("QOS_KANNAKA_BIN") or (
+    """QOS_KANNAKA_BIN overrides (the CI gate points it at a stub); otherwise `kannaka` on PATH,
+    otherwise the standard release build (kannaka.exe on Windows, kannaka elsewhere)."""
+    import shutil
+    exe = "kannaka.exe" if os.name == "nt" else "kannaka"
+    return os.environ.get("QOS_KANNAKA_BIN") or shutil.which("kannaka") or (
         os.path.join(os.path.expanduser("~"), "Source", "kannaka-memory",
-                     "target", "release", "kannaka.exe"))
+                     "target", "release", exe))
 
 
 class KannakaCLI:

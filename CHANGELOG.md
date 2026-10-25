@@ -17,6 +17,22 @@ Full per-PR provenance: `git log` and the PR list on GitHub.
   anything runs.
 - The hub asks before `review_start`.
 
+### Fixed, from an end-to-end test of the installed 0.6.0 package
+
+- **Python servers behind the hub start from a uv venv on Windows.** uv's venv launcher sets `PYTHONHOME` to its own
+  interpreter, and every program the hub started inherited it, so a different Python (kannaka-quantum's) failed with
+  "No module named ...". The hub and its CLI connector now drop the launcher variables unless a server entry sets
+  them.
+- **An installed package finds a kernel.** `QOS_KERNEL=/path/to/kernel.elf32` (from a release, checked against
+  `SHA256SUMS.kernel`) is now honoured by `qos_boot` and by the society tools, which take no kernel argument and
+  could not boot from a pip install before.
+- The memory bridge finds `kannaka` on `PATH`, and its default build path no longer ends in `.exe` off Windows.
+- The person is no longer asked to approve a call that cannot run: an `ask` call to a CLI tool is validated first.
+- A downstream call that takes longer than `call_timeout_s` (default 300 s; set per server) answers with a timeout
+  instead of holding the agent.
+- CLI output reaches the agent without terminal colour codes.
+- `hub.example.json`'s 0xSCADA entries name commands the 0xSCADA CLI has (there is no `alarms` command).
+
 ## [0.6.0] — 2026-10-25 — Firecracker with storage, a public console, and agents that spend inside a budget
 
 The v1 contracts frozen in 0.5.1 are unchanged. The syscall ABI, the MCP tool surface of

@@ -17,7 +17,8 @@
         "kannaka_quantum",
         "mcp"
       ],
-      "env": {}
+      "env": {},
+      "call_timeout_s": 600
     },
     "octo": {
       "command": "node",
@@ -86,17 +87,44 @@
           "node",
           "~/Source/0xSCADA/cli/dist/index.js"
         ],
+        "env": {
+          "OXSCADA_API_URL": "http://localhost:5000",
+          "NO_COLOR": "1"
+        },
         "timeout_s": 60,
         "tools": {
           "status": {
-            "description": "0xSCADA system status.",
+            "description": "0xSCADA system health (database, blockchain, services).",
             "argv": [
               "status",
               "--json"
             ]
           },
+          "sites": {
+            "description": "List registered sites.",
+            "argv": [
+              "sites",
+              "list",
+              "--json"
+            ]
+          },
+          "site": {
+            "description": "One site.",
+            "argv": [
+              "sites",
+              "get",
+              "{id}",
+              "--json"
+            ],
+            "params": {
+              "id": {
+                "type": "string",
+                "pattern": "[A-Za-z0-9_.:-]{1,64}"
+              }
+            }
+          },
           "assets": {
-            "description": "List assets.",
+            "description": "List registered assets.",
             "argv": [
               "assets",
               "list",
@@ -118,10 +146,10 @@
               }
             }
           },
-          "alarms": {
-            "description": "List alarms.",
+          "events": {
+            "description": "List event anchors.",
             "argv": [
-              "alarms",
+              "events",
               "list",
               "--json",
               "--limit",
@@ -131,51 +159,48 @@
               "limit": {
                 "type": "integer",
                 "min": 1,
-                "max": 500,
-                "default": 50
+                "max": 100,
+                "default": 20
               }
             }
           },
-          "alarms_by_severity": {
-            "description": "List alarms of one severity.",
+          "blockchain": {
+            "description": "Blockchain connection status.",
             "argv": [
-              "alarms",
-              "list",
-              "--severity",
-              "{severity}",
+              "blockchain",
+              "info",
               "--json"
-            ],
-            "params": {
-              "severity": {
-                "type": "string",
-                "enum": [
-                  "critical",
-                  "high",
-                  "medium",
-                  "low",
-                  "info"
-                ]
-              }
-            }
+            ]
           },
-          "alarm_ack": {
-            "description": "Acknowledge an alarm at a site.",
+          "asset_create": {
+            "description": "Register an asset on a site.",
             "argv": [
-              "alarms",
-              "ack",
-              "{alarm_id}",
-              "--comment",
-              "{comment}",
+              "assets",
+              "create",
+              "--site",
+              "{site}",
+              "--name",
+              "{name}",
+              "--type",
+              "{type}",
               "--json"
             ],
             "params": {
-              "alarm_id": {
+              "site": {
                 "type": "string",
                 "pattern": "[A-Za-z0-9_.:-]{1,64}"
               },
-              "comment": {
+              "name": {
                 "type": "string",
-                "max_len": 200
+                "pattern": "[A-Za-z0-9_.:-]{1,64}"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "PLC",
+                  "HMI",
+                  "Sensor"
+                ]
               }
             }
           }
@@ -306,12 +331,6 @@
     "kcli.status": "allow",
     "kcli.recall": "allow",
     "kcli.swarm_status": "allow",
-    "scada.status": "allow",
-    "scada.assets": "allow",
-    "scada.asset": "allow",
-    "scada.alarms": "allow",
-    "scada.alarms_by_severity": "allow",
-    "scada.alarm_ack": "ask",
     "steward.*": "allow",
     "city.city_look": "allow",
     "city.city_rooms": "allow",
@@ -327,7 +346,15 @@
     "city.joinery_sell": "ask",
     "city.joinery_flat": "ask",
     "review.review_start": "ask",
-    "review.*": "allow"
+    "review.*": "allow",
+    "scada.status": "allow",
+    "scada.sites": "allow",
+    "scada.site": "allow",
+    "scada.assets": "allow",
+    "scada.asset": "allow",
+    "scada.events": "allow",
+    "scada.blockchain": "allow",
+    "scada.asset_create": "ask"
   },
   "default": "ask"
 }

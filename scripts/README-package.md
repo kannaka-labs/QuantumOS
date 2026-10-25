@@ -20,7 +20,9 @@ pip install "quantumos-host-tools[oci]"
 
 Requires Python ≥ 3.10 and a `qemu-system-x86_64` on `PATH`. You also need a QuantumOS
 `kernel.elf32` (build it from the repo with `make`, or take one from a
-[release](https://github.com/kannaka-labs/QuantumOS/releases)).
+[release](https://github.com/kannaka-labs/QuantumOS/releases) and check it against `SHA256SUMS.kernel`).
+Point the tools at it with `QOS_KERNEL=/path/to/kernel.elf32`: an installed package has no build
+directory to find one in, and the society tools take no kernel argument.
 
 ## What's inside
 
