@@ -140,3 +140,56 @@ def test_a_wrong_token_is_logged_not_fatal(city, tmp_path):
         assert errs and errs[0]["server"] == "city" and "wrong-token" not in json.dumps(led)
     run_hub(cfg, db, script)
     assert FakeCity.calls == []
+
+
+class RotatingCity(FakeCity):
+    """Only the most recently issued token is valid; POST /refresh rotates it."""
+    current = TOKEN
+    issued = 0
+
+    def do_POST(self):
+        if self.path.endswith("/refresh"):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if self.headers.get("Authorization") != f"Bearer {RotatingCity.current}":
+                return self._send(401, {"error": "expired"})
+            RotatingCity.issued += 1
+            RotatingCity.current = f"rotated-{RotatingCity.issued}"
+            return self._send(200, {"token": RotatingCity.current, "expiresInSec": 900})
+        global TOKEN
+        saved, TOKEN = TOKEN, RotatingCity.current
+        try:
+            return super().do_POST()
+        finally:
+            TOKEN = saved
+
+
+def test_a_short_lived_token_is_refreshed_on_the_open_session(tmp_path):
+    RotatingCity.current, RotatingCity.issued, FakeCity.calls = TOKEN, 0, []
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), RotatingCity)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    tok = tmp_path / "tok.txt"
+    tok.write_text(TOKEN)
+    db = str(tmp_path / "pb.db")
+    cfg = tmp_path / "hub.json"
+    cfg.write_text(json.dumps({"servers": {"city": {"url": base + "/api/mcp", "auth": {
+        "bearer_file": str(tok), "refresh_url": base + "/api/auth/token/refresh", "refresh_every_s": 0.5}}},
+        "policy": {"city.city_look": "allow"}}))
+
+    async def script(s, c):
+        assert (await c("city.city_look"))["ok"]
+        await asyncio.sleep(1.6)                    # at least two rotations: the first token is dead now
+        assert RotatingCity.issued >= 2
+        assert (await c("city.city_look"))["ok"], "the open session must use the refreshed token"
+        led = await c("hub_ledger", limit=20)
+        refreshes = [e for e in led["events"] if e["event"] == "hub_token_refresh"]
+        assert refreshes and all(e["ok"] for e in refreshes)
+        assert "rotated-" not in json.dumps(led) and TOKEN not in json.dumps(led), "tokens never in the ledger"
+    try:
+        run_hub(cfg, db, script)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert tok.read_text().startswith("rotated-"), "the new token is written back to the file"
+    assert oct(tok.stat().st_mode & 0o777) == "0o600"
+    assert FakeCity.calls == ["city_look", "city_look"]

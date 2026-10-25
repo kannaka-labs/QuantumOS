@@ -257,7 +257,9 @@
     "city": {
       "url": "https://kax.ninja-portal.com/api/mcp",
       "auth": {
-        "bearer_file": "~/.kannaka/kax-token-kannaka.txt"
+        "bearer_file": "~/.kannaka/kax-token-kannaka.txt",
+        "refresh_url": "https://kax.ninja-portal.com/api/auth/token/refresh",
+        "refresh_every_s": 600
       }
     }
   },
