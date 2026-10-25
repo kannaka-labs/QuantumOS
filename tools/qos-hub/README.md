@@ -47,9 +47,36 @@ and `hub_ledger`. There is no tool to approve or to change the policy.
 | `octo` | Kannaktopus `mcp-server` | status, skills, Kannaka/HRM reads, swarm status/tail | swarm_send, absorb, dream, the octopus workflows (they call paid LLMs) | |
 | `broker` | the provider broker's `broker_mcp.py` | all (the broker enforces its own envelope and approvals) | | |
 
-Next (#297): HTTP MCP servers (Agent-kax's KAX City tools, the Command Center), and a CLI
-connector that exposes allowlisted commands of CLIs without an MCP server (0xscada, kannaka,
-steward) as tools.
+## CLIs without an MCP server (`cli_connector.py`)
+
+A server entry can be `{"cli": {...}}` instead of a command: a CLI whose **allowlisted argv
+templates** become hub tools, under the same allow/ask/deny policy.
+
+```json
+"scada": {"cli": {"binary": ["node", "~/Source/0xSCADA/cli/dist/index.js"], "timeout_s": 60, "tools": {
+  "alarms_by_severity": {"description": "List alarms of one severity.",
+                         "argv": ["alarms", "list", "--severity", "{severity}", "--json"],
+                         "params": {"severity": {"type": "string",
+                                                 "enum": ["critical", "high", "medium", "low", "info"]}}}}}}
+```
+
+- **Only listed commands exist.** The connector never probes a CLI with `--help` (on a host
+  with a live Kannaka store that is not harmless).
+- **A placeholder fills a whole argv slot only:** no shell, never inside a larger string.
+- **Every value is checked:** string (`max_len`, `enum`, a whole-value `pattern`), integer
+  (`min`/`max`) or boolean. A string may not start with `-`, so it can never become an option.
+- **Bounds:** unknown parameters are refused, and each run has a timeout and a 64 KiB output cap.
+- **Options:** `binary` may be a command prefix (`["node", ".../index.js"]`), and `cwd` sets
+  the working directory.
+
+The example config wires up:
+- `kcli`: the `kannaka` CLI, with status, recall and swarm status;
+- `scada`: 0xscada status, assets and alarms are allowed; `alarm_ack` asks, because it changes
+  state at a site;
+- `steward`: `govern` and `trade`, limited to the offline warrant fixtures, never signing or
+  submitting.
+
+Next (#297): HTTP MCP servers (Agent-kax's KAX City tools, the Command Center, PFORK_MCP).
 
 ## Trust boundary
 
@@ -59,7 +86,7 @@ you are happy for allowed tools to use.
 
 ## Tests
 
-`python3 -m pytest -q tools/qos-hub`: 8 tests. They cover the policy matching, allow, deny
+`python3 -m pytest -q tools/qos-hub`: 27 tests (8 hub, 19 CLI connector). They cover the policy matching, allow, deny
 never reaching the server, ask holding the exact call and releasing it only with the key and
 only once, a tampered or expired approval refused, unknown tools asking, a broken downstream
 server not hiding the others, the approval CLI, and a full run over real MCP stdio with a

@@ -3,23 +3,256 @@
   "servers": {
     "kannaka": {
       "command": "node",
-      "args": ["~/.claude/plugins/marketplaces/kannaka/plugins/kannaka/mcp/kannaka-mcp.mjs"],
-      "env": {"KANNAKA_BIN": "/usr/local/bin/kannaka"}
+      "args": [
+        "~/.claude/plugins/marketplaces/kannaka/plugins/kannaka/mcp/kannaka-mcp.mjs"
+      ],
+      "env": {
+        "KANNAKA_BIN": "/usr/local/bin/kannaka"
+      }
     },
     "quantum": {
       "command": "python3",
-      "args": ["-m", "kannaka_quantum", "mcp"],
+      "args": [
+        "-m",
+        "kannaka_quantum",
+        "mcp"
+      ],
       "env": {}
     },
     "octo": {
       "command": "node",
-      "args": ["~/Source/Kannaktopus/mcp-server/dist/index.js"],
+      "args": [
+        "~/Source/Kannaktopus/mcp-server/dist/index.js"
+      ],
       "env": {}
     },
     "broker": {
       "command": "python3",
-      "args": ["~/QuantumOS/tools/provider-broker/broker_mcp.py"],
-      "env": {"QOS_BROKER_SOCKET": "/run/qos-broker/broker.sock"}
+      "args": [
+        "~/QuantumOS/tools/provider-broker/broker_mcp.py"
+      ],
+      "env": {
+        "QOS_BROKER_SOCKET": "/run/qos-broker/broker.sock"
+      }
+    },
+    "kcli": {
+      "cli": {
+        "binary": "~/.local/bin/kannaka",
+        "env": {
+          "KANNAKA_QUIET": "1"
+        },
+        "timeout_s": 90,
+        "tools": {
+          "status": {
+            "description": "HRM status (the CLI, same as the plugin's).",
+            "argv": [
+              "status"
+            ]
+          },
+          "recall": {
+            "description": "Search memories.",
+            "argv": [
+              "recall",
+              "{query}",
+              "--top-k",
+              "{k}"
+            ],
+            "params": {
+              "query": {
+                "type": "string",
+                "max_len": 200
+              },
+              "k": {
+                "type": "integer",
+                "min": 1,
+                "max": 20,
+                "default": 5
+              }
+            }
+          },
+          "swarm_status": {
+            "description": "Swarm snapshot.",
+            "argv": [
+              "swarm",
+              "status"
+            ]
+          }
+        }
+      }
+    },
+    "scada": {
+      "cli": {
+        "binary": [
+          "node",
+          "~/Source/0xSCADA/cli/dist/index.js"
+        ],
+        "timeout_s": 60,
+        "tools": {
+          "status": {
+            "description": "0xSCADA system status.",
+            "argv": [
+              "status",
+              "--json"
+            ]
+          },
+          "assets": {
+            "description": "List assets.",
+            "argv": [
+              "assets",
+              "list",
+              "--json"
+            ]
+          },
+          "asset": {
+            "description": "One asset.",
+            "argv": [
+              "assets",
+              "get",
+              "{id}",
+              "--json"
+            ],
+            "params": {
+              "id": {
+                "type": "string",
+                "pattern": "[A-Za-z0-9_.:-]{1,64}"
+              }
+            }
+          },
+          "alarms": {
+            "description": "List alarms.",
+            "argv": [
+              "alarms",
+              "list",
+              "--json",
+              "--limit",
+              "{limit}"
+            ],
+            "params": {
+              "limit": {
+                "type": "integer",
+                "min": 1,
+                "max": 500,
+                "default": 50
+              }
+            }
+          },
+          "alarms_by_severity": {
+            "description": "List alarms of one severity.",
+            "argv": [
+              "alarms",
+              "list",
+              "--severity",
+              "{severity}",
+              "--json"
+            ],
+            "params": {
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "critical",
+                  "high",
+                  "medium",
+                  "low",
+                  "info"
+                ]
+              }
+            }
+          },
+          "alarm_ack": {
+            "description": "Acknowledge an alarm at a site.",
+            "argv": [
+              "alarms",
+              "ack",
+              "{alarm_id}",
+              "--comment",
+              "{comment}",
+              "--json"
+            ],
+            "params": {
+              "alarm_id": {
+                "type": "string",
+                "pattern": "[A-Za-z0-9_.:-]{1,64}"
+              },
+              "comment": {
+                "type": "string",
+                "max_len": 200
+              }
+            }
+          }
+        }
+      }
+    },
+    "steward": {
+      "cli": {
+        "binary": [
+          "node",
+          "~/Source/kannaka-steward/dist/cli.js"
+        ],
+        "cwd": "~/Source/kannaka-steward",
+        "timeout_s": 120,
+        "tools": {
+          "govern": {
+            "description": "Check a governance proposal against a charter and a warrant; emits a human-signable package only if both pass. Never signs or submits.",
+            "argv": [
+              "govern",
+              "--charter",
+              "{charter}",
+              "--proposal",
+              "{proposal}",
+              "--warrant",
+              "{warrant}"
+            ],
+            "params": {
+              "charter": {
+                "type": "string",
+                "pattern": "charters/[a-z0-9_-]{1,40}[.]yaml"
+              },
+              "proposal": {
+                "type": "string",
+                "pattern": "[A-Za-z0-9_-]{1,64}"
+              },
+              "warrant": {
+                "type": "string",
+                "enum": [
+                  "granted",
+                  "revoked",
+                  "overscope"
+                ]
+              }
+            }
+          },
+          "trade": {
+            "description": "Same discipline for a market position: dry-run and a signable package only. Never signs or submits.",
+            "argv": [
+              "trade",
+              "--charter",
+              "{charter}",
+              "--market",
+              "{market}",
+              "--warrant",
+              "{warrant}"
+            ],
+            "params": {
+              "charter": {
+                "type": "string",
+                "pattern": "charters/[a-z0-9_-]{1,40}[.]yaml"
+              },
+              "market": {
+                "type": "string",
+                "pattern": "[A-Za-z0-9_-]{1,64}"
+              },
+              "warrant": {
+                "type": "string",
+                "enum": [
+                  "granted",
+                  "revoked",
+                  "overscope"
+                ]
+              }
+            }
+          }
+        }
+      }
     }
   },
   "policy": {
@@ -35,12 +268,10 @@
     "kannaka.swarm_send": "ask",
     "kannaka.compute_wake": "ask",
     "kannaka.compute_grant": "deny",
-
     "quantum.quantum_devices": "allow",
     "quantum.quantum_random": "allow",
     "quantum.resonance_recall": "allow",
     "quantum.run_circuit": "ask",
-
     "octo.octopus_status": "allow",
     "octo.octopus_list_skills": "allow",
     "octo.kannaka_status": "allow",
@@ -54,8 +285,17 @@
     "octo.kannaka_absorb": "ask",
     "octo.kannaka_dream": "ask",
     "octo.octopus_*": "ask",
-
-    "broker.*": "allow"
+    "broker.*": "allow",
+    "kcli.status": "allow",
+    "kcli.recall": "allow",
+    "kcli.swarm_status": "allow",
+    "scada.status": "allow",
+    "scada.assets": "allow",
+    "scada.asset": "allow",
+    "scada.alarms": "allow",
+    "scada.alarms_by_severity": "allow",
+    "scada.alarm_ack": "ask",
+    "steward.*": "allow"
   },
   "default": "ask"
 }

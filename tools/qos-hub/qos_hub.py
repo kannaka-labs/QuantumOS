@@ -30,6 +30,8 @@ Config (JSON):
               "kannaka.compute_grant": "deny", "broker.*": "allow"},
    "default": "ask"}
 Policy keys are tool names or fnmatch patterns; the most specific (longest) match wins.
+A server entry may instead be {"cli": {...}}: a CLI with no MCP server, exposed through
+allowlisted argv templates (cli_connector.py).
 
 Hub tools (always present): hub_tools (every tool with its policy), hub_call_approved,
 hub_ledger. There is deliberately no tool to approve or to change the policy.
@@ -246,6 +248,10 @@ async def serve(config: dict, db: str) -> None:
         for ns, spec in (config.get("servers") or {}).items():
             if SEP in ns:
                 raise SystemExit(f"server name {ns!r} must not contain {SEP!r}")
+            if "cli" in spec:                     # a CLI without an MCP server (cli_connector.py)
+                from cli_connector import CliSession
+                down[ns] = CliSession(spec["cli"])
+                continue
             params = StdioServerParameters(command=os.path.expanduser(spec["command"]),
                                            args=[os.path.expanduser(x) for x in spec.get("args") or []],
                                            env={**os.environ, **{k: os.path.expanduser(v) for k, v in
