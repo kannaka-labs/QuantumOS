@@ -194,20 +194,27 @@ static uint64_t sys_write(uint32_t pid, uint64_t user_ptr) {
 
 /* Exit ledger (epic #62 phase 3): the idle-loop reaper memsets a
  * terminated PCB long before a shell polls for it, so exit codes are
- * also recorded in this small ring. SYS_WAITPID consults the ledger
- * first (newest wins, so a recycled pid still resolves to the exit the
- * waiter is after) and the live table second. Single CPU, syscalls run
- * cli'd — no locking needed. */
+ * also recorded in this small ring, each with the exiting process's
+ * generation (process.h). SYS_WAITPID asks about whoever holds the pid:
+ * while a slot is live, only an entry of THAT process's generation
+ * counts; once the slot is free, the newest entry for the pid answers.
+ * Before the generation, a new program spawned into a recycled pid got
+ * the previous owner's exit code on its parent's first poll — the
+ * "stillborn spawn" (exit 0, program never ran) that the MCP lifecycle
+ * gate kept retrying past (#291). Single CPU, syscalls run cli'd — no
+ * locking needed. */
 #define EXIT_LEDGER_SIZE 16
 static struct {
     uint32_t pid;
+    uint32_t generation;
     int32_t code;
     bool valid;
 } exit_ledger[EXIT_LEDGER_SIZE];
 static uint32_t exit_ledger_next;
 
-static void exit_ledger_record(uint32_t pid, int32_t code) {
+static void exit_ledger_record(uint32_t pid, uint32_t generation, int32_t code) {
     exit_ledger[exit_ledger_next].pid = pid;
+    exit_ledger[exit_ledger_next].generation = generation;
     exit_ledger[exit_ledger_next].code = code;
     exit_ledger[exit_ledger_next].valid = true;
     exit_ledger_next = (exit_ledger_next + 1) % EXIT_LEDGER_SIZE;
@@ -219,7 +226,7 @@ static void sys_exit(uint32_t pid, uint64_t code, cpu_state_t *state) {
         cur->exit_code = (int32_t)code;
         cur->has_exited = true;
     }
-    exit_ledger_record(pid, (int32_t)code);
+    exit_ledger_record(pid, cur ? cur->generation : 0, (int32_t)code);
     boot_log_v("syscall: user process exited");
     process_set_state(pid, PROCESS_STATE_TERMINATED);
     scheduler_kill_current(state);
@@ -1313,16 +1320,22 @@ static uint64_t sys_waitpid(uint32_t pid, uint64_t target) {
         return SYSCALL_EINVAL;
     }
 
-    /* Ledger first, newest to oldest: a reaped (or recycled) pid still
-     * resolves to the exit the waiter is polling for. */
+    /* The pid's current holder decides which ledger entries count: while the
+     * slot is live (running, or exited and not yet reaped), only an entry of
+     * its own generation; a stale entry from the pid's previous owner must
+     * not be reported as this process's exit (#291). With the slot free
+     * (reaped), the newest entry for the pid answers, as before. */
+    process_t *p = process_get_by_pid((uint32_t)target);
     for (uint32_t i = 0; i < EXIT_LEDGER_SIZE; i++) {
         uint32_t idx = (exit_ledger_next + EXIT_LEDGER_SIZE - 1 - i) % EXIT_LEDGER_SIZE;
-        if (exit_ledger[idx].valid && exit_ledger[idx].pid == (uint32_t)target) {
-            return (uint64_t)(uint8_t)exit_ledger[idx].code;
+        if (!exit_ledger[idx].valid || exit_ledger[idx].pid != (uint32_t)target) {
+            continue;
         }
+        if (p && exit_ledger[idx].generation != p->generation) {
+            continue; /* the previous owner of this pid */
+        }
+        return (uint64_t)(uint8_t)exit_ledger[idx].code;
     }
-
-    process_t *p = process_get_by_pid((uint32_t)target);
     if (p) {
         return WAITPID_RUNNING;
     }

@@ -48,6 +48,8 @@ static char *strncpy_local(char *dest, const char *src, size_t n) {
 /* Process table - all processes in the system */
 static process_t process_table[MAX_PROCESSES];
 static bool process_table_initialized = false;
+/* Bumped for every process created, never reused (wraps after 2^32 creations). */
+static uint32_t process_generation_next = 1;
 
 /* Per-slot generation counter, bumped every time a slot is (re)used.
  * PIDs are slot indices allocated first-fit, so a freed slot's pid can
@@ -169,6 +171,7 @@ static status_t init_process_pcb(process_t *process, const process_create_params
     process->child_count = 0;
     process->has_exited = false;
     process->exit_code = 0;
+    process->generation = process_generation_next++;
 
     /* Set magic number */
     process->magic = PROCESS_MAGIC;

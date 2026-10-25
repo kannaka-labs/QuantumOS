@@ -123,8 +123,9 @@ typedef struct process {
     uint32_t child_count;             /* Number of children */
 
     /* Exit information */
-    int32_t exit_code; /* Process exit code */
-    bool has_exited;   /* True if process has exited */
+    int32_t exit_code;   /* Process exit code */
+    bool has_exited;     /* True if process has exited */
+    uint32_t generation; /* Unique per creation: tells a recycled pid's new owner from the old */
 
     /* Quantum-specific fields (for quantum-aware processes) */
     struct {
