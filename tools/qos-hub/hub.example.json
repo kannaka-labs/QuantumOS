@@ -1,0 +1,61 @@
+{
+  "_comment": "QuantumOS hub: one MCP endpoint for the Kannaka ecosystem. Copy, fix the paths, and point your AI at `qos_hub.py serve --config hub.json --db broker.db`. Reads are allowed; anything that writes to a shared bus, spends, or changes a store asks first; credit grants are denied. Unlisted tools ask.",
+  "servers": {
+    "kannaka": {
+      "command": "node",
+      "args": ["~/.claude/plugins/marketplaces/kannaka/plugins/kannaka/mcp/kannaka-mcp.mjs"],
+      "env": {"KANNAKA_BIN": "/usr/local/bin/kannaka"}
+    },
+    "quantum": {
+      "command": "python3",
+      "args": ["-m", "kannaka_quantum", "mcp"],
+      "env": {}
+    },
+    "octo": {
+      "command": "node",
+      "args": ["~/Source/Kannaktopus/mcp-server/dist/index.js"],
+      "env": {}
+    },
+    "broker": {
+      "command": "python3",
+      "args": ["~/QuantumOS/tools/provider-broker/broker_mcp.py"],
+      "env": {"QOS_BROKER_SOCKET": "/run/qos-broker/broker.sock"}
+    }
+  },
+  "policy": {
+    "kannaka.kannaka_status": "allow",
+    "kannaka.kannaka_recall": "allow",
+    "kannaka.swarm_status": "allow",
+    "kannaka.swarm_tail": "allow",
+    "kannaka.compute_machines": "allow",
+    "kannaka.compute_status": "allow",
+    "kannaka.compute_events": "allow",
+    "kannaka.kannaka_remember": "ask",
+    "kannaka.kannaka_dream": "ask",
+    "kannaka.swarm_send": "ask",
+    "kannaka.compute_wake": "ask",
+    "kannaka.compute_grant": "deny",
+
+    "quantum.quantum_devices": "allow",
+    "quantum.quantum_random": "allow",
+    "quantum.resonance_recall": "allow",
+    "quantum.run_circuit": "ask",
+
+    "octo.octopus_status": "allow",
+    "octo.octopus_list_skills": "allow",
+    "octo.kannaka_status": "allow",
+    "octo.kannaka_recall": "allow",
+    "octo.kannaka_observe": "allow",
+    "octo.kannaka_constellation": "allow",
+    "octo.hrm_*": "allow",
+    "octo.swarm_status": "allow",
+    "octo.swarm_tail": "allow",
+    "octo.swarm_send": "ask",
+    "octo.kannaka_absorb": "ask",
+    "octo.kannaka_dream": "ask",
+    "octo.octopus_*": "ask",
+
+    "broker.*": "allow"
+  },
+  "default": "ask"
+}
