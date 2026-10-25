@@ -39,6 +39,19 @@ from types import SimpleNamespace as NS
 
 PLACEHOLDER = re.compile(r"^\{([a-z_][a-z0-9_]{0,31})\}$")
 MAX_OUT = 64 * 1024
+# Colour and cursor escapes a CLI prints for a terminal; an agent reads them as noise.
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+# Variables a Python launcher sets for ITSELF: uv's venv launcher on Windows sets PYTHONHOME to its own
+# interpreter, and a different Python started with it inherited loads the wrong standard library and
+# packages ("No module named ..."). A server entry that wants one sets it explicitly in its env.
+LAUNCHER_VARS = ("PYTHONHOME", "UV_INTERNAL__PYTHONHOME", "__PYVENV_LAUNCHER__")
+
+
+def child_env(extra: dict | None) -> dict:
+    """The environment for a program the hub starts: its own, minus the launcher variables, plus `extra`."""
+    env = {k: v for k, v in os.environ.items() if k not in LAUNCHER_VARS}
+    env.update({k: os.path.expanduser(v) for k, v in (extra or {}).items()})
+    return env
 
 
 class ConfigError(ValueError):
@@ -84,7 +97,7 @@ class CliSession:
             raise ConfigError("binary must be a program or a non-empty command prefix list")
         self.binary = self.prefix[0]
         self.cwd = os.path.expanduser(spec["cwd"]) if spec.get("cwd") else None
-        self.env = {**os.environ, **{k: os.path.expanduser(v) for k, v in (spec.get("env") or {}).items()}}
+        self.env = child_env(spec.get("env"))
         self.timeout = float(spec.get("timeout_s", 60))
         self.tools: dict[str, dict] = {}
         for name, t in (spec.get("tools") or {}).items():
@@ -153,6 +166,13 @@ class CliSession:
             out.append(vals[m.group(1)] if m else a)
         return out
 
+    def validate(self, name: str, arguments: dict) -> None:
+        """Raise ValueError if the call could not run, without running it (the hub checks a call
+        before asking the person to approve it)."""
+        if name not in self.tools:
+            raise ValueError(f"no tool {name}")
+        self.render(name, arguments or {})
+
     async def call_tool(self, name: str, arguments: dict):
         def result(obj, error=False):
             return NS(content=[NS(type="text", text=json.dumps(obj))], isError=error)
@@ -175,10 +195,11 @@ class CliSession:
             proc.kill()
             await proc.wait()
             return result({"error": "timeout", "message": f"no result within {self.timeout:g} s"}, True)
-        text = out[:MAX_OUT].decode(errors="replace")
+        text = ANSI.sub("", out[:MAX_OUT].decode(errors="replace"))
         try:
             parsed = json.loads(text)
         except ValueError:
             parsed = text + ("\n[truncated]" if len(out) > MAX_OUT else "")
-        body = {"exit_code": proc.returncode, "stdout": parsed, "stderr": err[:4096].decode(errors="replace")}
+        body = {"exit_code": proc.returncode, "stdout": parsed,
+                "stderr": ANSI.sub("", err[:4096].decode(errors="replace"))}
         return result(body, proc.returncode != 0)

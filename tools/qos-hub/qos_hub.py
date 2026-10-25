@@ -80,6 +80,7 @@ POLICIES = ("allow", "ask", "deny")
 SEP = "."
 APPROVAL_TTL_S = 3600
 MAX_RESULT = 64 * 1024
+CALL_TIMEOUT_S = 300          # a downstream call that takes longer answers with an error (per server: call_timeout_s)
 
 HUB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS hub_approvals (id TEXT PRIMARY KEY, owner TEXT, tool TEXT, arguments TEXT,
@@ -160,6 +161,12 @@ class HubLedger:
                  "age_s": int(self.clock() - r["created"])} for r in rows]
 
 
+try:                                   # installed: quantumos_agent.hub
+    from .cli_connector import child_env
+except ImportError:                    # run from a checkout
+    from cli_connector import child_env
+
+
 class Owned:
     """One downstream server held open by its own task, so a server that fails (a 401 while
     connecting, a crash later) takes down only itself, never the hub."""
@@ -198,8 +205,9 @@ class Hub:
     `downstream` maps a namespace to an object with async list_tools() -> [Tool] and
     async call_tool(name, arguments) -> CallToolResult."""
 
-    def __init__(self, downstream: dict, policy: Policy, ledger: HubLedger):
+    def __init__(self, downstream: dict, policy: Policy, ledger: HubLedger, timeouts: dict | None = None):
         self.down, self.policy, self.ledger = downstream, policy, ledger
+        self.timeouts = timeouts or {}                   # namespace -> seconds a call may take
         self.tools: dict[str, tuple[str, object]] = {}     # exported name -> (namespace, Tool)
 
     async def refresh(self) -> None:
@@ -221,8 +229,13 @@ class Hub:
 
     async def _forward(self, tool: str, arguments: dict) -> dict:
         ns, t = self.tools[tool]
+        limit = float(self.timeouts.get(ns, CALL_TIMEOUT_S))
         try:
-            r = await self.down[ns].call_tool(t.name, arguments)
+            r = await asyncio.wait_for(self.down[ns].call_tool(t.name, arguments), limit)
+        except asyncio.TimeoutError:
+            self.ledger.event("hub_server_error", server=ns, error="timeout")
+            return {"ok": False, "error": "timeout",
+                    "message": f"{tool} gave no result within {limit:g} s (set call_timeout_s on the server entry)"}
         except Exception as e:  # noqa: BLE001 - a dead server answers with an error, never a crash
             self.ledger.event("hub_server_error", server=ns, error=type(e).__name__)
             return {"ok": False, "error": "server_error", "message": f"{ns} failed: {type(e).__name__}"}
@@ -259,6 +272,12 @@ class Hub:
             self.ledger.event("hub_call", tool=tool, decision="deny")
             return {"ok": False, "error": "denied", "message": f"{tool} is denied by this hub's policy"}
         if decision == "ask":
+            check = getattr(self.down.get(self.tools[tool][0]), "validate", None)
+            if check is not None:             # never ask the person to approve a call that cannot run
+                try:
+                    check(self.tools[tool][1].name, arguments)
+                except ValueError as e:
+                    return {"ok": False, "error": "bad_arguments", "message": str(e)}
             aid = self.ledger.request(tool, arguments)
             return {"ok": False, "error": "approval_required", "approval": aid,
                     "tell_your_human": (f"{tool} needs your person's approval. Show them the call and ask them to "
@@ -365,8 +384,7 @@ async def serve(config: dict, db: str) -> None:
     def stdio_ctx(spec):
         params = StdioServerParameters(command=os.path.expanduser(spec["command"]),
                                        args=[os.path.expanduser(x) for x in spec.get("args") or []],
-                                       env={**os.environ, **{k: os.path.expanduser(v) for k, v in
-                                                             (spec.get("env") or {}).items()}})
+                                       env=child_env(spec.get("env")))
 
         @contextlib.asynccontextmanager
         async def ctx():
@@ -415,7 +433,8 @@ async def serve(config: dict, db: str) -> None:
             log.warning("server %s did not start: %s", ns, type(e).__name__)
             ledger.event("hub_server_error", server=ns, error=type(e).__name__)
     try:
-        hub = Hub(down, Policy(config.get("policy") or {}, config.get("default", "ask")), ledger)
+        hub = Hub(down, Policy(config.get("policy") or {}, config.get("default", "ask")), ledger,
+                  {ns: float(s.get("call_timeout_s", CALL_TIMEOUT_S)) for ns, s in (config.get("servers") or {}).items()})
         await hub.refresh()
         server = Server("quantumos-hub")
 
