@@ -1,5 +1,7 @@
 # QuantumOS provider broker (ADR-0026)
 
+Installed: `pip install quantumos-host-tools` (add `[oci]` for the OCI plugin) gives the `qos-broker`, `qos-broker-mcp` and `qos-hub` commands; from a checkout, run the scripts in this directory directly.
+
 The broker lets an agent get real resources (buckets, VMs, GPUs, QPU jobs) from
 providers such as OCI and qBraid, inside a budget the agent cannot raise. This is the
 core (#284): the lifecycle, the money rules and the ledger, plus a mock provider. The

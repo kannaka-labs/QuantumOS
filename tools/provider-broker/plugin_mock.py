@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import secrets
 
-from provider_broker import Quote, Refused
+try:                                   # installed: quantumos_agent.broker
+    from .provider_broker import Quote, Refused
+except ImportError:                    # run from a checkout (tools/provider-broker on sys.path)
+    from provider_broker import Quote, Refused
 
 OFFERINGS = {
     "bucket": {"class": "storage", "unit": "GB-month", "price_usd": 0.0},

@@ -45,6 +45,8 @@ hub_ledger. There is deliberately no tool to approve or to change the policy.
   qos_hub.py serve   --config hub.json --db broker.db      (stdio MCP server)
   qos_hub.py approve --db broker.db <approval id> [--deny]  (the person; prompts for the key)
   qos_hub.py pending --db broker.db
+  qos_hub.py example                                        (the example config, to edit)
+  Installed (pip install quantumos-host-tools): the same as `qos-hub serve|approve|pending|example`.
 
 Trust boundary: as for the broker, these rules hold against an agent that reaches tools only
 through this server. Downstream servers run with the hub's own permissions.
@@ -66,8 +68,11 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "provider-broker"))
-import provider_broker as pb  # noqa: E402
+try:                                   # installed: quantumos_agent.hub next to quantumos_agent.broker
+    from ..broker import provider_broker as pb
+except ImportError:                    # run from a checkout
+    sys.path.insert(0, str(HERE.parent / "provider-broker"))
+    import provider_broker as pb  # noqa: E402
 
 log = logging.getLogger("qos-hub")
 
@@ -394,7 +399,10 @@ async def serve(config: dict, db: str) -> None:
         if SEP in ns:
             raise SystemExit(f"server name {ns!r} must not contain {SEP!r}")
         if "cli" in spec:                     # a CLI without an MCP server (cli_connector.py)
-            from cli_connector import CliSession
+            try:
+                from .cli_connector import CliSession
+            except ImportError:
+                from cli_connector import CliSession
             down[ns] = CliSession(spec["cli"])
             continue
         try:
@@ -448,7 +456,11 @@ def main(argv=None) -> int:
     a_.add_argument("--deny", action="store_true")
     p = sub.add_parser("pending")
     p.add_argument("--db", required=True)
+    sub.add_parser("example", help="print the example config (edit the paths, then save it as hub.json)")
     a = ap.parse_args(argv)
+    if a.cmd == "example":
+        print((HERE / "hub.example.json").read_text(), end="")
+        return 0
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", stream=sys.stderr)
     if a.cmd == "serve":
         asyncio.run(serve(json.loads(Path(a.config).read_text()), a.db))
