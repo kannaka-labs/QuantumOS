@@ -81,9 +81,17 @@ class FakeClient:
         del self.buckets[name]
 
 
+class NoCompute:
+    """A tenancy where this identity has no compute permission (buckets only)."""
+
+    def list_instances(self, comp):
+        raise ServiceError(404)
+
+
 def make(tmp_path, allow_spend=True):
     client = FakeClient()
-    oci = OciProvider("unused", "ocid1.compartment.test", client=client, oci_module=FAKE_OCI)
+    oci = OciProvider("unused", "ocid1.compartment.test", client=client, oci_module=FAKE_OCI,
+                      compute=NoCompute(), network=object(), identity=object())
     b = pb.Broker(pb.Ledger(str(tmp_path / "b.db")), {"oci": oci}, allow_spend=allow_spend)
     key = b.set_envelope(pb.Envelope(per_day_usd=1.0, per_action_usd=0.5, classes=["storage"],
                                      max_lease_s=7 * 86400))
@@ -100,7 +108,7 @@ def test_bucket_quote_is_worst_case_and_labelled_estimate(tmp_path):
             b.quote("oci", "bucket", bad, 3600)
         assert e.value.code == "bad_spec"
     with pytest.raises(pb.Refused) as e:
-        b.quote("oci", "vm", {}, 3600)
+        b.quote("oci", "gpu", {}, 3600)
     assert e.value.code == "bad_kind"
 
 
