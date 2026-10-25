@@ -1,7 +1,7 @@
 # 26. QuantumOS as the Agent's Provider Broker
 
 Date: 2026-10-24
-Status: Proposed
+Status: Accepted (2026-10-25, Nick; shipped in v0.6.0)
 
 ## Context
 
