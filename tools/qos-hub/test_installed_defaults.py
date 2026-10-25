@@ -134,3 +134,17 @@ def test_the_example_scada_templates_name_real_commands():
     real = {"status", "sites", "assets", "events", "blockchain"}      # 0xSCADA CLI top-level commands
     assert {t["argv"][0] for t in tools.values()} <= real, "no template may invent a command (there is no 'alarms')"
     assert d["policy"]["scada.asset_create"] == "ask"
+
+
+class Colourful:
+    async def list_tools(self):
+        return NS(tools=[NS(name="status", description="", inputSchema={"type": "object"})])
+
+    async def call_tool(self, name, arguments):
+        return NS(content=[NS(type="text", text="[1;33mFirst time?[0m [32mready[0m")], isError=False)
+
+
+def test_mcp_server_text_reaches_the_agent_without_colour_codes(tmp_path):
+    h, _ = make_hub(tmp_path, {"octo": Colourful()}, {"octo.*": "allow"})
+    r = asyncio.run(h.call("octo.status", {}))
+    assert r["ok"] and r["result"] == "First time? ready"

@@ -162,9 +162,9 @@ class HubLedger:
 
 
 try:                                   # installed: quantumos_agent.hub
-    from .cli_connector import child_env
+    from .cli_connector import ANSI, child_env
 except ImportError:                    # run from a checkout
-    from cli_connector import child_env
+    from cli_connector import ANSI, child_env
 
 
 class Owned:
@@ -239,7 +239,7 @@ class Hub:
         except Exception as e:  # noqa: BLE001 - a dead server answers with an error, never a crash
             self.ledger.event("hub_server_error", server=ns, error=type(e).__name__)
             return {"ok": False, "error": "server_error", "message": f"{ns} failed: {type(e).__name__}"}
-        texts = [c.text for c in r.content if getattr(c, "type", "") == "text"]
+        texts = [ANSI.sub("", c.text) for c in r.content if getattr(c, "type", "") == "text"]
         body = "\n".join(texts)
         if len(body) > MAX_RESULT:
             body = body[:MAX_RESULT] + "\n[truncated by the hub]"
