@@ -16,10 +16,10 @@ Full lifecycle against ONE VM, every step anti-vacuous:
      there is no "returns nothing" case to assert.)
   5. run /bin/hello -> exit code 42, hello's unique deterministic signature
      (qsh reports it from SYS_WAITPID; the number cannot come from echoing the
-     typed 'run /bin/hello'). Retried a few times: an early boot spawn that
-     reuses a just-freed transient pid slot is intermittently stillborn — a
-     pre-existing kernel early-spawn race the CI shell gate dodges by running
-     hello deep into boot; here we simply retry until the real run lands.
+     typed 'run /bin/hello'). One attempt, no retry: the "stillborn spawn" this
+     used to retry past was SYS_WAITPID returning a recycled pid's PREVIOUS
+     owner's exit code (#291, fixed by the process generation in the exit
+     ledger), so a wrong code here is now a real regression.
   5b-5h. The Phase A toolbox (epic #125), each anti-vacuous: run /bin/args
      'alpha beta' -> exit 3 + un-echoable `ARGS: argv[2]=beta`; sysinfo ->
      advancing uptime, positive heap, a process table with qsh RUNNING and only
@@ -183,13 +183,9 @@ class _FixedBody(http.server.BaseHTTPRequestHandler):
 def _exercise_run_args(vm):
     """run /bin/args with an argument vector -> exit code is argc (un-echoable:
     the kernel splits the line into argv and /bin/args prints it from ring 3).
-    Retries past the pid-recycle stillborn-spawn race, like /bin/hello."""
-    out = None
-    for _ in range(5):
-        out = vm.run("/bin/args", args="alpha beta")
-        if out["exit_code"] == 3:      # argv0 + 2 args
-            break
-    if out["exit_code"] != 3:
+    One attempt: a recycled pid must not report its previous owner's exit (#291)."""
+    out = vm.run("/bin/args", args="alpha beta")
+    if out["exit_code"] != 3:      # argv0 + 2 args
         _fail(f"/bin/args argc != 3 (last exit_code={out['exit_code']})")
     if "ARGS: argv[2]=beta" not in out["output"]:
         _fail(f"/bin/args did not echo argv[2]=beta: {out['output']!r}")
@@ -981,14 +977,9 @@ def main():
         _exercise_delegation(vm)
 
         # 5. run a citizen off the initrd. Exit 42 is hello's unique
-        # deterministic signature (un-echoable). Retry past the early-spawn
-        # stillborn race (exit 0, program never ran).
-        code = None
-        for _ in range(5):
-            run = vm.run("/bin/hello")
-            code = run["exit_code"]
-            if code == 42:
-                break
+        # deterministic signature (un-echoable). One attempt: before #291 a
+        # recycled pid reported its previous owner's exit code here.
+        code = vm.run("/bin/hello")["exit_code"]
         if code != 42:
             _fail(f"/bin/hello never returned exit code 42 (last={code})")
         print("OK: ran /bin/hello (exit code 42 — its unique signature)")
