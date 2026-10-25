@@ -1,7 +1,7 @@
 # 27. One Policy-Gated MCP Endpoint for the Ecosystem
 
 Date: 2026-10-24
-Status: Proposed
+Status: Accepted (2026-10-25, Nick; shipped in v0.6.0)
 
 ## Context
 
