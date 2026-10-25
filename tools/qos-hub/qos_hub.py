@@ -32,6 +32,10 @@ Config (JSON):
 Policy keys are tool names or fnmatch patterns; the most specific (longest) match wins.
 A server entry may instead be {"cli": {...}}: a CLI with no MCP server, exposed through
 allowlisted argv templates (cli_connector.py).
+Or {"url": "https://host/api/mcp", "auth": {"bearer_file": "~/token.txt"} | {"bearer_env": "NAME"}}:
+an MCP server over HTTP (streamable HTTP; plain JSON-RPC replies work too). The token is read
+from that file or variable at start, sent as "Authorization: Bearer ...", and never logged or
+stored in the config.
 
 Hub tools (always present): hub_tools (every tool with its policy), hub_call_approved,
 hub_ledger. There is deliberately no tool to approve or to change the policy.
@@ -149,6 +153,39 @@ class HubLedger:
                  "age_s": int(self.clock() - r["created"])} for r in rows]
 
 
+class Owned:
+    """One downstream server held open by its own task, so a server that fails (a 401 while
+    connecting, a crash later) takes down only itself, never the hub."""
+
+    def __init__(self, ns: str, ctx, ledger: HubLedger):
+        self.ns, self.ctx, self.ledger = ns, ctx, ledger
+        self.done = asyncio.Event()
+        self.task: asyncio.Task | None = None
+
+    async def start(self):
+        ready: asyncio.Future = asyncio.get_running_loop().create_future()
+
+        async def owner():
+            try:
+                async with self.ctx as session:
+                    ready.set_result(session)
+                    await self.done.wait()
+            except BaseException as e:  # noqa: BLE001
+                if not ready.done():
+                    ready.set_exception(e)
+                elif not isinstance(e, asyncio.CancelledError):
+                    log.warning("server %s stopped: %s", self.ns, type(e).__name__)
+                    self.ledger.event("hub_server_error", server=self.ns, error=type(e).__name__)
+        self.task = asyncio.create_task(owner())
+        return await ready
+
+    async def stop(self) -> None:
+        self.done.set()
+        if self.task is not None:
+            with contextlib.suppress(BaseException):
+                await asyncio.wait_for(self.task, 5)
+
+
 class Hub:
     """The policy core, independent of MCP plumbing (so it is testable with plain callables).
     `downstream` maps a namespace to an object with async list_tools() -> [Tool] and
@@ -177,7 +214,11 @@ class Hub:
 
     async def _forward(self, tool: str, arguments: dict) -> dict:
         ns, t = self.tools[tool]
-        r = await self.down[ns].call_tool(t.name, arguments)
+        try:
+            r = await self.down[ns].call_tool(t.name, arguments)
+        except Exception as e:  # noqa: BLE001 - a dead server answers with an error, never a crash
+            self.ledger.event("hub_server_error", server=ns, error=type(e).__name__)
+            return {"ok": False, "error": "server_error", "message": f"{ns} failed: {type(e).__name__}"}
         texts = [c.text for c in r.content if getattr(c, "type", "") == "text"]
         body = "\n".join(texts)
         if len(body) > MAX_RESULT:
@@ -221,6 +262,25 @@ class Hub:
         return out
 
 
+def http_headers(spec: dict) -> dict:
+    """The Authorization header for an HTTP server, from a token file or variable named in
+    the config. Raises ValueError if the config names one that is missing or empty."""
+    auth = spec.get("auth") or {}
+    token = None
+    if "bearer_file" in auth:
+        try:
+            token = Path(os.path.expanduser(auth["bearer_file"])).read_text().strip()
+        except OSError as e:
+            raise ValueError(f"cannot read the bearer token file: {type(e).__name__}") from None
+    elif "bearer_env" in auth:
+        token = os.environ.get(auth["bearer_env"], "").strip()
+    elif auth:
+        raise ValueError("auth must be {'bearer_file': path} or {'bearer_env': NAME}")
+    if auth and not token:
+        raise ValueError("the configured bearer token is empty")
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 HUB_TOOLS = {
     "hub_tools": ("Every tool this hub offers, with its policy: allow (runs now), ask (needs the "
                   "person's approval first) or deny.", {"type": "object", "properties": {}}),
@@ -239,31 +299,55 @@ async def serve(config: dict, db: str) -> None:
     import mcp.types as types
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
+    from mcp.client.streamable_http import streamablehttp_client
     from mcp.server.lowlevel import Server
     from mcp.server.stdio import stdio_server
 
     ledger = HubLedger(db)
-    async with contextlib.AsyncExitStack() as stack:
-        down = {}
-        for ns, spec in (config.get("servers") or {}).items():
-            if SEP in ns:
-                raise SystemExit(f"server name {ns!r} must not contain {SEP!r}")
-            if "cli" in spec:                     # a CLI without an MCP server (cli_connector.py)
-                from cli_connector import CliSession
-                down[ns] = CliSession(spec["cli"])
-                continue
-            params = StdioServerParameters(command=os.path.expanduser(spec["command"]),
-                                           args=[os.path.expanduser(x) for x in spec.get("args") or []],
-                                           env={**os.environ, **{k: os.path.expanduser(v) for k, v in
-                                                                 (spec.get("env") or {}).items()}})
-            try:
-                r, w = await stack.enter_async_context(stdio_client(params))
-                s = await stack.enter_async_context(ClientSession(r, w))
+
+    def stdio_ctx(spec):
+        params = StdioServerParameters(command=os.path.expanduser(spec["command"]),
+                                       args=[os.path.expanduser(x) for x in spec.get("args") or []],
+                                       env={**os.environ, **{k: os.path.expanduser(v) for k, v in
+                                                             (spec.get("env") or {}).items()}})
+
+        @contextlib.asynccontextmanager
+        async def ctx():
+            async with stdio_client(params) as (r, w), ClientSession(r, w) as s:
                 await s.initialize()
-                down[ns] = s
-            except Exception as e:  # noqa: BLE001 - start what can start
-                log.warning("server %s did not start: %s", ns, e)
-                ledger.event("hub_server_error", server=ns, error=f"{type(e).__name__}: {e}"[:200])
+                yield s
+        return ctx()
+
+    def http_ctx(spec):
+        headers = http_headers(spec)
+
+        @contextlib.asynccontextmanager
+        async def ctx():
+            async with streamablehttp_client(spec["url"], headers=headers) as (r, w, _sid), \
+                    ClientSession(r, w) as s:
+                await s.initialize()
+                yield s
+        return ctx()
+
+    owners: list[Owned] = []
+    down = {}
+    for ns, spec in (config.get("servers") or {}).items():
+        if SEP in ns:
+            raise SystemExit(f"server name {ns!r} must not contain {SEP!r}")
+        if "cli" in spec:                     # a CLI without an MCP server (cli_connector.py)
+            from cli_connector import CliSession
+            down[ns] = CliSession(spec["cli"])
+            continue
+        try:
+            owned = Owned(ns, http_ctx(spec) if "url" in spec else stdio_ctx(spec), ledger)
+            down[ns] = await owned.start()
+            owners.append(owned)
+        except BaseException as e:  # noqa: BLE001 - start what can start; never echo a token
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
+            log.warning("server %s did not start: %s", ns, type(e).__name__)
+            ledger.event("hub_server_error", server=ns, error=type(e).__name__)
+    try:
         hub = Hub(down, Policy(config.get("policy") or {}, config.get("default", "ask")), ledger)
         await hub.refresh()
         server = Server("quantumos-hub")
@@ -286,6 +370,9 @@ async def serve(config: dict, db: str) -> None:
 
         async with stdio_server() as (r, w):
             await server.run(r, w, server.create_initialization_options())
+    finally:
+        for o in owners:
+            await o.stop()
 
 
 def main(argv=None) -> int:

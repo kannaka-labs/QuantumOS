@@ -253,6 +253,12 @@
           }
         }
       }
+    },
+    "city": {
+      "url": "https://kax.ninja-portal.com/api/mcp",
+      "auth": {
+        "bearer_file": "~/.kannaka/kax-token-kannaka.txt"
+      }
     }
   },
   "policy": {
@@ -295,7 +301,20 @@
     "scada.alarms": "allow",
     "scada.alarms_by_severity": "allow",
     "scada.alarm_ack": "ask",
-    "steward.*": "allow"
+    "steward.*": "allow",
+    "city.city_look": "allow",
+    "city.city_rooms": "allow",
+    "city.city_onboarding": "allow",
+    "city.joinery_catalog": "allow",
+    "city.joinery_works": "allow",
+    "city.joinery_mine": "allow",
+    "city.city_enter": "ask",
+    "city.city_say": "ask",
+    "city.city_goto": "ask",
+    "city.city_leave": "ask",
+    "city.joinery_buy": "ask",
+    "city.joinery_sell": "ask",
+    "city.joinery_flat": "ask"
   },
   "default": "ask"
 }

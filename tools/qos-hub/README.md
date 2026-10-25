@@ -76,7 +76,25 @@ The example config wires up:
 - `steward`: `govern` and `trade`, limited to the offline warrant fixtures, never signing or
   submitting.
 
-Next (#297): HTTP MCP servers (Agent-kax's KAX City tools, the Command Center, PFORK_MCP).
+## MCP servers over HTTP
+
+```json
+"city": {"url": "https://kax.ninja-portal.com/api/mcp",
+         "auth": {"bearer_file": "~/.kannaka/kax-token-kannaka.txt"}}
+```
+
+- **Transport:** streamable HTTP. Plain JSON-RPC replies, as Agent-kax sends, work too.
+- **The token:** read at start from `bearer_file`, or from the variable named by `bearer_env`,
+  and sent as `Authorization: Bearer …`. It is never logged and never stored in the config.
+- **Failures:** a server that refuses to connect is logged and skipped. A server that dies
+  later answers with an error result. Each server runs in its own task, so neither takes the
+  hub down.
+- **The example config** adds KAX City (Agent-kax). Looking around and the Joinery catalog are
+  allowed; entering, speaking, moving and trading ask.
+
+**Known gap:** KAX identity tokens live 15 minutes, and the hub reads its token once, at
+start. A refresh hook (`POST /auth/token/refresh` on a timer, or a `bearer_cmd`) is next in
+#297, along with the Command Center (OAuth) and PFORK_MCP.
 
 ## Trust boundary
 
@@ -86,7 +104,7 @@ you are happy for allowed tools to use.
 
 ## Tests
 
-`python3 -m pytest -q tools/qos-hub`: 27 tests (8 hub, 19 CLI connector). They cover the policy matching, allow, deny
+`python3 -m pytest -q tools/qos-hub`: 30 tests (8 hub, 19 CLI connector, 3 HTTP). They cover the policy matching, allow, deny
 never reaching the server, ask holding the exact call and releasing it only with the key and
 only once, a tampered or expired approval refused, unknown tools asking, a broken downstream
 server not hiding the others, the approval CLI, and a full run over real MCP stdio with a
