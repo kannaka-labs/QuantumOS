@@ -9,6 +9,111 @@ Full per-PR provenance: `git log` and the PR list on GitHub.
 
 *(nothing yet)*
 
+## [0.6.0] — 2026-10-25 — Firecracker with storage, a public console, and agents that spend inside a budget
+
+The v1 contracts frozen in 0.5.1 are unchanged. The syscall ABI, the MCP tool surface of
+`qos-mcp`, and the COM2 / attestation wire all pass their freeze gates. Everything below is
+additive.
+
+### QuantumOS on Firecracker, with a network and a disk
+
+- **PVH boot entry:** QuantumOS boots as a Firecracker microVM (#234).
+- **Networking under Firecracker:**
+  - a NIC ops table, so the stack is no longer bound to the rtl8139 (#236);
+  - virtio-net over virtio-mmio, the NIC Firecracker actually has (#237);
+  - virtio-net over modern virtio-pci as well as virtio-mmio, one driver for both transports
+    (ADR-0024, #246).
+- **Storage under Firecracker (#279):**
+  - a block-device indirection (`blkdev_ops_t`), with persistence calling only `blkdev_*`;
+  - a virtio-blk driver over both transports;
+  - the virtio transports now bind several devices at once. Before, a second probe re-pointed
+    the NIC's registers.
+  - New gate: `ci-smoke-disk-virtio`.
+- **Disk flush:** a cache flush gets up to ~30 s before the disk is called dead, as the ATA
+  spec allows. A loaded CI runner's fsync had outlasted the old ~1 s (#293).
+
+### Kernel
+
+- **tcp:** a listener table, so a second network service can start (#240).
+- **modbusd:** a Modbus/TCP agent in ring 3, with control writes refused (#239).
+- **sched:** the CPU goes to a waiting shell on COM1 RX. Keystroke echo dropped from ~350 ms
+  to ~1 ms (#248).
+- **Honest labels:**
+  - the boot entropy line says where the seed came from, and claims "quantum" only with a
+    QPU (#251);
+  - every qpu result names its backend: QSIM, or the QPU (#268, #274).
+- **waitpid:** never reports a recycled pid's previous owner's exit. A program spawned into a
+  reused pid used to get the old exit code on its parent's first poll; this was the
+  "stillborn spawn" CI kept retrying past. Every process now has a generation in the exit
+  ledger (#295).
+
+### The public console (qos.ninja-portal.com)
+
+- **A throwaway QuantumOS microVM per visitor**, in the browser (#245). Each one is restored
+  from a booted snapshot, so the prompt appears in ~20 ms (#249). Each restored session's
+  generator is reseeded (ADR-0025, #250).
+- **Funnel metrics:** `/stats`, `/metrics`, a page beacon, and a measured timing table (#270,
+  #271). Internal traffic is tagged and kept out of the visitor counts (#277).
+- **Hardening (#257):**
+  - an idle timeout with a warning;
+  - input rate limits and an output cap;
+  - a busy refusal that says when a machine will be free;
+  - refusing to listen on a public address without a declared proxy (#277, #278).
+- **Keep a machine (#256, #280):**
+  - "Keep this machine" returns a key, shown once. What you `sync` comes back when you resume
+    with it, on a cold boot with the disk attached.
+  - Kept machines are deleted after 7 days without use, with a 2 GB cap. The store is keyed by
+    a hash of the key.
+- **Encrypted off-site backup** of kept machines to OCI Object Storage: AES-256-GCM before
+  upload, mirrored deletions, and a dead disk never erases the backup (#282).
+
+### Quantum
+
+- **A host quantum broker on qBraid**, reached from `qsh qpu` over COM1 (#269). The simulator
+  is the default. A real QPU job needs an opt-in, a daily budget, a per-job cap and per-visitor
+  limits. The cost model is fitted to billed Rigetti jobs (#272), and refusals say the
+  simulator is free and when limits reset (#273).
+- **A daily calibration circuit** with a public, append-only series (#276).
+
+### Agents: real resources inside a budget, and one endpoint for the ecosystem
+
+- **Bring your own model:** any AI can drive the frozen MCP surface (#232). Spend guardrails:
+  a cheaper default model, a usage report and a token budget (#233).
+- **The provider broker** (ADR-0026, Proposed; #283, #288). An agent can quote, provision and
+  tear down real resources on leases, inside an envelope the person sets:
+  - USD per day and per action, the allowed resource classes, and the longest lease;
+  - approval with a key only the person holds; no agent op can approve or raise the budget;
+  - real spending off by default;
+  - leases are tagged at the provider, reaped at expiry, and cleaned up by tag after a crash,
+    never touching anything else;
+  - a ledger of estimates and billed costs side by side.
+  - **Plugins:**
+    - OCI Object Storage buckets (#289) and Always Free VMs, with a per-region shape check
+      (#294). Both were run for real in a least-privilege tenancy.
+    - qBraid jobs, through the existing quantum broker unchanged (#290).
+  - Its MCP tools: `broker_quote`, `broker_provision` and the rest (#292).
+- **The hub** (ADR-0027, Proposed; #297). One MCP endpoint in front of the ecosystem's MCP
+  servers and CLIs, with allow, ask or deny per tool (#298):
+  - an `ask` call is stored exactly and runs only after the person approves it;
+  - CLIs without an MCP server are reached through allowlisted argv templates (#299);
+  - MCP servers over HTTP, each isolated so one failing server can't take the hub down (#300);
+  - short-lived bearer tokens are renewed on the open session (#301);
+  - the example config covers Kannaka memory and swarm, kannaka-quantum, Kannaktopus, the
+    kannaka, 0xSCADA and steward CLIs, KAX City, and the broker.
+
+### The package (`quantumos-host-tools`)
+
+- **New commands:** `qos-broker`, `qos-broker-mcp` and `qos-hub` (the `quantumos_agent`
+  package), plus an `[oci]` extra (#302).
+- **Fix:** `mcp` is pinned to `>=1.10,<2`. A fresh install of 0.5.1 resolves mcp 2.x, on
+  which `qos-mcp` cannot even import (FastMCP was renamed). A new CI step builds the wheel,
+  installs it clean and runs the installed commands (#302).
+
+### Docs and CI
+
+- The headline demo link was a 404; everything now points at `kannaka-labs` (#241). The org
+  Namespace Guard is adopted (#242). There's a qBraid OS integration brief (#244).
+
 ## [0.5.1] — 2026-07-15 — v1 contracts frozen, 9–19× faster agent wire, rebirth-proof IPC
 
 ### ADR-0020 v1 contract freeze — pre-freeze corrections (guest syscall ABI)

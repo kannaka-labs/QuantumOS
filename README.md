@@ -399,6 +399,14 @@ See [CHANGELOG.md](CHANGELOG.md) for the full per-arc history and [docs/adr/](do
 - [x] N=4 society ceiling proven + N-way society-of-societies exchanging real cross-node work
 - [x] Bring-your-own-model agent: your AI drives the frozen MCP surface (`scripts/qos_agent.py`)
 
+### ✅ **v0.6 - Firecracker, the public console, agents inside a budget** (Done — released as v0.6.0)
+- [x] Firecracker microVMs with virtio-net and virtio-blk (storage persists) — ADR-0024
+- [x] A public console: a throwaway VM per visitor, restored from a snapshot in ~20 ms, with "keep this machine" and an encrypted off-site backup
+- [x] Guest circuits on qBraid's simulator and real QPUs, inside a budget, plus a daily calibration series
+- [x] The provider broker: quote, lease and tear down OCI and qBraid resources inside a budget the agent cannot raise — ADR-0026
+- [x] The hub: one policy-gated MCP endpoint for the ecosystem's MCP servers and CLIs — ADR-0027
+- [x] `pip install quantumos-host-tools` ships `qos-broker`, `qos-broker-mcp` and `qos-hub`
+
 ### 🔭 **Next** (planned — see [docs/adr/](docs/adr/))
 - [ ] N=5 field societies (lift the two lockstep peer ceilings + the host bridge arrays)
 - [ ] Actor attribution in the authority ledger (the reserved `audit_entry_t` field — ADR-0009)
