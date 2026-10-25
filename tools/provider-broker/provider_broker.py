@@ -354,6 +354,10 @@ class Broker:
         assert tag.startswith(f"qos-{self.broker_id}-")
         for rid in p.find(tag):
             p.teardown(rid)
+        # A plugin that cannot attribute a resource safely says so instead of guessing
+        # (qbraid_lab outside sole-user mode); the alert goes to the ledger, loudly.
+        for alert in (p.drain_alerts() if hasattr(p, "drain_alerts") else []):
+            self.l.event(self.clock(), OWNER, None, "orphan_possible", provider=getattr(p, "name", "?"), **alert)
 
     def _end(self, lid: str, reason: str, billed: float | None = None, note: str = "") -> None:
         now = self.clock()
@@ -470,6 +474,9 @@ def load_plugins(names: list[str], a: argparse.Namespace | None = None) -> dict:
             if a is None or not a.oci_config or not a.oci_compartment:
                 raise SystemExit("the oci provider needs --oci-config and --oci-compartment")
             out["oci"] = OciProvider(a.oci_config, a.oci_compartment, a.oci_profile)
+        elif n == "qbraid_lab":
+            out["qbraid_lab"] = _sibling("plugin_qbraid_lab").QbraidLabProvider(
+                sole_user=bool(a and a.qbraid_lab_sole_user), cluster=a.qbraid_lab_cluster if a else None)
         elif n == "qbraid":
             out["qbraid"] = _sibling("plugin_qbraid").QbraidProvider(a.qpu_socket if a is not None else "/run/qos-qpu/broker.sock")
         else:
@@ -520,7 +527,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("serve")
     s.add_argument("--db", required=True)
     s.add_argument("--socket", required=True)
-    s.add_argument("--providers", default="mock", help="comma-separated: mock, oci, qbraid")
+    s.add_argument("--providers", default="mock", help="comma-separated: mock, oci, qbraid, qbraid_lab")
+    s.add_argument("--qbraid-lab-sole-user", action="store_true",
+                   help="declare the broker the qBraid account's only Lab user (option b: crash recovery may "
+                        "terminate instances it can attribute); off: it never guesses and raises orphan_possible")
+    s.add_argument("--qbraid-lab-cluster", default=None)
     s.add_argument("--qpu-socket", default="/run/qos-qpu/broker.sock",
                    help="the host quantum broker's socket (qbraid provider)")
     s.add_argument("--oci-config", help="OCI config file (oci provider)")
