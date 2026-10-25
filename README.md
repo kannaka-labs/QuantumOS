@@ -406,6 +406,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full per-arc history and [docs/adr/](do
 - [x] The provider broker: quote, lease and tear down OCI and qBraid resources inside a budget the agent cannot raise — ADR-0026
 - [x] The hub: one policy-gated MCP endpoint for the ecosystem's MCP servers and CLIs — ADR-0027
 - [x] `pip install quantumos-host-tools` ships `qos-broker`, `qos-broker-mcp` and `qos-hub`
+- [x] v0.6.1: Sashiko review with your own model key (`qos-review`, ADR-0028), qBraid Lab compute in the broker, and the fixes from testing the installed package end to end (`QOS_KERNEL`, Windows venvs, per-call timeouts)
 
 ### 🔭 **Next** (planned — see [docs/adr/](docs/adr/))
 - [ ] N=5 field societies (lift the two lockstep peer ceilings + the host bridge arrays)

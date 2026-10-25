@@ -7,6 +7,12 @@ Full per-PR provenance: `git log` and the PR list on GitHub.
 
 ## [Unreleased]
 
+*(nothing yet)*
+
+## [0.6.1] — 2026-10-25 — fixes from testing the installed package, Sashiko review, qBraid Lab compute
+
+Before more outreach, the installed 0.6.0 package was tested end to end, the way an agent uses it. `quantumos-host-tools` came from PyPI into clean environments on Windows and Linux, and the hub was driven over MCP in front of Kannaka (MCP and CLI), kannaka-quantum, Kannaktopus, the 0xSCADA CLI and steward. `qos-mcp` booted the release kernel under QEMU/KVM. The test found the bugs fixed below, and the fixes were re-verified the same way. The v1 contracts (syscall ABI, the MCP tool surface, the society wire protocol) are unchanged.
+
 ### Sashiko review, with your own model key (ADR-0028)
 
 - `qos-review` (`tools/sashiko-review`): an MCP server and CLI that runs a Sashiko review of a commit in a
@@ -16,6 +22,11 @@ Full per-PR provenance: `git log` and the PR list on GitHub.
 - Every review has a required token cap, which Sashiko enforces. `review_quote` shows the worst case before
   anything runs.
 - The hub asks before `review_start`.
+
+### qBraid Lab compute in the provider broker (#305)
+
+- `qbraid_lab` plugin: the account's Lab server and on-demand instances, priced per minute from qBraid's live profile list. qBraid instances can't be tagged, so a crash between create and record is handled one of two ways. Option b, `--qbraid-lab-sole-user`: refuse while foreign instances exist, then clean up our own. Option c, the default: never guess; log `orphan_possible` and let the person decide.
+- ADR-0026 (provider broker) and ADR-0027 (ecosystem hub) are Accepted (#304).
 
 ### Fixed, from an end-to-end test of the installed 0.6.0 package
 
