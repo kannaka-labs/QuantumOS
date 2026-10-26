@@ -1848,14 +1848,23 @@ class QosSociety:
 
     def _await_fskey(self, m, since_len, timeout):
         """Wait for a member to print an FSKEY line (install OR rekey) at/after
-        `since_len`, and return the log offset captured just past it — the anchor
-        for post-keying exclusion/resume/sync checks. Fail fast on a dead member."""
+        `since_len`, and return the log offset just past THAT line — the anchor
+        for post-keying exclusion/resume/sync checks. Fail fast on a dead member.
+
+        The anchor is the end of the FSKEY line, not the log length when the poll
+        sees it (#291): fieldsyncd prints the bad-MAC line ONCE (latched), often
+        within the poll interval (or while an earlier member is being awaited),
+        and an anchor taken later hid it from the leg-(a) check for good."""
         deadline = time.time() + timeout
         while time.time() < deadline:
             if not m.is_running():
                 raise QosDead("society member exited before installing the key")
-            if "FSKEY:" in m._log_text(since_len):
-                return m._log_len()
+            with m._log_lock:
+                tail = bytes(m._log[since_len:])
+            i = tail.find(b"FSKEY:")
+            if i >= 0:
+                nl = tail.find(b"\n", i)
+                return since_len + (nl + 1 if nl >= 0 else len(tail))
             time.sleep(0.3)
         raise QosTimeout("society member did not install the session key")
 
