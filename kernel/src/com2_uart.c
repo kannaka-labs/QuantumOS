@@ -64,6 +64,40 @@ static inline uint8_t io_inb(uint16_t port) {
     return ret;
 }
 
+#define UART_MSR 6 /* Modem Status Register */
+#define MCR_LOOP 0x10
+#define MCR_NORMAL 0x0B /* DTR + RTS + OUT2, as com2_init sets it */
+
+/* Bound on the loopback DATA_READY wait. A real 16550 or QEMU loops the byte
+ * back at once; a missing UART must not stall boot. */
+#define COM2_LOOP_SPINS 100000u
+
+/* 8250 loopback test (#267). In loopback mode the modem outputs are wired to
+ * the modem inputs (RTS -> CTS, OUT2 -> DCD) and THR is wired to RBR. A bus
+ * that only echoes the last value written gets neither right: MSR would read
+ * back the MCR value just written, not its bit-shifted mirror. Restores MCR. */
+static int com2_loopback_ok(void) {
+    /* Drop anything already received so the RBR read below sees our byte. */
+    for (uint32_t i = 0; i < 64 && (io_inb(COM2_PORT_BASE + UART_LSR) & LSR_DATA_READY); i++) {
+        (void)io_inb(COM2_PORT_BASE + UART_RBR);
+    }
+
+    io_outb(COM2_PORT_BASE + UART_MCR, MCR_LOOP | 0x0A); /* LOOP + RTS + OUT2 */
+    uint8_t msr = io_inb(COM2_PORT_BASE + UART_MSR) & 0xF0;
+    int ok = (msr == 0x90); /* DCD + CTS, and DSR/RI clear */
+
+    if (ok) {
+        io_outb(COM2_PORT_BASE + UART_THR, 0xA5);
+        uint32_t spins = 0;
+        while (!(io_inb(COM2_PORT_BASE + UART_LSR) & LSR_DATA_READY) && ++spins < COM2_LOOP_SPINS) {
+        }
+        ok = (spins < COM2_LOOP_SPINS) && io_inb(COM2_PORT_BASE + UART_RBR) == 0xA5;
+    }
+
+    io_outb(COM2_PORT_BASE + UART_MCR, MCR_NORMAL);
+    return ok;
+}
+
 void com2_init(void) {
     /* Disable interrupts — this port is polled, mirroring the COM1 console. */
     io_outb(COM2_PORT_BASE + UART_IER, 0x00);
@@ -78,7 +112,7 @@ void com2_init(void) {
     io_outb(COM2_PORT_BASE + UART_FCR, 0xC7);
 
     /* DTR + RTS asserted; OUT2 set (harmless while polling). */
-    io_outb(COM2_PORT_BASE + UART_MCR, 0x0B);
+    io_outb(COM2_PORT_BASE + UART_MCR, MCR_NORMAL);
 
     io_outb(COM2_PORT_BASE + UART_SCR, 0x5A);
     uint8_t a = io_inb(COM2_PORT_BASE + UART_SCR);
@@ -86,8 +120,18 @@ void com2_init(void) {
     uint8_t b = io_inb(COM2_PORT_BASE + UART_SCR);
     com2_nodev = (a != 0x5A || b != 0xA5) ? 1 : 0;
 
+    /* The scratch probe alone passes on a floating bus that holds the last
+     * value driven (#267), so confirm with the 8250 loopback test. */
+    if (!com2_nodev && !com2_loopback_ok()) {
+        com2_nodev = 1;
+    }
+
     com2_ready = 1;
-    boot_log("COM2 serial swarm bridge online (0x2F8, polled, cap-guarded)");
+    if (com2_nodev) {
+        boot_log("COM2 serial swarm bridge absent (probe: no UART at 0x2F8)");
+    } else {
+        boot_log("COM2 serial swarm bridge online (0x2F8, polled, cap-guarded)");
+    }
 }
 
 uint32_t com2_write(const uint8_t *buf, uint32_t len) {
