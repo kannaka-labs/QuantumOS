@@ -116,14 +116,20 @@ per row, taken after the console has been quiet for 3 s. Output rate is the byte
 
 Host: debain2, a Xeon E5-2697 v4 KVM guest, which makes this nested KVM. Firecracker
 v1.16.1, with the console's VM shape (1 vCPU, 128 MiB, no drives, no NIC, `quiet`).
-Measured 2026-10-23.
+Measured 2026-10-23; the two vsock rows 2026-10-27.
 
-| Path | Kernel | To `qsh>` (median, max) | Echo p50 / p90 | Output rate |
-|---|---|---|---|---|
-| Cold boot, before #246/#248 (3 runs, 10 keys each) | `b972dbd3…` (debug build, the console's first kernel) | 75.9 s, 78.3 s | 350.0 / 350.6 ms | ~1.2 KB/s |
-| Cold boot (`--snapshot off`), on the host | `43c4c1af…` (release, #268) | 1.33 s, 1.40 s | 2.0 / 2.3 ms | ~1.0 KB/s |
-| Snapshot restore, on the host | `43c4c1af…` | 18 ms, 21 ms | 2.0 / 2.4 ms | ~1.0 KB/s |
-| Snapshot restore, public: `wss://qos.ninja-portal.com` from a home PC (O1 nginx + SSH tunnel) | `1b0f9b33…` (release, #251) | 15 ms, 33 ms after the socket opened (opening it took a median 0.92 s) | 55.7 / 65.5 ms | ~0.95 KB/s |
+The Commit column is the main commit the measured kernel was built from, so a row can be
+matched to the fixes it already includes. The first row's kernel predates the record
+keeping, and its commit was not written down.
+
+| Path | Commit | Kernel | Shell | To `qsh>` (median, max) | Echo p50 / p90 | Output rate |
+|---|---|---|---|---|---|---|
+| Cold boot, before #246/#248 (3 runs, 10 keys each) | not recorded (before #246) | `b972dbd3…` (debug build, the console's first kernel) | COM1 | 75.9 s, 78.3 s | 350.0 / 350.6 ms | ~1.2 KB/s |
+| Cold boot (`--snapshot off`), on the host | `c597791` | `43c4c1af…` (release, #268) | COM1 | 1.33 s, 1.40 s | 2.0 / 2.3 ms | ~1.0 KB/s |
+| Snapshot restore, on the host | `c597791` | `43c4c1af…` | COM1 | 18 ms, 21 ms | 2.0 / 2.4 ms | ~1.0 KB/s |
+| Snapshot restore, public: `wss://qos.ninja-portal.com` from a home PC (O1 nginx + SSH tunnel) | `3cf0287` | `1b0f9b33…` (release, #251) | COM1 | 15 ms, 33 ms after the socket opened (opening it took a median 0.92 s) | 55.7 / 65.5 ms | ~0.95 KB/s |
+| Snapshot restore, on the host, `--vsock` | `ee5c386` | `3dcd8e32…` (release, #320) | vsock | 20 ms, 26 ms | 2.2 / 3.3 ms | ~77 KB/s |
+| Snapshot restore, public, `--vsock` (the deployed console) | `ee5c386` | `3dcd8e32…` | vsock | 19 ms, 46 ms after the socket opened | 51.1 / 60.9 ms | ~18 KB/s |
 
 Reading the table:
 
@@ -131,8 +137,10 @@ Reading the table:
   scheduler rotation that #248 fixed.
 - On the public path, echo is dominated by the network: PC to O1 plus the tunnel to
   debain2. On the host it is about 2 ms.
-- Output stays at about 1 KB/s on every path. That is serial TX under nested KVM, about
-  1 ms per byte (#259).
+- Over COM1, output was about 1 KB/s on every path: serial TX under nested KVM costs about
+  1 ms per byte (#259). Over the vsock shell channel (ADR-0029) it is ~77 KB/s on the host.
+  On the public path it is ~18 KB/s, limited by the network round trip rather than the VM.
+  `help` (1.5 KB) reaches the next prompt in about 0.09 s instead of 1.4 s.
 
 To reproduce on the host, run a second launcher beside the service, with its own run
 dir and port. Its startup sweep only touches its own run dir.
