@@ -715,6 +715,8 @@ jobs:
       run: pip install "pennylane==0.45.1" "pennylane-lightning==0.45.0" "numpy>=2.0"
     - name: Cross-oracle (exact integer engine vs lightning.qubit)
       run: python scripts/test_qsv_oracle.py
+    - name: qBraid gateway backend with the SDK mocked (#262; no key needed)
+      run: python scripts/test_qsv_qbraid_mock.py
 
   abi-golden:
     name: v1 ABI freeze gate (golden diff + teeth-check — ADR-0020)
