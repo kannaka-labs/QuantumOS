@@ -20,6 +20,7 @@
 #include <kernel/capability.h>
 #include <kernel/com2_uart.h> /* com2_rx_pending + DEVICE_ID_COM2 (ADR-0022 RX boost) */
 #include <kernel/console.h>   /* early_console_write for the CPUKILL boot line */
+#include <kernel/virtio_vsock.h>
 #ifdef SCHED_LOTTERY
 #include <kernel/quantum.h>
 #endif
@@ -277,6 +278,12 @@ void scheduler_tick(cpu_state_t *state) {
      * tick granularity instead of one full rotation later. */
     com2_rx_boost_check();
 #endif
+    /* ADR-0029: drain the vsock shell channel at tick granularity (a memory
+     * read when idle) and hand the CPU to a shell waiting for input, as the
+     * COM1 RX IRQ does (#248). */
+    if (virtio_vsock_poll()) {
+        scheduler_console_rx(state);
+    }
     /* Manifest CPU accounting (epic #135): charge the interrupted process
      * one tick BEFORE the quantum early-return — after it, this would count
      * reschedules and undercount by SCHED_QUANTUM_TICKS x. IRQ context: IF

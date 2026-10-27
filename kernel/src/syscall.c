@@ -27,6 +27,7 @@
 #include <kernel/service.h>
 #include <kernel/com2_uart.h>
 #include <kernel/console.h>
+#include <kernel/virtio_vsock.h>
 #include <kernel/vga.h>
 #include <kernel/initrd.h>
 #include <kernel/ramfs.h>
@@ -488,9 +489,22 @@ static uint64_t sys_cons(uint32_t pid, uint64_t op, uint64_t user_ptr, uint64_t 
     if (!user_ok(user_ptr, len, 1)) {
         return SYSCALL_EFAULT;
     }
+    (void)virtio_vsock_poll(); /* ADR-0029: input that arrived since the last tick */
     const char *seed_notice = quantum_take_reseed_notice();
     if (seed_notice) {
         boot_log(seed_notice);
+        if (virtio_vsock_connected()) {
+            /* The visitor reads the shell over vsock; the kernel log stays on
+             * COM1, so give them this one line on their wire too. */
+            static const char pre[] = "[BOOT] ";
+            uint32_t n = 0;
+            while (seed_notice[n]) {
+                n++;
+            }
+            console_write((const uint8_t *)pre, sizeof(pre) - 1);
+            console_write((const uint8_t *)seed_notice, n);
+            console_write((const uint8_t *)"\r\n", 2);
+        }
     }
     uint32_t got = console_read(tmp, (uint32_t)len);
     scheduler_console_reader_note(pid, process_get_generation(pid), got);

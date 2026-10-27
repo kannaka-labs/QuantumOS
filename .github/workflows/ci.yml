@@ -663,6 +663,13 @@ jobs:
         ./firecracker --version
     - name: Boot to qsh under Firecracker within 10 s
       run: python3 scripts/ci_firecracker_boot.py --firecracker ./firecracker --kernel build/x86_64/kernel.elf --max-seconds 10
+    # ADR-0029: the shell over vsock. help must arrive over vsock and not on COM1 while a
+    # peer is attached, fast (p50 under 300 ms), and on COM1 again once the peer leaves.
+    - name: Shell over the vsock channel (ADR-0029)
+      run: python3 scripts/ci_firecracker_vsock.py --firecracker ./firecracker --kernel build/x86_64/kernel.elf
+    # Negative control (ADR-0016): without the device the connect must fail.
+    - name: vsock negative control (no device, no connect)
+      run: python3 scripts/ci_firecracker_vsock.py --firecracker ./firecracker --kernel build/x86_64/kernel.elf --expect-no-vsock
 
   real-hw-boot:
     name: Real-Hardware Boot Path (GRUB ISO + PS/2 keyboard — epic #101)

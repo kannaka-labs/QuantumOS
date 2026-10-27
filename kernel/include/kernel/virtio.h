@@ -40,6 +40,7 @@
 #define VIRTIO_ID_NET 1
 #define VIRTIO_ID_BLOCK 2
 #define VIRTIO_ID_ENTROPY 4
+#define VIRTIO_ID_VSOCK 19
 
 /* Split-virtqueue descriptor flags (§2.7.5) */
 #define VRING_DESC_F_NEXT 1
