@@ -120,3 +120,32 @@ a QPU, whether or not a QPU is reachable.
 - The swarm console gate line prints `seed=` instead of `qseed=`, because on the console
   that value is the host session seed. The COM2 wire format (`QOS-BOOT|qseed=...`), the
   verifier and every CI gate are unchanged (the gates match "SWARM: boot attestation emitted").
+
+## Update 2026-10-26: a virtio entropy device (#254)
+
+`kernel/src/virtio_rng.c` binds a virtio-rng device (type 4) over virtio-mmio
+(Firecracker's `entropy` device) or virtio-pci (QEMU's `virtio-rng-pci`, transitional id
+0x1005 or modern 0x1044). It is polled, has one queue, and has a bounded wait, like virtio-blk.
+`main.c` probes it after the NIC, before `quantum_init`.
+
+Source order at boot, all mixed into `prng_state`, never replacing it:
+
+1. A `qseed=` handoff, if present. It keeps its label, because it is the only path that can
+   carry QPU bits. A bound device is then also mixed in:
+   "Entropy: virtio-rng mixed in (host randomness)".
+2. Otherwise, a bound device: 8 bytes from it, and
+   "Entropy: virtio-rng (host randomness, not a QPU)".
+3. Otherwise, the timer default: "Entropy: unseeded at boot (timer default, not from a QPU)",
+   unchanged.
+4. Later, the console's per-session reseed (this ADR) mixes in on restore, as before.
+
+The device bytes are **not** a qseed. `SYS_QSEED`, qsh `qseed` and the swarm attestation
+keep reporting only what the host handed in: the cmdline seed or the session reseed, else 0.
+The attestation binds to that value, and widening `qrand_seed_present` beyond {0,1} would
+change the frozen ABI. A query that names the source of the current state would be a new
+syscall. It is not needed for honesty today, because the boot line names the source.
+
+Gate: `make ci-smoke-rng` (`scripts/test_qos_rng.py`) runs three boots: with the device,
+with the device and a qseed, and with no device. Also checked by hand on debain2: the
+modern-only id (`disable-legacy=on`), Firecracker v1.16.1 with `"entropy": {}` (binds over
+mmio, the shell greets), and `verify_attestation.py --qseed none` with the device attached.

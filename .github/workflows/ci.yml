@@ -523,6 +523,25 @@ jobs:
     - name: Boot a qseed handoff and assert provenance + the errno-collision gate
       run: make ci-smoke-qseed
 
+  virtio-rng:
+    name: virtio-rng entropy device (host randomness, labelled honestly)
+    runs-on: ubuntu-latest
+    needs: [build]
+    # Single-sourced `make ci-smoke-rng` (#254): boots with -device virtio-rng-pci,
+    # with the device plus a qseed= handoff, and without the device. The device must
+    # bind, seed the generator and say "host randomness, not a QPU"; qsh qseed must
+    # keep reporting only the host-handed seed; and the device-less boot must print
+    # the unchanged unseeded line.
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential qemu-system-x86 nasm
+    - name: Boot with and without virtio-rng and check the entropy labels
+      run: make ci-smoke-rng
+
   pmm-differential-256:
     name: PMM dynamic-sizing differential (-m 256M, ADR-0021)
     runs-on: ubuntu-latest
