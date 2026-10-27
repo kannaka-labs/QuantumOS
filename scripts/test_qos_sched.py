@@ -55,6 +55,13 @@ LIVENESS_MIN_RUNNABLE = 12    # settled runnable count (observed ~20 at rest)
 # raises P; q=2 -> ~500 still passes), only on pathological churn.
 PREEMPT_PER_1000T_FLOOR = 100.0
 PREEMPT_PER_1000T_CEIL = 600.0
+# Idle-mode pause between `sched` samples. Each sample types "sched\n" into COM1,
+# and since the keystroke handover (#248) every byte hands the CPU to the waiting
+# shell and restarts the quantum, so the probe itself lowers P. A 50 ms poll read
+# ~100 on a kernel whose real cadence is ~200 (#296: bisected to ecddc85; main
+# reads ~198 sampled every 5 s). At 2 s the probe's handovers are a few per ~200
+# ticks.
+IDLE_SAMPLE_INTERVAL_S = 2.0
 # Max reschedule-gap ceiling in guest ticks, asserted in LOAD mode only (the
 # starvation referee for the ADR-0022 I/O boost; idle-mode gaps are dominated
 # by one-shot citizens finishing, so LOAD is where a monopoly would show).
@@ -134,7 +141,7 @@ def main():
             if remain > 0:
                 time.sleep(remain)
         else:
-            time.sleep(0.05)
+            time.sleep(IDLE_SAMPLE_INTERVAL_S)
         try:
             last = vm.sched(deadline_s=12.0)
         except QosError:
