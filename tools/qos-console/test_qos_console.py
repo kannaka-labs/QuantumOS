@@ -450,6 +450,45 @@ async def test_snapshot_off_cold_boots(env):
 
 
 @pytest.mark.asyncio
+async def test_vsock_carries_the_shell_of_a_restored_session(env, caplog):
+    # ADR-0029. Once the launcher connects, the fake (like the kernel) writes the shell's
+    # output to vsock and not COM1, so the visitor sees the answer only if the launcher
+    # reads vsock.
+    caplog.set_level("INFO", logger="qos-console")
+    async with Server(env, vsock=True) as s:
+        await s.wait_snapshot()
+        async with connect(s.url(), additional_headers=h("10.9.1.1")) as ws:
+            assert (await control(ws))["restored"] is True
+            await read_until(ws, b"qsh> ")
+            for _ in range(100):
+                if "via=vsock" in caplog.text:
+                    break
+                await asyncio.sleep(0.05)
+            assert "via=vsock" in caplog.text, caplog.text
+            await ws.send("echo over-vsock\r")
+            assert b"over-vsock" in await read_until(ws, b"over-vsock")
+        await asyncio.sleep(0.3)
+        assert sessions(env["run"]) == [] and not fake_pids(env["run"])
+        assert not list(bases(env["run"])[0].glob("v.sock")), "the device socket is not snapshot data"
+
+
+@pytest.mark.asyncio
+async def test_vsock_on_a_cold_boot(env, caplog):
+    caplog.set_level("INFO", logger="qos-console")
+    async with Server(env, vsock=True, snapshot="off") as s:
+        async with connect(s.url(), additional_headers=h("10.9.1.2")) as ws:
+            assert (await control(ws))["restored"] is False
+            await read_until(ws, b"qsh> ")
+            for _ in range(100):
+                if "via=vsock" in caplog.text:
+                    break
+                await asyncio.sleep(0.05)
+            await ws.send("echo cold-vsock\r")
+            assert b"cold-vsock" in await read_until(ws, b"cold-vsock")
+    assert "via=vsock" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_snapshot_removed_on_shutdown(env):
     async with Server(env) as s:
         await s.wait_snapshot()

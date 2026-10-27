@@ -7,7 +7,12 @@ Two ways to start, like the real binary:
   --api-sock <path>              serves the API subset the launcher uses on a Unix socket:
                                  PUT /boot-source, /machine-config, /drives/<id>,
                                  /actions InstanceStart, PATCH /vm Paused,
-                                 PUT /snapshot/create, PUT /snapshot/load
+                                 PUT /snapshot/create, PUT /snapshot/load, PUT /vsock
+
+A vsock device (ADR-0029) listens on its uds_path (relative paths against the cwd, and
+recorded in the snapshot as given, like the drive). A host that connects and sends
+"CONNECT 1024" gets "OK 1"; from then on the shell's output goes to that connection
+instead of stdout, as the kernel does, until the peer closes it.
 
 At most one drive and no NICs. Like Firecracker, a relative drive path is opened against
 the process's cwd, and the snapshot records the path as given, so a restore in another
@@ -43,8 +48,28 @@ import sys
 import threading
 import time
 
-out = sys.stdout.buffer
-mem = {"kernel": None, "imprints": [], "drive": None}   # the drive path is device state
+class Out:
+    """The shell's output: the vsock peer while one is attached, else COM1 (stdout)."""
+
+    def __init__(self):
+        self.peer = None
+
+    def write(self, data):
+        peer = self.peer
+        if peer is not None:
+            try:
+                peer.sendall(data)
+                return
+            except OSError:
+                self.peer = None
+        sys.stdout.buffer.write(data)
+
+    def flush(self):
+        sys.stdout.buffer.flush()
+
+
+out = Out()
+mem = {"kernel": None, "imprints": [], "drive": None, "vsock": None}   # device state
 started = threading.Event()
 session = {"seeds": [], "input_before_seed": False}   # not guest memory: never snapshotted
 RESEED = re.compile(rb"\x1b\]qseed;([0-9a-fA-F]{16})\x07")
@@ -58,6 +83,39 @@ def die(msg, code=4):
 
 
 QDSK = b"QDSK1"
+
+
+def vsock_listen(path):
+    """Serve the vsock device's host side: CONNECT 1024 -> OK, then shell output."""
+    if os.path.exists(path):
+        os.unlink(path)
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(path)
+    srv.listen(2)
+
+    def serve():
+        while True:
+            conn, _ = srv.accept()
+            line = b""
+            while not line.endswith(b"\n"):
+                c = conn.recv(1)
+                if not c:
+                    break
+                line += c
+            if line != b"CONNECT 1024\n":
+                conn.close()
+                continue
+            conn.sendall(b"OK 1\n")
+            out.peer = conn
+            threading.Thread(target=watch, args=(conn,), daemon=True).start()
+
+    def watch(conn):
+        while conn.recv(4096):   # the console sends nothing over vsock; EOF is the peer leaving
+            pass
+        if out.peer is conn:
+            out.peer = None
+
+    threading.Thread(target=serve, daemon=True).start()
 
 
 def boot(kernel_path):
@@ -100,11 +158,15 @@ def serve_api(path):
                 if not os.path.exists(body["path_on_host"]):
                     die("drive file missing")
                 mem["drive"] = body["path_on_host"]
+            elif method == "PUT" and target == "/vsock":
+                mem["vsock"] = body["uds_path"]
             elif method == "PUT" and target == "/boot-source":
                 cfg["kernel"] = body["kernel_image_path"]
             elif method == "PUT" and target == "/machine-config":
                 cfg["machine"] = body
             elif method == "PUT" and target == "/actions" and body.get("action_type") == "InstanceStart":
+                if mem["vsock"]:
+                    vsock_listen(mem["vsock"])
                 boot(cfg["kernel"])
             elif method == "PATCH" and target == "/vm":
                 pass
@@ -118,6 +180,8 @@ def serve_api(path):
                 mem.update(json.load(open(body["mem_backend"]["backend_path"])))  # private copy
                 if mem["drive"] and not os.path.exists(mem["drive"]):
                     die("snapshot drive missing at load")
+                if mem["vsock"]:
+                    vsock_listen(mem["vsock"])
                 if body.get("resume_vm"):
                     started.set()
             else:
@@ -134,6 +198,9 @@ else:
     assert len(cfg["drives"]) <= 1 and "network-interfaces" not in cfg, "console VMs: one drive at most, no NICs"
     if cfg["drives"]:
         mem["drive"] = cfg["drives"][0]["path_on_host"]
+    if cfg.get("vsock"):
+        mem["vsock"] = cfg["vsock"]["uds_path"]
+        vsock_listen(mem["vsock"])
     boot(cfg["boot-source"]["kernel_image_path"])
 
 started.wait()
