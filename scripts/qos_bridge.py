@@ -1093,9 +1093,14 @@ class QosVM:
         self.proc.stdin.flush()
         return start
 
-    def _wait_markers(self, start, markers, deadline_s, what):
+    def _wait_markers(self, start, markers, deadline_s, what, max_s=None):
         """Poll the COM1 log from `start` until one of the regex `markers`
         matches; return (body, match). Caller holds _io_lock.
+
+        With `max_s`, `deadline_s` is an IDLE bound instead: the wait restarts
+        whenever new output arrives and gives up only after `deadline_s` with
+        none, or after `max_s` overall. For long dumps (audit, #291) whose
+        transfer time over COM1 scales with host speed, not with liveness.
 
         The echoed command line is dropped before matching: qsh echoes typed
         input verbatim (qsh.c:1392) and it lands in the log BEFORE the real
@@ -1104,8 +1109,11 @@ class QosVM:
         form would otherwise spoof the result). Real output always follows the
         CRLF after the echo, so search only past the first newline; markers are
         additionally line-anchored (re.M `^`) by their callers."""
-        deadline = time.time() + deadline_s
-        while time.time() < deadline:
+        now = time.time()
+        deadline = now + deadline_s
+        hard = now + max_s if max_s is not None else deadline
+        seen = -1
+        while time.time() < min(deadline, hard):
             text = self._log_text(start)
             nl = text.find("\n")
             body = text[nl + 1:] if nl >= 0 else ""
@@ -1115,6 +1123,9 @@ class QosVM:
                     return body, m
             if self.proc.poll() is not None:
                 raise QosDead("VM exited mid-command")
+            if max_s is not None and len(text) != seen:
+                seen = len(text)
+                deadline = time.time() + deadline_s
             time.sleep(0.05)
         raise QosTimeout(f"{what}: no completion marker")
 
@@ -1123,7 +1134,7 @@ class QosVM:
             start = self._send_line(line)
             return self._wait_markers(start, markers, deadline_s, repr(line))
 
-    def _collect(self, cmds, deadline_s, what):
+    def _collect(self, cmds, deadline_s, what, max_s=None):
         """Run one or more qsh commands under a single lock hold, then bracket
         their output with a fresh-nonce `echo` sentinel and return the window
         up to that sentinel. The caller extracts by known line prefix (^PS: /
@@ -1137,7 +1148,7 @@ class QosVM:
             for c in cmds:
                 self._send_line(c)
             self._send_line("echo " + nonce)
-            body, _m = self._wait_markers(start, (sentinel,), deadline_s, what)
+            body, _m = self._wait_markers(start, (sentinel,), deadline_s, what, max_s)
             return body
 
     def imprint(self, text, energy_pct=None, deadline_s=10.0):
@@ -1198,7 +1209,7 @@ class QosVM:
         return {"winner": None, "slot": None, "score": None, "n": 0,
                 "identity": self.identity()}
 
-    def audit(self, deadline_s=12.0):
+    def audit(self, deadline_s=12.0, max_s=90.0):
         """Read the kernel capability AUTHORITY LEDGER read-only (epic #133): the
         kernel-recorded GRANT / DENY / SPAWN events. The KERNEL writes it, so a
         citizen cannot forge or suppress its own entry. Returns {total, dropped,
@@ -1210,7 +1221,9 @@ class QosVM:
         could newline-inject a forged line — the host anchors ^AUDIT: and the
         line-forge guard mitigates, but v1 trusts the shipped citizens)."""
         self._ensure_verified()
-        text = self._collect(["audit"], deadline_s, "audit")
+        # The whole ledger (~190 lines) streams over COM1, so deadline_s is an
+        # idle bound under a max_s cap: a loaded host is slow, not dead (#291).
+        text = self._collect(["audit"], deadline_s, "audit", max_s=max_s)
         st = re.search(r"^AUDIT: total=(\d+) dropped=(\d+) capacity=(\d+)", text, re.M)
         entries = []
         # kind group is [\w?] not \w: a half-added kind formats as "?" and MUST
