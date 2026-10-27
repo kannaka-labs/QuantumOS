@@ -1,7 +1,7 @@
 # 29. A virtio-vsock Channel for the Shell, with COM1 Kept as the Log and the Fallback
 
 Date: 2026-10-26
-Status: Proposed (#259)
+Status: Accepted (2026-10-26, Nick: "yes"; #259)
 
 ## Context
 
