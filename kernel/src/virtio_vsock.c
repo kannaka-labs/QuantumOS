@@ -55,7 +55,7 @@
 #define HOST_CID 2
 
 #define QSZ 8
-#define RX_BUFS 4         /* two descriptors each: header, payload */
+#define RX_BUFS 4 /* two descriptors each: header, payload */
 #define RX_PAYLOAD 4096
 #define TX_PAYLOAD 4096
 #define EV_BUFS 2
@@ -64,7 +64,7 @@
  * buffer is notional; fwd_cnt advances as bytes are handed to the console. */
 #define OUR_BUF_ALLOC 65536u
 
-#define VSOCK_SPIN_MAX 20000000u   /* one TX completion */
+#define VSOCK_SPIN_MAX 20000000u    /* one TX completion */
 #define CREDIT_WAIT_PASSES 2000000u /* waiting for the peer to grant credit */
 
 typedef struct __attribute__((packed)) {
@@ -131,9 +131,9 @@ static int connected;
 static uint32_t peer_port;
 static uint32_t peer_buf_alloc;
 static uint32_t peer_fwd_cnt;
-static uint32_t tx_cnt;         /* payload bytes we have sent */
-static uint32_t fwd_cnt;        /* payload bytes we have consumed */
-static uint32_t fwd_cnt_told;   /* fwd_cnt last reported to the peer */
+static uint32_t tx_cnt;       /* payload bytes we have sent */
+static uint32_t fwd_cnt;      /* payload bytes we have consumed */
+static uint32_t fwd_cnt_told; /* fwd_cnt last reported to the peer */
 
 static inline void vbarrier(void) {
     __asm__ volatile("" ::: "memory");

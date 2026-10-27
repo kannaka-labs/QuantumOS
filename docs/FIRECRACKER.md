@@ -99,6 +99,35 @@ Verified 2026-10-22 on Firecracker v1.16.1 (debain2): `qsh: http 10.0.2.2 -> HTT
 from a host `python3 -m http.server`, and fieldsyncd's UDP to `peer=10.0.2.2` on the
 tap. QuantumOS does not answer ICMP echo, so test it with traffic it starts, not `ping`.
 
+## Shell over vsock (ADR-0029)
+
+Under Firecracker, and nested Firecracker especially, every byte written to the emulated
+16550 costs about 0.9 ms on the host side, so `help` (1.5 KB) took ~1.4 s to appear
+(#259). With a vsock device the shell can use a batched channel instead:
+
+```json
+"vsock": {"guest_cid": 3, "uds_path": "v.sock"}
+```
+
+The kernel (`kernel/src/virtio_vsock.c`) binds it over virtio-mmio and listens on
+**port 1024**. The host connects through the device's Unix socket with Firecracker's
+protocol: write `CONNECT 1024\n`, read `OK <host port>\n`. Then:
+
+- **While a host peer is connected,** the shell's output (`SYS_CONS_WRITE`) goes to vsock
+  and not to COM1, and bytes the host writes arrive as console input. The input goes
+  through the same escape parsing as COM1, including the session reseed.
+- **The kernel log** (`[BOOT]`, `[user pid=...]`) stays on COM1 always.
+- **When the peer leaves,** or a snapshot restore resets the transport, the shell is back
+  on COM1 and the listener stays armed.
+- **Nothing is lost:** output that vsock cannot take in time (no credit, device gone) is
+  written to COM1 instead.
+
+A relative `uds_path` is opened against Firecracker's cwd, so every VM restored from one
+snapshot listens in its own directory. Measured on debain2 (nested, like the console
+host): `help` to the next prompt, p50 1384 ms over COM1, 20 ms over vsock
+(`scripts/ci_firecracker_vsock.py`, also run in CI). The public console uses it with
+`--vsock` (tools/qos-console).
+
 ## Public console
 
 `tools/qos-console/` serves QuantumOS to the web: each visitor gets a fresh microVM
