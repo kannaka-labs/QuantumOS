@@ -35,6 +35,9 @@ def main() -> int:
     ap.add_argument("--max-seconds", type=float, default=10.0,
                     help="fail if qsh has not greeted by then (the regression took ~75 s)")
     a = ap.parse_args()
+    # Firecracker runs with cwd set to the temp dir, so a relative path would not resolve.
+    a.firecracker = os.path.abspath(a.firecracker)
+    a.kernel = os.path.abspath(a.kernel)
 
     d = tempfile.mkdtemp(prefix="qos-fc-ci-")
     try:
