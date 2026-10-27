@@ -104,6 +104,35 @@ SAVE_EVERY_S = 30         # how often changed metrics are written to --state-fil
 SNAPSHOT_RETRY_S = 300    # after a failed snapshot build, cold-boot this long before retrying
 SAVE_SWEEP_S = 3600       # how often expired saved machines are deleted
 RESUME_WAIT_S = 10        # a /ws?resume=1 session must send its token this soon
+# ADR-0029: the shell channel. guest_cid 3 is the first non-reserved cid; each VM has its
+# own device, so every VM can use it. The kernel's listener is on port 1024.
+VSOCK_DEVICE = {"guest_cid": 3, "uds_path": "v.sock"}
+VSOCK_SHELL_PORT = 1024
+
+
+async def vsock_connect(uds: Path, timeout: float) -> tuple[asyncio.StreamReader, asyncio.StreamWriter] | None:
+    """Firecracker's host-initiated vsock connect: "CONNECT <port>" -> "OK <host port>".
+    Retries until the guest's listener answers (after a restore it re-arms on the transport
+    reset; on a cold boot it appears once the kernel is up). None when it never does."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            reader, writer = await asyncio.open_unix_connection(str(uds))
+        except OSError:
+            await asyncio.sleep(0.05)
+            continue
+        try:
+            writer.write(f"CONNECT {VSOCK_SHELL_PORT}\n".encode())
+            await writer.drain()
+            line = await asyncio.wait_for(reader.readline(), 2.0)
+            if line.startswith(b"OK "):
+                return reader, writer
+        except (OSError, asyncio.TimeoutError):
+            pass
+        writer.close()
+        await asyncio.sleep(0.05)
+    return None
+
 DISK = "disk.img"         # the VM's disk, relative to its own directory (and Firecracker's cwd)
 LOOPBACK = ("127.0.0.1", "::1", "[::1]", "localhost")
 
@@ -455,7 +484,8 @@ class Console:
                  calibration_file: Path | None = None, idle_seconds: float = 120,
                  idle_warn_seconds: float = 15, input_frames_per_s: float = 64,
                  input_bytes_per_s: float = 4096, max_output_bytes: int = 2 << 20,
-                 internal_token: str = "", saves: SaveStore | None = None):
+                 internal_token: str = "", saves: SaveStore | None = None, vsock: bool = False):
+        self.vsock = vsock                         # ADR-0029: the shell over vsock, COM1 as fallback
         self.saves = saves                         # saved machines (#256), or None: no disks at all
         self.calibration_file = calibration_file   # daily QPU calibration series (#275), read-only
         self.idle_seconds = idle_seconds           # #257: no input and no output for this long ends it
@@ -548,6 +578,8 @@ class Console:
             "drives": [self.drive(str(d / DISK))] if self.saves is not None else [],
             "machine-config": {"vcpu_count": 1, "mem_size_mib": self.mem_mib},
         }
+        if self.vsock:
+            cfg["vsock"] = dict(VSOCK_DEVICE)
         (d / "vm.json").write_text(json.dumps(cfg))
         return d / "vm.json"
 
@@ -633,6 +665,9 @@ class Console:
             await fc_api(sock, "PUT", "/boot-source",
                          {"kernel_image_path": str(d / "kernel.elf"), "boot_args": self.boot_args})
             await fc_api(sock, "PUT", "/machine-config", {"vcpu_count": 1, "mem_size_mib": self.mem_mib})
+            if self.vsock:
+                # A relative uds_path, like the disk: each restored VM listens in its own dir.
+                await fc_api(sock, "PUT", "/vsock", dict(VSOCK_DEVICE))
             if self.saves is not None:
                 # A RELATIVE path: Firecracker opens it against its own cwd, so every VM
                 # restored from this snapshot opens the disk in its own session directory.
@@ -672,7 +707,7 @@ class Console:
                           "mem_file_path": str(d / "vm.mem")}, timeout=60)
             await self._stop(vm)
             vm = None
-            for f in ("kernel.elf", "fc.sock", DISK):
+            for f in ("kernel.elf", "fc.sock", VSOCK_DEVICE["uds_path"], DISK):
                 (d / f).unlink(missing_ok=True)
             if self.kernel_sha() != sha:      # the kernel changed during the build
                 raise FirecrackerError("kernel changed during the build")
@@ -745,6 +780,7 @@ class Console:
         d: Path | None = None
         vm: asyncio.subprocess.Process | None = None
         snap: Snapshot | None = None
+        vsock_writers: list[asyncio.StreamWriter] = []
         relay: QpuRelay | None = None
         save_id: str | None = None       # the saved machine this session kept or resumed
         new_keep = False
@@ -818,23 +854,53 @@ class Console:
                     await vm.stdin.drain()
                 relay = QpuRelay(self.qpu_broker, sid, self.ip_hash(ip), write_guest)
 
+            shell = {"vsock": False}   # ADR-0029: does the shell's output come over vsock now?
+
+            async def forward(data: bytes, shell_stream: bool) -> str | None:
+                # Only the shell's stream carries qpu requests: qsh writes them, and the relay
+                # parser keeps state, so it must see one stream, never two interleaved.
+                if relay is not None and shell_stream:
+                    data = relay.from_guest(data)   # qpu requests go to the broker, not the page
+                    if not data:
+                        return None
+                room = self.max_output_bytes - out_bytes
+                if len(data) >= room:              # the output cap: send up to it, then end
+                    if room > 0:
+                        await ws.send(data[:room])
+                        sent(data[:room])
+                    return "output_cap"
+                await ws.send(data)
+                sent(data)
+                return None
+
             async def guest_to_ws():
                 while True:
                     data = await vm.stdout.read(READ_CHUNK)
                     if not data:
                         return "guest-exited"
-                    if relay is not None:
-                        data = relay.from_guest(data)   # qpu requests go to the broker, not the page
-                        if not data:
-                            continue
-                    room = self.max_output_bytes - out_bytes
-                    if len(data) >= room:              # the output cap: send up to it, then end
-                        if room > 0:
-                            await ws.send(data[:room])
-                            sent(data[:room])
-                        return "output_cap"
-                    await ws.send(data)
-                    sent(data)
+                    # Once the shell is on vsock, COM1 carries the kernel log only.
+                    end = await forward(data, shell_stream=not shell["vsock"])
+                    if end:
+                        return end
+
+            async def vsock_to_ws():
+                conn = await vsock_connect(d / VSOCK_DEVICE["uds_path"], self.boot_timeout)
+                if conn is None:
+                    log.info("shell sid=%s via=com1 (no vsock peer)", sid)
+                    await asyncio.Event().wait()   # COM1 carries the shell; never end the session
+                reader, writer = conn
+                vsock_writers.append(writer)
+                shell["vsock"] = True
+                log.info("shell sid=%s via=vsock", sid)
+                while True:
+                    data = await reader.read(READ_CHUNK)
+                    if not data:
+                        shell["vsock"] = False
+                        log.info("shell sid=%s vsock closed, back on com1", sid)
+                        await asyncio.Event().wait()
+                    end = await forward(data, shell_stream=True)
+                    if end:
+                        return end
 
             async def ws_to_guest():
                 frames = TokenBucket(self.input_frames_per_s)
@@ -895,6 +961,8 @@ class Console:
 
             tasks = {asyncio.create_task(guest_to_ws()), asyncio.create_task(ws_to_guest()),
                      asyncio.create_task(idle_watch())}
+            if self.vsock:
+                tasks.add(asyncio.create_task(vsock_to_ws()))
             done, pending = await asyncio.wait(tasks, timeout=self.max_seconds,
                                                return_when=asyncio.FIRST_COMPLETED)
             for t in pending:
@@ -922,6 +990,8 @@ class Console:
             end_reason = f"error:{type(e).__name__}"
             log.exception("session %s failed", sid)
         finally:
+            for w in vsock_writers:
+                w.close()
             if relay is not None:
                 await relay.close()
             await self._stop(vm)
@@ -1164,7 +1234,8 @@ async def amain(a: argparse.Namespace, stop: asyncio.Future | None = None) -> in
                   input_frames_per_s=a.input_frames_per_s, input_bytes_per_s=a.input_bytes_per_s,
                   max_output_bytes=a.max_output_bytes, internal_token=read_token(a.internal_token_file),
                   saves=SaveStore(Path(a.save_dir), a.save_mib, a.save_days, a.save_total_mib,
-                                  a.saves_per_ip_day) if a.save_dir else None)
+                                  a.saves_per_ip_day) if a.save_dir else None,
+                  vsock=a.vsock)
     swept = con.sweep()
     if swept:
         log.info("swept %d stale session dirs", swept)
@@ -1249,6 +1320,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="JSON file the funnel metrics (counts and timings only) persist to")
     ap.add_argument("--ready-marker", default="qsh>",
                     help="guest output (ANSI colour stripped) that means the shell is ready to snapshot")
+    ap.add_argument("--vsock", action="store_true",
+                    help="give each VM a vsock device and carry the shell over it (ADR-0029; "
+                         "~70x faster output under nested Firecracker), COM1 as the fallback")
     ap.add_argument("--qpu-broker", default=None,
                     help="Unix socket of the host quantum broker (tools/qpu-broker); unset: no qpu relay")
     ap.add_argument("--save-dir", default=None,

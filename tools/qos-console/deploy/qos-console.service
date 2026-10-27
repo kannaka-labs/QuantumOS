@@ -24,7 +24,8 @@ ExecStart=/usr/bin/python3 -u /opt/qos-console/qos_console.py \
     --qpu-broker /run/qos-qpu/broker.sock \
     --calibration-file /var/lib/qos-qpu/calibration.json \
     --internal-token-file /etc/qos-console/internal.token \
-    --save-dir /var/lib/qos-console/saves --save-mib 4 --save-days 7 --save-total-mib 2048
+    --save-dir /var/lib/qos-console/saves --save-mib 4 --save-days 7 --save-total-mib 2048 \
+    --vsock
 Restart=on-failure
 RestartSec=5
 # Every VM is a child of this unit, so these limits cap all of them together.
