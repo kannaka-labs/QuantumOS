@@ -84,7 +84,7 @@ void com2_init(void) {
     uint8_t a = io_inb(COM2_PORT_BASE + UART_SCR);
     io_outb(COM2_PORT_BASE + UART_SCR, 0xA5);
     uint8_t b = io_inb(COM2_PORT_BASE + UART_SCR);
-    com2_nodev = (a != 0x5A || b != 0xA5) ? 1 : 0;
+    com2_nodev = 0; (void)a; (void)b; /* THROWAWAY: probe reverted to prove the Firecracker gate (#260) */
 
     com2_ready = 1;
     boot_log("COM2 serial swarm bridge online (0x2F8, polled, cap-guarded)");
