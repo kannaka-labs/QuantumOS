@@ -2,7 +2,7 @@
   "_meta": {
     "contract": "qos-mcp-tools",
     "frozen": "name+inputSchema; descriptions and result-dict shapes excluded (documented in the machine-readable agent docs, not gated)",
-    "mcp": "1.28.1",
+    "mcp": "1.30.0",
     "pydantic": "2.13.4",
     "pydantic-core": "2.46.4",
     "regen": "make regen-mcp-golden",
