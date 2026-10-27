@@ -138,7 +138,18 @@ typedef struct __attribute__((packed)) {
 #define DHCP_OPT_MSGTYPE 53
 #define DHCP_OPT_REQIP 50
 #define DHCP_OPT_SERVERID 54
+#define DHCP_OPT_PARAMS 55
+#define DHCP_OPT_ROUTER 3
+#define DHCP_OPT_DNS 6
 #define DHCP_OPT_END 255
+
+/* The resolver. Defaults to SLIRP's DNS proxy (10.0.2.3), and is replaced by the
+ * DNS server a DHCP ACK names (option 6), so a tap with a real DHCP server
+ * (Firecracker, #235) or any other network resolves names too. Queries go to it
+ * and answers are accepted only from it. */
+static uint8_t dns_server[4] = {10, 0, 2, 3};
+static uint8_t dhcp_dns_offered[4];
+static int dhcp_dns_present;
 #define DHCP_DISCOVER 1
 #define DHCP_OFFER 2
 #define DHCP_REQUEST 3
@@ -378,6 +389,10 @@ static uint16_t dhcp_build(uint8_t *frame, uint8_t msgtype, const uint8_t *req_i
     *opt++ = DHCP_OPT_MSGTYPE;
     *opt++ = 1;
     *opt++ = msgtype;
+    *opt++ = DHCP_OPT_PARAMS; /* ask for the router and the DNS server */
+    *opt++ = 2;
+    *opt++ = DHCP_OPT_ROUTER;
+    *opt++ = DHCP_OPT_DNS;
     if (msgtype == DHCP_REQUEST) {
         *opt++ = DHCP_OPT_REQIP;
         *opt++ = 4;
@@ -490,6 +505,15 @@ static uint8_t dhcp_parse(const uint8_t *frame, uint16_t len, uint8_t *yiaddr, u
             server_id[i] = v[i];
         }
     }
+    /* Option 6 lists resolvers 4 bytes each; take the first. */
+    dhcp_dns_present = 0;
+    if (dhcp_find_opt(opts, optlen, DHCP_OPT_DNS, &v, &vl) && vl >= 4 &&
+        (v[0] | v[1] | v[2] | v[3])) {
+        for (int i = 0; i < 4; i++) {
+            dhcp_dns_offered[i] = v[i];
+        }
+        dhcp_dns_present = 1;
+    }
     return msgtype;
 }
 
@@ -511,6 +535,11 @@ static void dhcp_rx(const uint8_t *frame, uint16_t len) {
         for (int i = 0; i < 4; i++) {
             my_ip[i] = yiaddr[i];
         }
+        if (dhcp_dns_present) {
+            for (int i = 0; i < 4; i++) {
+                dns_server[i] = dhcp_dns_offered[i];
+            }
+        }
         dhcp_have_lease = 1;
     }
 }
@@ -521,7 +550,6 @@ static void dhcp_rx(const uint8_t *frame, uint16_t len) {
 #define ICMP_ECHO_REQUEST 8
 #define ICMP_ECHO_REPLY 0
 #define DNS_PORT 53
-static const uint8_t IP_DNS[4] = {10, 0, 2, 3}; /* SLIRP's DNS proxy */
 
 /* Fill an IPv4 header for a unicast packet of `payload_len` bytes to
  * `dst`, from `my_ip`. Computes the header checksum. */
@@ -693,7 +721,7 @@ static uint16_t dns_build(uint8_t *frame, const uint8_t *dns_mac, const char *na
     udp->len = htons(udp_len);
     udp->checksum = 0;
 
-    ip_fill(ip, IP_DNS, IP_PROTO_UDP, udp_len, txid);
+    ip_fill(ip, dns_server, IP_PROTO_UDP, udp_len, txid);
     return (uint16_t)(sizeof(eth_hdr_t) + sizeof(ip_hdr_t) + udp_len);
 }
 
@@ -703,7 +731,7 @@ static uint16_t dns_build(uint8_t *frame, const uint8_t *dns_mac, const char *na
  * The answer is bound to the query the kernel actually issued on FOUR axes, so
  * an on-link node cannot inject a spoofed answer to poison ring-3 resolution
  * (SYS_RESOLVE trusts this result): it must come FROM the resolver (ip->src ==
- * IP_DNS), be addressed back TO our ephemeral query port (udp->dport == sport),
+ * dns_server), be addressed back TO our ephemeral query port (udp->dport == sport),
  * FROM the DNS port (udp->sport == 53), and carry our transaction id. `sport`
  * and `txid` are drawn per-query from the qseed-mixed PRNG, so a blind attacker
  * cannot predict the {sport, txid} pair it must match. (A sniffing on-link
@@ -719,7 +747,7 @@ static int dns_parse(const uint8_t *frame, uint16_t len, uint16_t txid, uint16_t
         return 0;
     }
     const ip_hdr_t *ip = (const ip_hdr_t *)(frame + sizeof(eth_hdr_t));
-    if (ip->ver_ihl != 0x45 || ip->proto != IP_PROTO_UDP || !ip_eq(ip->src, IP_DNS)) {
+    if (ip->ver_ihl != 0x45 || ip->proto != IP_PROTO_UDP || !ip_eq(ip->src, dns_server)) {
         return 0; /* must be FROM the resolver we queried (mirrors icmp_is_reply) */
     }
     const udp_hdr_t *udp = (const udp_hdr_t *)((const uint8_t *)ip + sizeof(ip_hdr_t));
@@ -862,14 +890,14 @@ static uint16_t dns_build_response(uint8_t *buf, const uint8_t *src_ip, uint16_t
 /* Boot self-test for the DNS answer-binding fix (adversarial bug-hunt of the
  * untrusted-input surface). Proves dns_parse binds a response to the query on
  * source IP and destination port, not just a (formerly constant) txid:
- *   1. a legitimate answer (from IP_DNS, to our port, our txid) is ACCEPTED;
+ *   1. a legitimate answer (from dns_server, to our port, our txid) is ACCEPTED;
  *   2. a spoofed SOURCE (attacker IP) is REJECTED;
  *   3. a wrong DEST PORT (blind attacker guessed wrong) is REJECTED.
  * Pure in-memory parser test (no NIC), so it runs on every boot. Returns 0 on
  * success. Anti-vacuous: without the binding checks, cases 2 and 3 are accepted
  * (return 1), the self-test fails, and the boot never prints its gate line. */
 int net_dns_guard_selftest(void) {
-    static const uint8_t good_src[4] = {10, 0, 2, 3}; /* == IP_DNS (the resolver) */
+    const uint8_t *good_src = dns_server; /* the resolver dns_parse accepts */
     static const uint8_t evil_src[4] = {6, 6, 6, 6};
     static const uint8_t answer[4] = {1, 2, 3, 4};
     const uint16_t txid = 0x1234;
@@ -892,7 +920,7 @@ int net_dns_guard_selftest(void) {
     return 0;
 }
 
-/* Resolve `host` to an IPv4 A record via SLIRP's DNS proxy. Bounded,
+/* Resolve `host` to an IPv4 A record via dns_server (DHCP's, else SLIRP's). Bounded,
  * pumps the RX queue (must run in the IF=1 net thread, not a cli'd
  * syscall). Returns 0 and fills out_ip on success, -1 on failure.
  * Requires a NIC and a DHCP lease (for the unicast source address). */
@@ -901,7 +929,7 @@ static int dns_resolve(const char *host, uint16_t txid, uint16_t sport, uint8_t 
         return -1;
     }
     uint8_t dns_mac[ETH_ADDR_LEN];
-    if (!resolve_mac(IP_DNS, dns_mac)) {
+    if (!resolve_mac(dns_server, dns_mac)) {
         return -1;
     }
     uint8_t out[sizeof(eth_hdr_t) + sizeof(ip_hdr_t) + sizeof(udp_hdr_t) + 256];
