@@ -29,6 +29,7 @@
 #define VIRTIO_PCI_MODERN_BASE 0x1040
 #define VIRTIO_PCI_LEGACY_NET 0x1000
 #define VIRTIO_PCI_LEGACY_BLOCK 0x1001
+#define VIRTIO_PCI_LEGACY_ENTROPY 0x1005
 
 #define PCI_STATUS_DWORD 0x04 /* status is the high half */
 #define PCI_STATUS_CAP_LIST (1u << 20)
@@ -222,13 +223,15 @@ static pci_device_t find_device(uint32_t device_id) {
             return d;
         }
     }
-    /* Transitional ids: net (0x1000) and block (0x1001) are in scope;
+    /* Transitional ids: net (0x1000), block (0x1001) and entropy (0x1005);
      * confirm by subsystem. QEMU's plain virtio-*-pci devices are these. */
     uint16_t legacy = 0;
     if (device_id == VIRTIO_ID_NET) {
         legacy = VIRTIO_PCI_LEGACY_NET;
     } else if (device_id == VIRTIO_ID_BLOCK) {
         legacy = VIRTIO_PCI_LEGACY_BLOCK;
+    } else if (device_id == VIRTIO_ID_ENTROPY) {
+        legacy = VIRTIO_PCI_LEGACY_ENTROPY;
     }
     if (legacy && !already_bound(legacy)) {
         d = pci_find(VIRTIO_PCI_VENDOR, legacy);

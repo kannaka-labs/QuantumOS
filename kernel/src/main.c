@@ -18,6 +18,7 @@
 #include <kernel/ramfs.h>
 #include <kernel/netdev.h>
 #include <kernel/virtio_net.h>
+#include <kernel/virtio_rng.h>
 #include <kernel/net.h>
 #include <kernel/vga.h>
 #include <kernel/fb.h>
@@ -204,6 +205,10 @@ static void kernel_init(void) {
     // continues unchanged, and the IRQ is unmasked and the ARP self-test
     // runs only when one came up.
     netdev_init();
+
+    // Bind a virtio entropy device if the host offers one (#254), before
+    // quantum_init mixes its bytes into the generator. Absent: silent.
+    virtio_rng_init();
 
     // Initialize core services
     splash_stage("capabilities + quantum resources", 60);

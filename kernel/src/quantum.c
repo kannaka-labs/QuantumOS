@@ -12,6 +12,7 @@
 #include <kernel/quantum.h>
 #include <kernel/interrupts.h>
 #include <kernel/boot.h>
+#include <kernel/virtio_rng.h>
 
 /* ============================================================================
  * Internal State
@@ -121,12 +122,26 @@ quantum_result_t quantum_init(void) {
     pool_stats.available_qubits = QUANTUM_MAX_QUBITS;
     pool_stats.high_fidelity_qubits = QUANTUM_MAX_QUBITS;
 
+    /* A bound virtio entropy device (#254) contributes 8 bytes of the HOST's
+     * randomness. It is mixed in, never a replacement, and it is not a qseed:
+     * SYS_QSEED keeps reporting only what the host handed in, which is what
+     * the swarm attestation binds to. */
+    uint64_t rng_seed = 0;
+    int have_rng = virtio_rng_present() && virtio_rng_fill(&rng_seed, sizeof(rng_seed)) == 0;
+
     if (boot_entropy_present) {
         /* Mix the externally supplied quantum entropy into the PRNG state
          * (SplitMix avalanche + non-zero guard: an adversarial qseed must never
          * be able to zero the generator — see mix_seed_nonzero). */
         prng_state = mix_seed_nonzero(prng_state, boot_entropy);
         boot_log("Quantum entropy: seeded from boot handoff (qBraid quantum lab)");
+        if (have_rng) {
+            prng_state = mix_seed_nonzero(prng_state, rng_seed);
+            boot_log("Entropy: virtio-rng mixed in (host randomness)");
+        }
+    } else if (have_rng) {
+        prng_state = mix_seed_nonzero(prng_state, rng_seed);
+        boot_log("Entropy: virtio-rng (host randomness, not a QPU)");
     } else {
         prng_state = mix_seed_nonzero(prng_state, timer_get_ticks() + 1);
         boot_log("Entropy: unseeded at boot (timer default, not from a QPU)");
