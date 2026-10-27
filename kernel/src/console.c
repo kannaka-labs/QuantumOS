@@ -21,6 +21,7 @@
 #include <kernel/quantum.h>
 #include <kernel/boot.h>
 #include <kernel/vga.h>
+#include <kernel/virtio_vsock.h>
 
 /* 16550 register offsets (same layout as com2_uart.c) */
 #define UART_THR 0 /* Transmit Holding Register (write, DLAB=0) */
@@ -193,6 +194,12 @@ static void com1_rx_byte(uint8_t b) {
     ring_push(b);
 }
 
+void console_input_bytes(const uint8_t *buf, uint32_t len) {
+    for (uint32_t i = 0; i < len; i++) {
+        com1_rx_byte(buf[i]);
+    }
+}
+
 void console_com1_irq(void) {
     if (!com1_present) {
         return;
@@ -229,8 +236,17 @@ uint32_t console_write(const uint8_t *buf, uint32_t len) {
         return 0;
     }
     uint64_t flags = irq_save();
-    uint32_t written = 0;
-    for (uint32_t i = 0; i < len; i++) {
+    /* ADR-0029: while a host peer holds the vsock shell channel, the shell's
+     * output goes there, a whole buffer per packet, and not to COM1 (~0.9 ms
+     * per byte under nested Firecracker). Whatever vsock could not take (no
+     * credit in time, device gone) falls through to COM1 below, so output is
+     * never lost. The kernel log never comes here: it stays on COM1. */
+    uint32_t via_vsock = virtio_vsock_connected() ? virtio_vsock_send(buf, len) : 0;
+    for (uint32_t i = 0; i < via_vsock; i++) {
+        vga_console_putc((char)buf[i]);
+    }
+    uint32_t written = via_vsock;
+    for (uint32_t i = via_vsock; i < len; i++) {
         /* Screen first — plain memory writes, cannot wedge. No-op until
          * the VGA console is enabled; on a serial-less machine it IS the
          * shell's display. */
