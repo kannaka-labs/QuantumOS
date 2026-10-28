@@ -703,10 +703,13 @@ absent device is silent, like virtio-net.
 
 The gate is `make ci-smoke-net-e1000` (`networking-e1000` job): the same
 `ci-smoke-net` + `ci-smoke-http` with `NET_NIC=e1000` and `NET_UP="NET: e1000
-up"`, plus a check that the rtl8139 did not bind instead. Not done:
-`-device e1000e` (82574L, `8086:10D3`) is a different part (extended
-descriptors by default, a different interrupt register map, MSI-X) and is
-not probed; neither are the other 8254x device ids.
+up"`, plus a check that the rtl8139 did not bind instead. Only the 82540EM
+id (`8086:100E`) is probed. Measured once, not shipped: with the id swapped
+to `8086:10D3`, QEMU's `-device e1000e` (82574L) passed the same ARP/DHCP/
+DNS gate through this driver unchanged — its legacy-descriptor path, RCTL/
+TCTL and ring registers are compatible. Whether its MAC came from EERD or the
+RAL/RAH fallback, and whether RX arrived by INTx or by the polling fallback,
+the gate does not distinguish, so the id stays out until that is checked.
 
 ## modbusd: a Modbus/TCP agent that refuses control writes (stage 4 of #235)
 
