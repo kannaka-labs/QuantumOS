@@ -10,6 +10,7 @@
  */
 
 #include <kernel/net_internal.h>
+#include <kernel/egress.h>
 
 /* ---- ring-3 UDP sockets (epic #80): socket table + rings ----
  *
@@ -163,6 +164,9 @@ long net_udp_bind(uint32_t pid, uint16_t port) {
     if (port != 0 && udp_port_in_use(port)) {
         return NET_UDP_EINVAL; /* address in use */
     }
+    if (port != 0 && egress_listen_ok(pid, port) != EGRESS_OK) {
+        return NET_UDP_EGRESS; /* ADR-0030: a named port is a listener; ephemeral binds are not */
+    }
     if (port == 0) {
         /* Ephemeral: skip ports still held (bounded — at most
          * UDP_SOCK_MAX can be in use). */
@@ -226,6 +230,9 @@ long net_udp_sendto(uint32_t pid, long sock, const uint8_t *dip, uint16_t dport,
     }
     if (!net_nic_present()) {
         return NET_UDP_ENONET;
+    }
+    if (egress_check(pid, dip, dport, EGRESS_PROTO_UDP) != EGRESS_OK) {
+        return NET_UDP_EGRESS; /* ADR-0030: refused before any lease wait; receipted */
     }
     if (!net_ready()) {
         return NET_UDP_EAGAIN; /* lease still coming up — poll */

@@ -28,6 +28,7 @@
 #include <kernel/com2_uart.h>
 #include <kernel/console.h>
 #include <kernel/virtio_vsock.h>
+#include <kernel/egress.h>
 #include <kernel/vga.h>
 #include <kernel/initrd.h>
 #include <kernel/ramfs.h>
@@ -831,6 +832,9 @@ static uint64_t sys_resolve(uint32_t pid, uint64_t host_ptr, uint64_t out_ptr) {
     if (!authorize(pid, CAP_RESOURCE_DEVICE, CAP_READ, DEVICE_ID_NET)) {
         return SYSCALL_EPERM;
     }
+    if (!egress_active()) {
+        return SYSCALL_EEGRESS; /* ADR-0030: no lookup leaves without a live grant */
+    }
     if (!user_ok(out_ptr, 4, 1)) { /* copy-OUT: the 4-byte resolved IP */
         return SYSCALL_EFAULT;
     }
@@ -886,6 +890,8 @@ static uint64_t udp_map_err(long r) {
         return RESOLVE_WOULDBLOCK;
     case NET_UDP_ENONET:
         return SYSCALL_EIO;
+    case NET_UDP_EGRESS:
+        return SYSCALL_EEGRESS;
     default:
         return (uint64_t)r;
     }
@@ -990,6 +996,8 @@ static uint64_t tcp_map_err(long r) {
         return RESOLVE_WOULDBLOCK;
     case NET_TCP_ENONET:
         return SYSCALL_EIO;
+    case NET_TCP_EGRESS:
+        return SYSCALL_EEGRESS;
     default:
         return (uint64_t)r;
     }

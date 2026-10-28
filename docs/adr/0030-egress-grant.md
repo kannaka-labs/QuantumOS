@@ -124,3 +124,16 @@ cmdline and COM1 parsers, and the gates. The two never ship in one PR.
    `AUDIT_EGRESS`, `qsh egress`, the gates, and `egress=` on every existing gate.
 3. **PR B, driver:** `e1000.c` and `ci-smoke-net-e1000`, with the grant active.
 4. Then #253, the same way.
+
+## Amendment (PR A, 2026-10-28)
+
+What shipped in PR A differs from the decision in four small ways, each stated here:
+
+- **Grant source.** Only the boot command line. The COM1 escape is deferred to PR A2: no console
+  VM has a NIC, and the reseed parser it would share is on the live console's path.
+- **`allow=*`.** A wide grant, for gates and benchmarks whose subject is the stack or a driver.
+  Still budgeted and receipted. The decision did not name it; "benchmarked with a wide grant"
+  needed a spelling.
+- **Infrastructure traffic** is counted in `bytes` but not itemised in the receipt. Per-frame
+  rows for ARP and DHCP would be a flood with nothing to read in it.
+- **UDP binds to a named port** count as listeners (`listen`); ephemeral binds do not.

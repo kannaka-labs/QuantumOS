@@ -864,6 +864,22 @@ jobs:
     - name: COM2 latency — one-hop round-trip bounded + baseline recorded (ADR-0022)
       run: make ci-smoke-latency
 
+  egress-grant:
+    name: "Egress grant (ADR-0030: a NIC without a grant is offline; allowlist, receipt, budget, ttl)"
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential qemu-system-x86 nasm
+    - name: A NIC with no grant stays offline
+      run: make ci-smoke-net-nogrant
+    - name: Allowlist, receipt, byte budget and ttl
+      run: make ci-smoke-egress
+
   society-n:
     name: N-way authenticated society (epic #139 + ADR-0019)
     runs-on: ubuntu-latest

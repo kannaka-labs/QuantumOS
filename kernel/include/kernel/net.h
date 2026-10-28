@@ -93,6 +93,7 @@ int net_poll_resolve(uint8_t *out_ip);
 #define NET_UDP_EPERM (-2)  /* caller does not own the socket */
 #define NET_UDP_EAGAIN (-3) /* RX ring empty / TX queue full / no slot */
 #define NET_UDP_ENONET (-4) /* no NIC present (hard failure) */
+#define NET_UDP_EGRESS (-5) /* refused by the egress grant (ADR-0030) */
 
 /* Bind a new socket to `port` (0 = ephemeral). Returns the socket id
  * (>= 0) or NET_UDP_EINVAL (reserved/in-use port) / NET_UDP_EAGAIN (no
@@ -135,6 +136,7 @@ int net_udp_dst_ok(const uint8_t *dip);
 #define NET_TCP_EIO (-2)        /* connection refused, reset, or timed out */
 #define NET_TCP_WOULDBLOCK (-3) /* handshake/close in progress, RX empty, TX busy */
 #define NET_TCP_ENONET (-4)     /* no NIC present (hard failure) */
+#define NET_TCP_EGRESS (-5)     /* refused by the egress grant (ADR-0030) */
 
 /* Active open to ip:port. WOULDBLOCK while the handshake runs (poll), 0
  * once ESTABLISHED, EIO on refuse/timeout, ENONET with no NIC, EINVAL if
