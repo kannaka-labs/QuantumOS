@@ -91,3 +91,20 @@ void pci_enable_bus_master_mem(const pci_device_t *dev) {
     cmd |= (PCI_CMD_MEM | PCI_CMD_BUS_MASTER);
     pci_config_write32(dev->bus, dev->slot, dev->func, PCI_COMMAND, cmd);
 }
+
+uint64_t pci_bar_mem_base(const pci_device_t *dev, uint8_t bar) {
+    if (!dev || !dev->found || bar > 5) {
+        return 0;
+    }
+    uint32_t lo = pci_config_read32(dev->bus, dev->slot, dev->func, (uint8_t)(PCI_BAR0 + 4 * bar));
+    if (lo & 1) {
+        return 0; /* I/O-space BAR */
+    }
+    uint64_t base = lo & ~0xFULL;
+    if (((lo >> 1) & 3) == 2 && bar < 5) { /* 64-bit: the next BAR is the high half */
+        base |= (uint64_t)pci_config_read32(dev->bus, dev->slot, dev->func,
+                                            (uint8_t)(PCI_BAR0 + 4 * (bar + 1)))
+                << 32;
+    }
+    return base;
+}

@@ -89,10 +89,11 @@ reads return nothing, without touching the port.
   the host's tap, and fetches `HTTP/1.0 200 OK` from a host `http.server`. The MMIO
   path has no CI gate: QEMU's `microvm` machine cannot load the PVH image (its loader
   finds the Multiboot header first), and CI runners have no KVM for Firecracker.
-- **Not done, in order of value:** checksum offload (`CSUM`/`GUEST_CSUM`) and
-  `MRG_RXBUF`; MSI-X; and multiqueue (`MQ`), which needs SMP to matter (ADR-0005).
-  (The e1000 driver for hypervisors and bare metal that offer neither virtio nor an
-  rtl8139 landed in #252, behind the same netdev seam.)
+- **Not done, in order of value:** multiqueue (`MQ`), which needs SMP to matter
+  (ADR-0005); TSO/GSO, which has nothing to offload until the TCP stack builds segments
+  larger than the MSS. Checksum offload, `MRG_RXBUF` and MSI-X landed in #253 (amendment
+  below). (The e1000 driver for hypervisors and bare metal that offer neither virtio nor
+  an rtl8139 landed in #252, behind the same netdev seam.)
   Packed virtqueues and `EVENT_IDX` are throughput work this single-core kernel does
   not yet need.
 
@@ -104,3 +105,42 @@ virtio-pci function's capability windows). Each transport binds up to
 `VIRTIO_MAX_BOUND` devices, and a probe skips devices already bound. The
 first second device is virtio-blk; without this, its probe would have
 re-pointed the transport's single register global away from the NIC.
+
+## Amendment (#253): checksum offload, merged RX buffers, MSI-X
+
+Three features are now negotiated when offered, each with its own cmdline switch
+(`virtio_net.nofeat=csum,mrgrx,msix`) and its own bring-up line
+(`NET: virtio-net feature <name>: negotiated | off-by-cmdline | not-offered`), so a
+regression bisects without a rebuild. Step 2 of the sequence above reads: VERSION_1
+required; MAC, STATUS, CSUM (+GUEST_CSUM), MRG_RXBUF taken if offered and allowed.
+
+- **CSUM / GUEST_CSUM.** TX stores the TCP pseudo-header sum and marks the frame
+  `NEEDS_CSUM`; the device finishes it. The netdev ops table is unchanged: the stack
+  learns the rule through `netdev_set_tx_csum_offload()` / `netdev_tx_csum_offload()`
+  (driver-set state in `netdev.c`), and only TCP, the one protocol it checksums, is
+  marked. RX frames the device verified (`DATA_VALID`) skip the stack's check through
+  `netdev_rx_csum_valid_set()` / `netdev_rx_csum_valid()`, cleared per call; frames
+  the device left `NEEDS_CSUM` are finished in the driver. QEMU offers neither bit on
+  user-net (SLIRP has no virtio-net header), so there the driver reports
+  `not-offered` and the software path runs; over a tap both are negotiated.
+- **MRG_RXBUF.** `num_buffers` consecutive used entries make one frame; RX buffers
+  become 1 KiB chunks (64 KiB of RX memory instead of 100 KiB), so the merge path
+  runs on every full-size segment instead of never. Malformed counts (past
+  `used->idx`) recycle what is there and drop the frame.
+- **MSI-X (virtio-pci only).** `kernel/src/pci_msix.c` parses capability 0x11, maps
+  the table, points `queues + 1` entries at the boot CPU's local APIC (IDT vectors
+  64..67), enables MSI-X and disables INTx. The local APIC is software-enabled for
+  the purpose, with LINT0 kept as the 8259's ExtINT path, so every other device is
+  untouched. The transport grew an optional `msix_enable` op (NULL on virtio-mmio);
+  `queue_setup` stamps vector `1 + q` and reads it back. INTx is the fallback whenever
+  the capability is missing or the switch is off. Because `receive()` polls the used
+  ring when its queue is empty, a dead MSI-X would still pass the fetch gates; the RX
+  handler therefore logs `first MSI-X rx interrupt` once, and the gates assert it.
+
+Gates: `ci-smoke-net-virtio` (offloads on: MRG_RXBUF + MSI-X asserted, first interrupt
+asserted, csum honestly `not-offered`, plus a 64 KiB fetch that exercises merging),
+`ci-smoke-net-virtio-nofeat` (all three `off-by-cmdline`, INTx, no MSI-X line, same
+proofs), `ci-smoke-net-virtio-tap` (host tap: `csum: negotiated`, 64 KiB fetch with
+device-completed TX checksums). Negative controls and the before/after fetch timings
+are in PR #253's body. TX completion now asks for no interrupt
+(`VRING_AVAIL_F_NO_INTERRUPT`): it was always observed by the poll.

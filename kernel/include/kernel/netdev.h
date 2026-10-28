@@ -67,4 +67,27 @@ void netdev_irq(void);
 uint8_t netdev_irq_line(void);
 uint16_t netdev_receive(uint8_t *buf, uint16_t max);
 
+/* ---- checksum offload side channel (#253) ----
+ *
+ * The ops table above is the contract and is unchanged. Offload needs two
+ * facts to cross it without a per-frame flags argument, so they travel as
+ * driver-set state in netdev.c:
+ *
+ *  - TX: a driver whose device completes L4 checksums calls
+ *    netdev_set_tx_csum_offload(1) at init. The TCP builder then stores the
+ *    pseudo-header sum alone in the checksum field (the "partial" the
+ *    device finishes) and the driver marks every IPv4/TCP frame it sends as
+ *    needing a checksum. Both sides key off the same flag, so a frame is
+ *    never half-done. Drivers without offload never call it; their frames
+ *    carry the full software checksum as before.
+ *  - RX: a driver that knows the device verified the frame it is about to
+ *    return from receive() calls netdev_rx_csum_valid_set(1); the stack
+ *    reads netdev_rx_csum_valid() for THAT frame and skips its own check.
+ *    netdev_receive() clears the flag before every call, so a driver that
+ *    stays silent gets software verification. */
+void netdev_set_tx_csum_offload(int on);
+int netdev_tx_csum_offload(void);
+void netdev_rx_csum_valid_set(int valid);
+int netdev_rx_csum_valid(void);
+
 #endif /* NETDEV_H */

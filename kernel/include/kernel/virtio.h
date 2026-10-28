@@ -85,7 +85,19 @@ struct virtio_transport {
     /* One byte of the device-specific configuration space. */
     uint8_t (*config_read8)(const virtio_transport_t *t, uint32_t offset);
 
-    /* The legacy 8259 line the device interrupts on (< 16). */
+    /* Route this device's interrupts through MSI-X (#253): vector 0 for
+     * configuration changes and vector 1 + q for queue q, delivered on IDT
+     * vectors MSIX_VECTOR_BASE + 0 .. MSIX_VECTOR_BASE + queues. Call it
+     * BEFORE queue_setup, which then stamps each queue's vector. Returns 1
+     * when MSI-X is live (INTx is disabled from then on), 0 when the
+     * transport has none (virtio-mmio), the function lacks the capability
+     * or its table is too small; nothing changed on 0 and INTx stays the
+     * path. NULL on a transport that never offers it. */
+    int (*msix_enable)(const virtio_transport_t *t, uint16_t queues);
+
+    /* The legacy 8259 line the device interrupts on (< 16). Still reported
+     * with MSI-X live: the line is disabled at the function, so unmasking
+     * it at the PIC is harmless and nothing arrives on it. */
     uint8_t irq;
 };
 

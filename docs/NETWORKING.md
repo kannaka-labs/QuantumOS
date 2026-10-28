@@ -392,8 +392,12 @@ same code, three translation units plus a shared internal header:
 - **`kernel/src/netdev.c`** — not a transport: the seam between the stack
   and whichever NIC is present. Holds the probe list, the bound-device
   pointer, and the `netdev_*` forwarders.
-- **`kernel/src/virtio_net.c`** — the virtio-mmio transport and the
-  virtio-net device, behind the netdev contract. The NIC Firecracker has.
+- **`kernel/src/virtio_net.c`** — the virtio-net device behind the netdev
+  contract, over either transport (`virtio_mmio.c`, `virtio_pci.c`). The
+  NIC Firecracker has; with #253 it takes checksum offload, merged RX
+  buffers and MSI-X when offered.
+- **`kernel/src/pci_msix.c`** — minimal MSI-X: capability parse, table
+  programming, local APIC enable/EOI (#253).
 - **`kernel/src/e1000.c`** — the Intel 82540EM, behind the same contract
   (#252). The NIC for hypervisors with neither virtio nor an rtl8139.
 
@@ -710,6 +714,126 @@ DNS gate through this driver unchanged — its legacy-descriptor path, RCTL/
 TCTL and ring registers are compatible. Whether its MAC came from EERD or the
 RAL/RAH fallback, and whether RX arrived by INTx or by the polling fallback,
 the gate does not distinguish, so the id stays out until that is checked.
+
+## virtio-net offloads: checksum, merged RX buffers, MSI-X (#253)
+
+The virtio-net driver from ADR-0024 negotiated `VERSION_1 + MAC + STATUS`
+and nothing else. #253 takes three more, one negotiated feature at a time,
+behind the unchanged `netdev_ops_t`. Each is taken only if the device offers
+it AND the kernel command line did not switch it off:
+
+```
+virtio_net.nofeat=csum,mrgrx,msix      # any subset, comma-separated
+```
+
+`cmdline_get_value()` hands the list to `virtio_net_set_nofeat()` before
+`netdev_init()`. Bring-up then logs one line per feature with one of three
+words, which the gates grep for:
+
+```
+NET: virtio-net feature csum: negotiated | off-by-cmdline | not-offered
+NET: virtio-net feature mrgrx: ...
+NET: virtio-net feature msix: ...
+NET: virtio-net interrupts: MSI-X (config, rx, tx vectors) | INTx
+NET: virtio-net first MSI-X rx interrupt       # once, from the handler
+```
+
+### Checksum offload (`VIRTIO_NET_F_CSUM` + `GUEST_CSUM`)
+
+**TX.** The device finishes a checksum the driver leaves partial: the
+virtio-net header says `NEEDS_CSUM`, where the L4 header starts
+(`csum_start`) and where the field sits (`csum_offset`), and the field must
+already hold the one's-complement sum of the pseudo-header, folded, NOT
+complemented (virtio 1.2 §5.1.6.2). The stack is what writes that field, so
+it has to know. The ops table does not change; instead `netdev.c` carries a
+driver-set flag: `netdev_set_tx_csum_offload(1)` at bring-up when CSUM was
+negotiated, read by `net_tcp.c` through `netdev_tx_csum_offload()`. When set,
+`tcp_xmit` stores `tcp_pseudo_sum()` (a dozen bytes) instead of `tcp_cksum()`
+over the whole segment, and `virtio_net_transmit()` marks every IPv4/TCP
+frame `NEEDS_CSUM` with `csum_start = 14 + IHL*4`, `csum_offset = 16`. Both
+halves key off the same negotiation, so a frame is never half-done: a full
+checksum re-summed by the device would come out wrong (the field would end
+up holding the pseudo-header sum alone), which is why only TCP, the one
+protocol the stack checksums, is marked. UDP keeps its legal zero checksum;
+ICMP keeps its software sum.
+
+**RX.** With `GUEST_CSUM` the device may hand over a frame it verified
+(`DATA_VALID`) or one it did NOT finish (`NEEDS_CSUM`, a partial sum from the
+host's own offload path, §5.1.6.4.1). `rx_drain` finishes the latter in
+place (`rx_finish_csum`) before the stack sees it, and remembers the former
+per software-queue slot. When `virtio_net_receive()` returns such a frame it
+calls `netdev_rx_csum_valid_set(1)`; `netdev_receive()` clears the flag
+before every call, so the stack's `tcp_rx` skips `tcp_cksum` only for THAT
+frame and only when the NIC spoke up (`netdev_rx_csum_valid()`). Every other
+driver stays silent and gets software verification exactly as before.
+
+**Where it is offered.** QEMU withholds `CSUM`/`GUEST_CSUM` when the backend
+has no virtio-net header, and SLIRP (`-netdev user`) has none, so on
+user-net the driver reports `csum: not-offered` and the software path runs.
+A tap backend has the header, and there `csum: negotiated` is real: the host
+kernel completes our TX sums. That is the `ci-smoke-net-virtio-tap` gate.
+
+### Merged RX buffers (`VIRTIO_NET_F_MRG_RXBUF`)
+
+A received frame may span several RX descriptors; `num_buffers` in the
+header of the first says how many consecutive used-ring entries belong to it
+(§5.1.6.4). The device publishes all of them with one `used->idx` bump, so a
+count that reaches past `idx` is malformed: what is there is recycled, the
+frame dropped. With MRG_RXBUF negotiated the driver posts 1 KiB chunks
+instead of 1612-byte whole-frame buffers (64 KiB of RX memory instead of
+100 KiB): an ACK costs one chunk, a full-size segment two, and the merge
+path runs on every data frame rather than never. Without it (not offered,
+or `nofeat=mrgrx`) the buffers are whole-frame and `num_buffers` is ignored.
+
+### MSI-X on virtio-pci
+
+`kernel/src/pci_msix.c` is the minimal MSI-X the issue asked for: find
+capability 0x11, map the table BAR (`pci_bar_mem_base()`, now shared with
+the virtio-pci capability windows), program `count` entries at the boot CPU's
+local APIC with IDT vectors `MSIX_VECTOR_BASE + i` (64..67), set the enable
+bit, set INTx-disable in the PCI command register (`pci_msix_setup()`). An
+MSI is a write to the local APIC, which firmware leaves software-disabled, so
+`pci_msix_lapic_enable()` maps `0xFEE00000`, sets the spurious-vector
+register's enable bit (vector 255, which has a stub), keeps LINT0 as the
+ExtINT path the 8259 already delivers through (timer, keyboard, console and
+every INTx device are untouched) and zeroes TPR. Handlers on MSI vectors end
+with `pci_msix_eoi()`, the APIC's EOI; the 8259 never sees these.
+
+The transport grew one optional op, `msix_enable(t, queues)` (NULL on
+virtio-mmio): the pci transport asks `pci_msix_setup` for `queues + 1`
+vectors, makes vector 0 the config vector, and `queue_setup` stamps queue q
+with vector `1 + q`, reading it back (a device may refuse with
+`NO_VECTOR`). virtio-net registers three handlers: config (EOI only), RX
+(`rx_drain`), TX (EOI only: TX is polled, and the TX avail ring now sets
+`VRING_AVAIL_F_NO_INTERRUPT` so the device does not bother). INTx stays the
+fallback whenever the op is NULL, the capability is missing, or
+`nofeat=msix`; `virtio_net_irq()` and the PIC line are unchanged for it.
+
+Because `receive()` falls back to polling the used ring, an MSI-X that was
+"negotiated" but never fires would still pass the fetch gates. So the RX
+handler logs `first MSI-X rx interrupt` once, and the gates assert it when
+msix is on and assert its absence when msix is off.
+
+### Gates and negative controls (ADR-0016)
+
+- `ci-smoke-net-virtio` (user-net): the existing ARP/DHCP/DNS/HTTP proof,
+  plus `mrgrx: negotiated`, `msix: negotiated`, `interrupts: MSI-X`, the
+  first-interrupt line, `csum: not-offered`, and `ci-smoke-http-big`: a 64 KiB
+  body (full MSS segments, so every data frame is merged). A kernel that
+  ignores `num_buffers` truncates each segment and never reaches the byte
+  count; a kernel whose MSI-X entries stay masked still fetches (polling)
+  but never logs the first interrupt.
+- `ci-smoke-net-virtio-nofeat`: the same with `virtio_net.nofeat=csum,mrgrx,msix`;
+  asserts `off-by-cmdline` per feature, `interrupts: INTx`, no MSI-X line.
+- `ci-smoke-net-virtio-tap`: a host tap (`sudo ip tuntap`, static guest
+  `ip=10.0.3.2`), server bound to the tap's host side; asserts
+  `csum: negotiated` and the 64 KiB fetch. A kernel whose stack leaves
+  partial sums while the driver fails to mark `NEEDS_CSUM` puts wrong TCP
+  checksums on the wire; the host drops them and the fetch never gets a 200.
+
+Public functions added: `virtio_net_set_nofeat`, `netdev_set_tx_csum_offload`,
+`netdev_tx_csum_offload`, `netdev_rx_csum_valid_set`, `netdev_rx_csum_valid`,
+`pci_bar_mem_base`, `pci_msix_setup`, `pci_msix_lapic_enable`, `pci_msix_eoi`.
 
 ## modbusd: a Modbus/TCP agent that refuses control writes (stage 4 of #235)
 

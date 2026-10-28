@@ -42,4 +42,9 @@ void pci_enable_bus_master_io(const pci_device_t *dev);
  * through memory BARs (virtio-pci modern). */
 void pci_enable_bus_master_mem(const pci_device_t *dev);
 
+/* Physical base of memory BAR `bar` (0..5, 64-bit BARs decoded), or 0 for
+ * an I/O-space BAR or a bad index. Shared by virtio-pci's capability
+ * windows and the MSI-X table (#253). */
+uint64_t pci_bar_mem_base(const pci_device_t *dev, uint8_t bar);
+
 #endif /* PCI_H */

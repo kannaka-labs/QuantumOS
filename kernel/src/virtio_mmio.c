@@ -190,6 +190,7 @@ int virtio_mmio_probe(uint32_t device_id, virtio_transport_t *out) {
         out->notify = m_notify;
         out->isr_ack = m_isr_ack;
         out->config_read8 = m_config_read8;
+        out->msix_enable = 0; /* virtio-mmio has one line and no MSI-X */
         out->irq = slots[s].irq;
         return 1;
     }

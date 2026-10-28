@@ -118,7 +118,7 @@ OBJECTS = $(KERNEL_SOURCES:$(KERNEL_DIR)/src/%.c=$(BUILD_DIR)/%.o) \
 -include $(OBJECTS:.o=.d)
 
 # Targets
-.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress ci-smoke-egress-escape ci-smoke-net-e1000
+.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress ci-smoke-egress-escape ci-smoke-net-e1000 ci-smoke-net-virtio-nofeat ci-smoke-http-big ci-smoke-net-virtio-tap
 
 all: kernel
 
@@ -1820,6 +1820,119 @@ ci-smoke-net-virtio: kernel
 		echo "ERROR: the virtio-blk disk did not bind alongside virtio-net"; exit 1; \
 	fi
 	@echo "SUCCESS: virtio-net and virtio-blk bound together on virtio-pci"
+	@# #253: with every offload allowed, the two QEMU offers on user-net must be
+	@# taken (MRG_RXBUF; MSI-X), and checksum offload must be REPORTED as not
+	@# offered (SLIRP has no vnet header, so QEMU withholds CSUM/GUEST_CSUM; the
+	@# tap gate below is where it is negotiated). An MSI-X that is "negotiated"
+	@# but never fires would be hidden by the polling fallback, so the first
+	@# RX interrupt is asserted too.
+	@for want in "feature csum: not-offered" "feature mrgrx: negotiated" "feature msix: negotiated" \
+		"interrupts: MSI-X" "first MSI-X rx interrupt"; do \
+		if ! grep -qF "NET: virtio-net $$want" /tmp/qemu-http.log 2>/dev/null; then \
+			echo "ERROR: expected 'NET: virtio-net $$want' (#253)"; \
+			grep -F "NET: virtio-net" /tmp/qemu-http.log 2>/dev/null || true; exit 1; \
+		fi; \
+	done
+	@echo "SUCCESS: MRG_RXBUF + MSI-X negotiated, MSI-X delivered RX, csum honestly not-offered (#253)"
+	@# The merged-buffer path is only exercised by frames longer than one 1 KiB
+	@# chunk: fetch a 64 KiB body (full MSS segments), which a kernel that
+	@# ignores num_buffers truncates (TCP checksum failures, no byte count).
+	@$(MAKE) --no-print-directory ci-smoke-http-big NET_NIC=virtio-net-pci
+
+# #253 negative half of the cmdline switch: every offload named in
+# virtio_net.nofeat= must be reported off-by-cmdline, interrupts must fall back
+# to INTx, and the full ARP/DHCP/DNS/HTTP (+ 64 KiB) proof must still pass with
+# the software paths.
+ci-smoke-net-virtio-nofeat: kernel
+	@$(MAKE) --no-print-directory ci-smoke-net ci-smoke-http ci-smoke-http-big NET_NIC=virtio-net-pci \
+		'NET_UP=NET: virtio-net up (pci)' 'NET_APPEND=$(EGRESS_WIDE) virtio_net.nofeat=csum,mrgrx,msix'
+	@for want in "feature csum: not-offered" "feature mrgrx: off-by-cmdline" "feature msix: off-by-cmdline" \
+		"interrupts: INTx"; do \
+		if ! grep -qF "NET: virtio-net $$want" /tmp/qemu-http.log 2>/dev/null; then \
+			echo "ERROR: expected 'NET: virtio-net $$want' (#253 nofeat)"; \
+			grep -F "NET: virtio-net" /tmp/qemu-http.log 2>/dev/null || true; exit 1; \
+		fi; \
+	done
+	@if grep -qF "first MSI-X rx interrupt" /tmp/qemu-http.log 2>/dev/null; then \
+		echo "ERROR: an MSI-X interrupt arrived with msix switched off"; exit 1; \
+	fi
+	@echo "SUCCESS: nofeat=csum,mrgrx,msix turned every offload off and the stack still works (#253)"
+
+# A 64 KiB body from the loopback server: the fetch that makes full-size
+# segments (and so merged RX buffers, #253) happen. Separate from
+# ci-smoke-http so the small-page gate keeps its exact byte expectations.
+HTTP_BIG_BYTES ?= 65536
+ci-smoke-http-big: kernel
+	@echo "=== QuantumOS TCP Client Smoke Test ($(HTTP_BIG_BYTES)-byte fetch, $(NET_NIC)) ==="
+	@set -e; \
+	 mkdir -p /tmp/qos-httpbig; \
+	 head -c $(HTTP_BIG_BYTES) /dev/zero | tr '\0' 'Q' > /tmp/qos-httpbig/index.html; \
+	 ( cd /tmp/qos-httpbig && python3 -m http.server 18083 --bind 127.0.0.1 ) >/tmp/qos-httpbig.log 2>&1 & \
+	 HPID=$$!; \
+	 trap 'kill $$HPID 2>/dev/null || true' EXIT; \
+	 ok=0; for i in $$(seq 1 50); do if curl -s -o /dev/null http://127.0.0.1:18083/; then ok=1; break; fi; sleep 0.2; done; \
+	 [ $$ok = 1 ] || { echo "ERROR: loopback httpd never came up"; cat /tmp/qos-httpbig.log 2>/dev/null || true; exit 1; }; \
+	 ( sleep 6; printf 'http 10.0.2.2 18083\n'; sleep 24 ) | timeout 32s qemu-system-x86_64 \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "$(NET_APPEND)" \
+		-netdev user,id=n0 -device $(NET_NIC),netdev=n0 $(NET_EXTRA) -serial stdio -m 128M \
+		-display none -no-reboot 2>&1 | tee /tmp/qemu-httpbig.log || true
+	@echo ""
+	@# Status + a byte count of at least the body (headers ride on top).
+	@if ! grep -qE "qsh: http 10.0.2.2 -> HTTP/1\.[01] 200" /tmp/qemu-httpbig.log 2>/dev/null; then \
+		echo "ERROR: big fetch did not get a 200"; cat /tmp/qemu-httpbig.log 2>/dev/null || true; exit 1; \
+	fi
+	@n=$$(grep -oE "qsh: http 10.0.2.2: [0-9]+ bytes received" /tmp/qemu-httpbig.log 2>/dev/null | grep -oE "[0-9]+ bytes" | grep -oE "[0-9]+" | tail -1); \
+	 if [ -z "$$n" ] || [ "$$n" -lt $(HTTP_BIG_BYTES) ]; then \
+		echo "ERROR: big fetch did not deliver $(HTTP_BIG_BYTES) bytes (got '$$n')"; \
+		grep -E "qsh: http|NET:" /tmp/qemu-httpbig.log 2>/dev/null || true; exit 1; \
+	 fi; \
+	 echo "SUCCESS: $$n bytes received for a $(HTTP_BIG_BYTES)-byte body over $(NET_NIC)"
+
+# #253 checksum offload needs a backend with a virtio-net header: QEMU
+# withholds CSUM/GUEST_CSUM on user-net (SLIRP), so this gate gives the guest
+# a host tap (sudo: ip tuntap; the runner has it) with a static address and
+# fetches the 64 KiB body from a server bound to the tap's host side. The
+# guest's TX checksums are then completed by the host from the partial sums
+# the stack leaves, and the host accepting the handshake and the stream IS
+# the proof. The guest's own answer must say csum: negotiated.
+TAP_IF ?= qos0
+TAP_HOST ?= 10.0.3.1
+TAP_GUEST ?= 10.0.3.2
+ci-smoke-net-virtio-tap: kernel
+	@echo "=== QuantumOS virtio-net checksum offload over a host tap (#253) ==="
+	@set -e; \
+	 if ! ip link show $(TAP_IF) >/dev/null 2>&1; then \
+	   sudo -n ip tuntap add dev $(TAP_IF) mode tap user $$(id -un) || { echo "ERROR: cannot create tap $(TAP_IF) (needs sudo)"; exit 1; }; \
+	   sudo -n ip addr add $(TAP_HOST)/24 dev $(TAP_IF); \
+	 fi; \
+	 sudo -n ip link set $(TAP_IF) up; \
+	 mkdir -p /tmp/qos-httptap; \
+	 head -c $(HTTP_BIG_BYTES) /dev/zero | tr '\0' 'Q' > /tmp/qos-httptap/index.html; \
+	 ( cd /tmp/qos-httptap && python3 -m http.server 18084 --bind $(TAP_HOST) ) >/tmp/qos-httptap.log 2>&1 & \
+	 HPID=$$!; \
+	 trap 'kill $$HPID 2>/dev/null || true' EXIT; \
+	 ok=0; for i in $$(seq 1 50); do if curl -s -o /dev/null http://$(TAP_HOST):18084/; then ok=1; break; fi; sleep 0.2; done; \
+	 [ $$ok = 1 ] || { echo "ERROR: tap-side httpd never came up"; cat /tmp/qos-httptap.log 2>/dev/null || true; exit 1; }; \
+	 ( sleep 6; printf 'http $(TAP_HOST) 18084\n'; sleep 24 ) | timeout 32s qemu-system-x86_64 \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "ip=$(TAP_GUEST) $(NET_APPEND)" \
+		-netdev tap,id=n0,ifname=$(TAP_IF),script=no,downscript=no -device virtio-net-pci,netdev=n0 \
+		-serial stdio -m 128M -display none -no-reboot 2>&1 | tee /tmp/qemu-nettap.log || true
+	@echo ""
+	@for want in "feature csum: negotiated" "feature mrgrx: negotiated" "feature msix: negotiated" "first MSI-X rx interrupt"; do \
+		if ! grep -qF "NET: virtio-net $$want" /tmp/qemu-nettap.log 2>/dev/null; then \
+			echo "ERROR: expected 'NET: virtio-net $$want' over tap (#253)"; \
+			grep -F "NET: virtio-net" /tmp/qemu-nettap.log 2>/dev/null || true; exit 1; \
+		fi; \
+	done
+	@if ! grep -qE "qsh: http $(TAP_HOST) -> HTTP/1\.[01] 200" /tmp/qemu-nettap.log 2>/dev/null; then \
+		echo "ERROR: fetch over tap did not get a 200 (TX checksums rejected by the host?)"; \
+		grep -E "qsh: http|NET:" /tmp/qemu-nettap.log 2>/dev/null || true; exit 1; \
+	fi
+	@n=$$(grep -oE "qsh: http $(TAP_HOST): [0-9]+ bytes received" /tmp/qemu-nettap.log 2>/dev/null | grep -oE "[0-9]+ bytes" | grep -oE "[0-9]+" | tail -1); \
+	 if [ -z "$$n" ] || [ "$$n" -lt $(HTTP_BIG_BYTES) ]; then \
+		echo "ERROR: fetch over tap did not deliver $(HTTP_BIG_BYTES) bytes (got '$$n')"; exit 1; \
+	 fi; \
+	 echo "SUCCESS: csum negotiated over tap; $$n bytes fetched with device-completed TX checksums (#253)"
 
 # CI Smoke Test (e1000, #252): the same ARP/DHCP/ping/DNS and HTTP-200 gates
 # as ci-smoke-net + ci-smoke-http, driven through the Intel 82540EM

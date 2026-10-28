@@ -34,6 +34,10 @@ static const netdev_ops_t *const drivers[] = {
 
 static const netdev_ops_t *bound; /* NULL until a driver reports present */
 
+/* Checksum offload side channel (#253; see netdev.h). */
+static int tx_csum_offload;
+static int rx_csum_valid; /* for the frame netdev_receive last returned */
+
 int netdev_init(void) {
     for (int i = 0; i < DRIVER_COUNT; i++) {
         const netdev_ops_t *d = drivers[i];
@@ -88,6 +92,7 @@ uint8_t netdev_irq_line(void) {
 }
 
 uint16_t netdev_receive(uint8_t *buf, uint16_t max) {
+    rx_csum_valid = 0; /* the driver asserts it per frame, or not at all */
     uint16_t n = (bound && bound->receive) ? bound->receive(buf, max) : 0;
     if (n == 0) {
         return 0;
@@ -99,4 +104,20 @@ uint16_t netdev_receive(uint8_t *buf, uint16_t max) {
     }
     egress_account(n);
     return n;
+}
+
+void netdev_set_tx_csum_offload(int on) {
+    tx_csum_offload = on ? 1 : 0;
+}
+
+int netdev_tx_csum_offload(void) {
+    return tx_csum_offload;
+}
+
+void netdev_rx_csum_valid_set(int valid) {
+    rx_csum_valid = valid ? 1 : 0;
+}
+
+int netdev_rx_csum_valid(void) {
+    return rx_csum_valid;
 }

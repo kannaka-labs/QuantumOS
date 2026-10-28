@@ -985,6 +985,12 @@ static void parse_boot_cmdline(uint32_t info_addr) {
     if (virtio_mmio_device_count() > 0) {
         boot_log("VIRTIO: virtio-mmio device(s) declared on cmdline");
     }
+    /* virtio_net.nofeat=csum,mrgrx,msix (#253): leave named offloads out of the
+     * feature negotiation, so a regression bisects without a rebuild. */
+    static char nofeat[64];
+    if (cmdline_get_value(cmd, "virtio_net.nofeat=", nofeat, (int)sizeof(nofeat))) {
+        virtio_net_set_nofeat(nofeat);
+    }
 
     static const char key[] = "qseed=";
     for (const char *p = cmd; *p; p++) {

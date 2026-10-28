@@ -44,6 +44,12 @@ void virtio_net_irq(void);
 uint8_t virtio_net_irq_line(void);
 uint16_t virtio_net_receive(uint8_t *buf, uint16_t max);
 
+/* `virtio_net.nofeat=csum,mrgrx,msix` (#253): name the offloads to leave
+ * out of feature negotiation. Call BEFORE netdev_init(), from the cmdline
+ * parser; each word is logged as off-by-cmdline at bring-up. Unknown
+ * words are logged and ignored. */
+void virtio_net_set_nofeat(const char *list);
+
 /* The driver as a netdev; bound by netdev_init() via the probe list. */
 extern const netdev_ops_t virtio_net_netdev;
 
