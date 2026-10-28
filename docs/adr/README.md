@@ -49,6 +49,7 @@ SMP; defer UEFI, a libagent extraction, and a block filesystem — are recorded 
 | [0027](0027-ecosystem-hub.md) | Accepted | One policy-gated MCP endpoint for the ecosystem (allow / ask / deny per tool) |
 | [0028](0028-sashiko-review-service.md) | Accepted | Sashiko review as a service the person pays for with their own model key |
 | [0029](0029-vsock-shell-channel.md) | Accepted | A virtio-vsock channel for the shell, with COM1 kept as the log and the fallback |
+| [0030](0030-egress-grant.md) | Proposed | Networking is an egress grant (default off, allowlist, budgets, receipt), not a side effect of a NIC |
 
 ## Sequencing of the next phases
 
