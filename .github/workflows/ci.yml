@@ -845,8 +845,12 @@ jobs:
       run: make ci-smoke-net
     - name: Fetch a web page over the ring-3 TCP client (epic #82)
       run: make ci-smoke-http
-    - name: The same ARP/DHCP/DNS/HTTP gates through virtio-net-pci (ADR-0024)
+    - name: The same ARP/DHCP/DNS/HTTP gates through virtio-net-pci (ADR-0024), offloads on (#253)
       run: make ci-smoke-net-virtio
+    - name: virtio-net with every offload switched off from the cmdline (virtio_net.nofeat=, #253)
+      run: make ci-smoke-net-virtio-nofeat
+    - name: virtio-net checksum offload negotiated over a host tap (#253; sudo for the tap)
+      run: make ci-smoke-net-virtio-tap
     - name: Fetch the live status page FROM QuantumOS (TCP server + httpd, epic #98)
       run: make ci-smoke-httpd
     - name: Two guests exchange UDP over a raw L2 (static IP + ARP responder, epic #97)
