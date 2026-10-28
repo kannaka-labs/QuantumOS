@@ -1975,14 +1975,14 @@ ci-smoke-fieldsync: kernel
 	@rm -f /tmp/qos-fs-a.log /tmp/qos-fs-b.log; \
 	 ( sleep 30 ) | timeout 34s qemu-system-x86_64 \
 		-kernel $(BUILD_DIR)/kernel.elf32 \
-		-append "ip=10.0.0.1 peer=10.0.0.2 qseed=1111111111111111" \
+		-append "ip=10.0.0.1 peer=10.0.0.2 qseed=1111111111111111 $(EGRESS_WIDE)" \
 		-netdev socket,id=n0,udp=127.0.0.1:7811,localaddr=127.0.0.1:7810 \
 		-device rtl8139,netdev=n0,mac=52:54:00:00:97:01 \
 		-serial stdio -m 128M -display none -no-reboot > /tmp/qos-fs-a.log 2>&1 & \
 	 APID=$$!; \
 	 ( sleep 30 ) | timeout 34s qemu-system-x86_64 \
 		-kernel $(BUILD_DIR)/kernel.elf32 \
-		-append "ip=10.0.0.2 peer=10.0.0.1 qseed=8888888888888888" \
+		-append "ip=10.0.0.2 peer=10.0.0.1 qseed=8888888888888888 $(EGRESS_WIDE)" \
 		-netdev socket,id=n0,udp=127.0.0.1:7810,localaddr=127.0.0.1:7811 \
 		-device rtl8139,netdev=n0,mac=52:54:00:00:97:02 \
 		-serial stdio -m 128M -display none -no-reboot > /tmp/qos-fs-b.log 2>&1 & \
