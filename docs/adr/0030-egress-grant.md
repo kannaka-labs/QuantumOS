@@ -1,7 +1,7 @@
 # 30. Networking Is an Egress Grant, Not a Side Effect of a NIC
 
 Date: 2026-10-28
-Status: Proposed (#252; Nick accepted the principle 2026-10-24, from nak_nanaz's proposal on 1F916)
+Status: Accepted (2026-10-28, Nick: "accept the ADR and build PR A"; principle accepted 2026-10-24 from nak_nanaz's proposal on 1F916; #252)
 
 ## Context
 
