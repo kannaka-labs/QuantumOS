@@ -118,7 +118,7 @@ OBJECTS = $(KERNEL_SOURCES:$(KERNEL_DIR)/src/%.c=$(BUILD_DIR)/%.o) \
 -include $(OBJECTS:.o=.d)
 
 # Targets
-.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress ci-smoke-egress-escape ci-smoke-net-e1000 ci-smoke-net-virtio-nofeat ci-smoke-http-big ci-smoke-net-virtio-tap
+.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress ci-smoke-egress-escape ci-smoke-net-e1000 ci-smoke-net-virtio-nofeat ci-smoke-http-big ci-smoke-net-virtio-tap ci-smoke-tcp-put
 
 all: kernel
 
@@ -1838,6 +1838,8 @@ ci-smoke-net-virtio: kernel
 	@# chunk: fetch a 64 KiB body (full MSS segments), which a kernel that
 	@# ignores num_buffers truncates (TCP checksum failures, no byte count).
 	@$(MAKE) --no-print-directory ci-smoke-http-big NET_NIC=virtio-net-pci
+	@# #331: the windowed sender's burst TX through the same virtqueue.
+	@$(MAKE) --no-print-directory ci-smoke-tcp-put NET_NIC=virtio-net-pci
 
 # #253 negative half of the cmdline switch: every offload named in
 # virtio_net.nofeat= must be reported off-by-cmdline, interrupts must fall back
@@ -1905,6 +1907,58 @@ ci-smoke-http-big: kernel
 		echo "ERROR: the virtio-net RX software queue overflowed during the fetch (#329)"; exit 1; \
 	fi
 
+# #331 send side: the guest pushes TCP_PUT_BYTES of a checked pattern to a host
+# sink (scripts/tcp_sink.py verifies every byte's offset, so a windowed sender
+# that reorders, duplicates or drops fails on content) and prints the time until
+# every byte is ACKNOWLEDGED (the close completes), by the guest's clock. The
+# stop-and-wait sender this replaced took 443 ms per 1460-byte segment (64 KiB in
+# 19.95 s; 112 KB of this upload in 30 s). The windowed one measures 2.9-3.6 s
+# here across rtl8139 / virtio / tap (debain2, 10 runs each, sd < 50 ms), paced
+# by scheduler turns per 64 KiB ring-full rather than by CPU — so the floor is
+# stable on a slow TCG runner and 6 s leaves a 2x margin.
+TCP_PUT_BYTES ?= 262144
+TCP_PUT_MS ?= 6000
+ci-smoke-tcp-put: kernel
+	@echo "=== QuantumOS TCP Send Smoke Test ($(TCP_PUT_BYTES)-byte upload, $(NET_NIC)) ==="
+	@set -e; \
+	 rm -f /tmp/qos-tcpput-sink.log /tmp/qemu-tcpput.log; \
+	 python3 scripts/tcp_sink.py --bind 127.0.0.1 --port 18085 --bytes $(TCP_PUT_BYTES) --timeout 60 \
+	   > /tmp/qos-tcpput-sink.log 2>&1 & \
+	 SPID=$$!; \
+	 trap 'kill $$SPID 2>/dev/null || true' EXIT; \
+	 ok=0; for i in $$(seq 1 50); do if grep -q "SINK: listening" /tmp/qos-tcpput-sink.log 2>/dev/null; then ok=1; break; fi; sleep 0.2; done; \
+	 [ $$ok = 1 ] || { echo "ERROR: the host sink never came up"; cat /tmp/qos-tcpput-sink.log 2>/dev/null || true; exit 1; }; \
+	 ( sleep 6; printf 'tcpput 10.0.2.2 18085 $(TCP_PUT_BYTES)\n'; sleep 30 ) | timeout 38s qemu-system-x86_64 \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "$(NET_APPEND)" \
+		-netdev user,id=n0 -device $(NET_NIC),netdev=n0 $(NET_EXTRA) -serial stdio -m 128M \
+		-display none -no-reboot 2>&1 | tee /tmp/qemu-tcpput.log || true; \
+	 wait $$SPID || true
+	@echo ""
+	@# The sink's verdict: every byte, in order, exactly once.
+	@if ! grep -qE "SINK: [0-9]+ bytes ok" /tmp/qos-tcpput-sink.log 2>/dev/null; then \
+		echo "ERROR: the host sink did not accept the $(TCP_PUT_BYTES)-byte stream (#331)"; \
+		cat /tmp/qos-tcpput-sink.log 2>/dev/null || true; \
+		grep -E "qsh: tcpput|NET:" /tmp/qemu-tcpput.log 2>/dev/null || true; exit 1; \
+	fi
+	@# The guest's verdict: every byte acknowledged, and fast enough.
+	@n=$$(grep -oE "qsh: tcpput 10.0.2.2:18085: [0-9]+ bytes sent in [0-9]+ ms" /tmp/qemu-tcpput.log 2>/dev/null | tail -1); \
+	 if [ -z "$$n" ]; then \
+		echo "ERROR: the guest did not report the upload acknowledged (qsh: tcpput ... bytes sent in N ms)"; \
+		grep -E "qsh: tcpput|NET:" /tmp/qemu-tcpput.log 2>/dev/null || true; exit 1; \
+	 fi; \
+	 bytes=$$(printf '%s' "$$n" | grep -oE "[0-9]+ bytes" | grep -oE "[0-9]+"); \
+	 ms=$$(printf '%s' "$$n" | grep -oE "[0-9]+ ms" | grep -oE "[0-9]+"); \
+	 if [ "$$bytes" != "$(TCP_PUT_BYTES)" ]; then \
+		echo "ERROR: guest sent $$bytes bytes, expected $(TCP_PUT_BYTES)"; exit 1; \
+	 fi; \
+	 if [ "$$ms" -gt $(TCP_PUT_MS) ]; then \
+		echo "ERROR: $(TCP_PUT_BYTES)-byte upload took $$ms ms (> $(TCP_PUT_MS) ms, #331 throughput floor)"; exit 1; \
+	 fi; \
+	 echo "SUCCESS: $(TCP_PUT_BYTES)-byte upload acknowledged in $$ms ms over $(NET_NIC) (floor $(TCP_PUT_MS) ms, #331); $$(grep -oE 'SINK: [0-9]+ bytes ok in [0-9]+ ms' /tmp/qos-tcpput-sink.log)"
+	@if grep -qF "RX software queue full" /tmp/qemu-tcpput.log 2>/dev/null; then \
+		echo "ERROR: the virtio-net RX software queue overflowed during the upload (#329)"; exit 1; \
+	fi
+
 # #253 checksum offload needs a backend with a virtio-net header: QEMU
 # withholds CSUM/GUEST_CSUM on user-net (SLIRP), so this gate gives the guest
 # a host tap (sudo: ip tuntap; the runner has it) with a static address and
@@ -1930,10 +1984,18 @@ ci-smoke-net-virtio-tap: kernel
 	 trap 'kill $$HPID 2>/dev/null || true' EXIT; \
 	 ok=0; for i in $$(seq 1 50); do if curl -s -o /dev/null http://$(TAP_HOST):18084/; then ok=1; break; fi; sleep 0.2; done; \
 	 [ $$ok = 1 ] || { echo "ERROR: tap-side httpd never came up"; cat /tmp/qos-httptap.log 2>/dev/null || true; exit 1; }; \
-	 ( sleep 6; printf 'http $(TAP_HOST) 18084\n'; sleep 24 ) | timeout 32s qemu-system-x86_64 \
+	 rm -f /tmp/qos-tcpput-tap.log; \
+	 python3 scripts/tcp_sink.py --bind $(TAP_HOST) --port 18085 --bytes $(TCP_PUT_BYTES) --timeout 70 \
+	   > /tmp/qos-tcpput-tap.log 2>&1 & \
+	 SPID=$$!; \
+	 trap 'kill $$HPID $$SPID 2>/dev/null || true' EXIT; \
+	 ok=0; for i in $$(seq 1 50); do if grep -q "SINK: listening" /tmp/qos-tcpput-tap.log 2>/dev/null; then ok=1; break; fi; sleep 0.2; done; \
+	 [ $$ok = 1 ] || { echo "ERROR: the tap-side sink never came up"; cat /tmp/qos-tcpput-tap.log 2>/dev/null || true; exit 1; }; \
+	 ( sleep 6; printf 'http $(TAP_HOST) 18084\n'; sleep 12; printf 'tcpput $(TAP_HOST) 18085 $(TCP_PUT_BYTES)\n'; sleep 24 ) | timeout 44s qemu-system-x86_64 \
 		-kernel $(BUILD_DIR)/kernel.elf32 -append "ip=$(TAP_GUEST) $(NET_APPEND)" \
 		-netdev tap,id=n0,ifname=$(TAP_IF),script=no,downscript=no -device virtio-net-pci,netdev=n0 \
-		-serial stdio -m 128M -display none -no-reboot 2>&1 | tee /tmp/qemu-nettap.log || true
+		-serial stdio -m 128M -display none -no-reboot 2>&1 | tee /tmp/qemu-nettap.log || true; \
+	 wait $$SPID || true
 	@echo ""
 	@for want in "feature csum: negotiated" "feature mrgrx: negotiated" "feature msix: negotiated" "first MSI-X rx interrupt"; do \
 		if ! grep -qF "NET: virtio-net $$want" /tmp/qemu-nettap.log 2>/dev/null; then \
@@ -1958,6 +2020,20 @@ ci-smoke-net-virtio-tap: kernel
 	@if grep -qF "RX software queue full" /tmp/qemu-nettap.log 2>/dev/null; then \
 		echo "ERROR: the virtio-net RX software queue overflowed during the tap fetch (#329)"; exit 1; \
 	fi
+	@# #331: the upload over tap — the windowed sender's bursts leave partial
+	@# checksums for the host to complete (CSUM negotiated), and the sink's
+	@# byte-exact verdict is the proof the host accepted every one of them.
+	@if ! grep -qE "SINK: [0-9]+ bytes ok" /tmp/qos-tcpput-tap.log 2>/dev/null; then \
+		echo "ERROR: the tap-side sink did not accept the $(TCP_PUT_BYTES)-byte upload (#331)"; \
+		cat /tmp/qos-tcpput-tap.log 2>/dev/null || true; \
+		grep -E "qsh: tcpput|NET:" /tmp/qemu-nettap.log 2>/dev/null || true; exit 1; \
+	fi
+	@ms=$$(grep -oE "qsh: tcpput $(TAP_HOST):18085: $(TCP_PUT_BYTES) bytes sent in [0-9]+ ms" /tmp/qemu-nettap.log 2>/dev/null | grep -oE "[0-9]+ ms" | grep -oE "[0-9]+" | tail -1); \
+	 if [ -z "$$ms" ] || [ "$$ms" -gt $(TCP_PUT_MS) ]; then \
+		echo "ERROR: upload over tap took '$$ms' ms (> $(TCP_PUT_MS) ms, or never acknowledged; #331)"; \
+		grep -E "qsh: tcpput" /tmp/qemu-nettap.log 2>/dev/null || true; exit 1; \
+	 fi; \
+	 echo "SUCCESS: $(TCP_PUT_BYTES)-byte upload over tap acknowledged in $$ms ms with device-completed TX checksums (floor $(TCP_PUT_MS) ms, #331)"
 
 # CI Smoke Test (e1000, #252): the same ARP/DHCP/ping/DNS and HTTP-200 gates
 # as ci-smoke-net + ci-smoke-http, driven through the Intel 82540EM

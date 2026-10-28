@@ -311,8 +311,30 @@ records the findings). The load-bearing pieces the attack forced:
   frame dropped` once if that ever happens again; `ci-smoke-http-big` and
   the tap gate assert the line is absent and hold the 64 KiB fetch to
   `HTTP_BIG_MS` (2500 ms by the guest's own clock, printed by `qsh http`
-  as `... bytes received in N ms`). Still stop-and-wait on the send side:
-  one outstanding segment per round trip is the next pipe to widen.
+  as `... bytes received in N ms`).
+- **A send window (#331).** The send side was stop-and-wait: one staged
+  segment of at most one MSS, `TCP_SEND` answering `WOULDBLOCK` until that
+  segment was *acknowledged*, and the peer's advertised window never read
+  — a scheduler round trip per 1460 bytes, i.e. the same ~15 KB/s floor
+  #329 removed downstream. Now each connection has a 64 KiB send ring
+  (`TCP_TX_BUF`, the most a peer without window scaling can accept);
+  `TCP_SEND` copies what fits and returns the count (partial writes are
+  normal, `WOULDBLOCK` only when the ring is full, up to 8 KiB per call),
+  and the net thread keeps `min(peer window, cwnd)` in flight, one MSS per
+  segment. Congestion control is minimal and stated: slow start from
+  10 MSS to a threshold, linear growth above it, back to one segment on a
+  retransmission timeout (RFC 5681 §3.1, go-back-N from `snd_una`), fast
+  retransmit on three duplicate ACKs with NewReno partial-ACK recovery
+  (§3.2), sender-side silly-window avoidance (RFC 1122 §4.2.3.4) and a
+  one-byte zero-window probe every RTO (§4.2.2.17). The RTO is still the
+  fixed 500 ms — no RTT estimator, no SACK. `qsh tcpput <ip> <port>
+  <bytes>` is the send-side twin of `http`: it pushes a byte-exact pattern
+  and prints `... bytes sent in N ms`, the clock running until the close
+  completes (every byte and the FIN acknowledged); `scripts/tcp_sink.py`
+  on the host verifies every byte's offset, so a sender that reorders,
+  duplicates or drops fails on content. `ci-smoke-tcp-put` (and the same
+  step inside the virtio and tap gates) holds a 256 KiB upload to
+  `TCP_PUT_MS`. Measured numbers are in #331.
 - **A terminal ERROR + net-thread-only retire.** A syscall never resets a
   net-thread-owned field; ERROR is sticky until an abort retires the TCB
   to a pristine CLOSED (the UDP three-state lesson), and the ephemeral
@@ -533,11 +555,13 @@ couples `ghostd`'s *living* attractor field; the kernel holographic field
   `TCP_MAX_LISTENERS` (4) passive-open slots on distinct ports (epic #98,
   issue #238), one connection per pid; **each slot still carries one
   connection at a time** and accepts serially (a SYN while that slot is busy
-  is dropped and the peer's retry lands after the re-listen). Stop-and-wait send (one outstanding
-  segment ≤ MSS), in-order receive only (out-of-order segments are
-  dropped; the peer retransmits), no congestion control, a shortened
-  ~1 s TIME_WAIT (not 2 MSL), and no TLS. A complete, honest
-  fetch-a-page client and serve-a-page server — not a general stack.
+  is dropped and the peer's retry lands after the re-listen). Windowed send
+  from a 64 KiB ring with slow start, fast retransmit and go-back-N on a
+  fixed 500 ms RTO (#331: no RTT estimator, no SACK, no window scaling),
+  in-order receive only (out-of-order segments are dropped; the peer
+  retransmits), a shortened ~1 s TIME_WAIT (not 2 MSL), and no TLS. A
+  complete, honest fetch-a-page client and serve-a-page server — not a
+  general stack.
 - UDP: 4 sockets, 4-deep rings, 1472-byte datagrams (no IP
   fragmentation), no UDP TX checksum (0 is legal for IPv4), no
   broadcast/multicast send.

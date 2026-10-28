@@ -984,7 +984,11 @@ static uint64_t sys_udp(uint32_t pid, uint64_t op, uint64_t req_ptr) {
 /* SYS_TCP (epic #82): ring-3 TCP client. Same request-struct ABI shape as
  * SYS_UDP (the `sock`/`ip`/`port`/`len`/`buf` layout); the single
  * connection means `sock` is unused. */
-#define TCP_SEND_MAX 1460 /* == TCP_MSS */
+/* Per-call copy bound for SEND/RECV. Was one MSS while the stack staged one
+ * segment at a time; with the 64 KiB send ring (#331) a program fills the
+ * ring in a handful of calls instead of 45. The ring, not this bound, is what
+ * limits how much one scheduler turn can stage. */
+#define TCP_SEND_MAX 8192
 
 static uint64_t tcp_map_err(long r) {
     switch (r) {

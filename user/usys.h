@@ -308,7 +308,9 @@ static inline long udp_(long op, udp_req_t *req) {
  * udp_req_t layout (the single connection per side means the `sock`
  * field is unused).
  *   CONNECT:  in ip/port (dst)          -> 0 connected, -11 connecting
- *   SEND:     in buf, len (<= 1460)      -> bytes accepted, -11 tx busy
+ *   SEND:     in buf, len (<= 8192)      -> bytes accepted (may be fewer
+ *                                           than len: what fit in the 64 KiB
+ *                                           send ring), -11 ring full
  *   RECV:     in buf, len (buf size)     -> byte count, 0 = EOF, -11 empty
  *   CLOSE:    (none)                     -> 0 closed, -11 closing
  *   STATUS:   (none)                     -> 0 established, -11 connecting
