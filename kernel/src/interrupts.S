@@ -55,6 +55,17 @@ ISR_NOERRCODE 31    # Reserved
 # System call entry (int 0x80, gate installed with DPL 3)
 ISR_NOERRCODE 128
 
+# MSI-X vectors (#253): the block MSIX_VECTOR_BASE..+3 in pci_msix.h, one
+# stub each, dispatched through interrupt_handlers[] like a software vector.
+ISR_NOERRCODE 64
+ISR_NOERRCODE 65
+ISR_NOERRCODE 66
+ISR_NOERRCODE 67
+
+# Local APIC spurious vector (#253): set in SVR when the APIC is enabled
+# for MSI-X; must have a gate so a spurious interrupt is a no-op, not a #GP.
+ISR_NOERRCODE 255
+
 # IRQ handlers (32-47)
 .macro IRQ num
 .global irq\num

@@ -5,10 +5,14 @@
  * 0x1041 for net, 0x1042 for block) or its transitional id (0x1000 net,
  * 0x1001 block, confirmed by the subsystem id), walks the vendor capabilities for the common, notify,
  * ISR and device-config structures, maps the memory BARs they live in,
- * and drives the device through them. Interrupts are the legacy INTx line
- * routed by firmware (config offset 0x3C) — MSI-X is left disabled
- * (vectors set to VIRTIO_MSI_NO_VECTOR), matching how every other device
- * in this kernel is wired to the 8259.
+ * and drives the device through them. Interrupts default to the legacy
+ * INTx line routed by firmware (config offset 0x3C), like every other
+ * device in this kernel. A driver may ask for MSI-X instead (#253,
+ * msix_enable): the function's MSI-X table is programmed through
+ * pci_msix.c, the common config's config vector becomes 0 and each queue
+ * set up afterwards gets vector 1 + index; without the capability, or when
+ * the driver never asks, every vector stays VIRTIO_MSI_NO_VECTOR and INTx
+ * is the path.
  *
  * The legacy I/O-BAR register layout is not used even on a transitional
  * device: its modern capabilities are always present and are what we
@@ -22,6 +26,7 @@
 
 #include <kernel/virtio.h>
 #include <kernel/pci.h>
+#include <kernel/pci_msix.h>
 #include <kernel/mmio.h>
 #include <kernel/boot.h>
 
@@ -71,7 +76,9 @@ typedef struct {
     volatile uint8_t *isr;
     volatile uint8_t *devcfg;
     uint16_t notify_off[MAX_QUEUES];
-    uint16_t device; /* PCI device id, so a second probe skips it */
+    uint16_t device;   /* PCI device id, so a second probe skips it */
+    pci_device_t pdev; /* the function, for MSI-X programming */
+    int msix_on;       /* queue_setup stamps vector 1 + index when set */
 } pci_binding_t;
 
 static pci_binding_t bindings[VIRTIO_MAX_BOUND];
@@ -107,22 +114,6 @@ static uint8_t cfg8(const pci_device_t *d, uint8_t off) {
 
 static uint32_t cfg32(const pci_device_t *d, uint8_t off) {
     return pci_config_read32(d->bus, d->slot, d->func, off);
-}
-
-/* Physical base of memory BAR `bar`, or 0 for an I/O BAR / bad index. */
-static uint64_t bar_base(const pci_device_t *d, uint8_t bar) {
-    if (bar > 5) {
-        return 0;
-    }
-    uint32_t lo = cfg32(d, (uint8_t)(0x10 + 4 * bar));
-    if (lo & 1) {
-        return 0; /* I/O-space BAR: the modern structures never need one */
-    }
-    uint64_t base = lo & ~0xFULL;
-    if (((lo >> 1) & 3) == 2 && bar < 5) {
-        base |= (uint64_t)cfg32(d, (uint8_t)(0x10 + 4 * (bar + 1))) << 32;
-    }
-    return base;
 }
 
 /* ---- transport ops ---- */
@@ -162,7 +153,15 @@ static int p_queue_setup(const virtio_transport_t *t, uint16_t index, uint16_t s
         return 0;
     }
     w16(common, C_Q_SIZE, size); /* a smaller power of two is allowed */
-    w16(common, C_Q_MSIX_VECTOR, VIRTIO_MSI_NO_VECTOR);
+    /* MSI-X: queue q interrupts on vector 1 + q (0 is the config vector).
+     * The device may refuse a vector by reading back NO_VECTOR (§4.1.5.1.2);
+     * treat that as a failed setup rather than a queue that never fires. */
+    uint16_t vec = B(t)->msix_on ? (uint16_t)(1 + index) : (uint16_t)VIRTIO_MSI_NO_VECTOR;
+    w16(common, C_Q_MSIX_VECTOR, vec);
+    if (r16(common, C_Q_MSIX_VECTOR) != vec) {
+        boot_log("VIRTIO: virtio-pci refused the queue's MSI-X vector");
+        return 0;
+    }
     w32(common, C_Q_DESC, (uint32_t)desc);
     w32(common, C_Q_DESC + 4, (uint32_t)(desc >> 32));
     w32(common, C_Q_DRIVER, (uint32_t)driver);
@@ -191,10 +190,28 @@ static uint8_t p_config_read8(const virtio_transport_t *t, uint32_t off) {
     return r8(B(t)->devcfg, off);
 }
 
+static int p_msix_enable(const virtio_transport_t *t, uint16_t queues) {
+    pci_binding_t *b = B(t);
+    if (b->msix_on || queues == 0 || queues + 1 > MSIX_VECTOR_COUNT) {
+        return 0;
+    }
+    if (!pci_msix_setup(&b->pdev, (uint8_t)(queues + 1))) {
+        return 0; /* no capability / table too small: INTx stays */
+    }
+    b->msix_on = 1;
+    w16(b->common, C_MSIX_CONFIG, 0);
+    if (r16(b->common, C_MSIX_CONFIG) != 0) {
+        /* Only link-status changes ride this vector; the queues still get
+         * theirs in queue_setup, so note it and carry on. */
+        boot_log("VIRTIO: virtio-pci refused the config MSI-X vector");
+    }
+    return 1;
+}
+
 /* Map a capability's window and return its kernel address, or 0. */
 static volatile uint8_t *map_cap(const pci_device_t *d, uint8_t bar, uint32_t offset,
                                  uint32_t length) {
-    uint64_t base = bar_base(d, bar);
+    uint64_t base = pci_bar_mem_base(d, bar);
     if (base == 0 || length == 0) {
         return 0;
     }
@@ -307,6 +324,8 @@ int virtio_pci_probe(uint32_t device_id, virtio_transport_t *out) {
         b->notify_off[q] = 0;
     }
     b->device = d.device;
+    b->pdev = d;
+    b->msix_on = 0;
     binding_count++;
 
     out->name = "pci";
@@ -319,6 +338,7 @@ int virtio_pci_probe(uint32_t device_id, virtio_transport_t *out) {
     out->notify = p_notify;
     out->isr_ack = p_isr_ack;
     out->config_read8 = p_config_read8;
+    out->msix_enable = p_msix_enable;
     out->irq = irq;
     return 1;
 }

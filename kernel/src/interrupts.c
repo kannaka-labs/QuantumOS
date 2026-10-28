@@ -61,6 +61,15 @@ extern void irq13(void); // Math coprocessor
 extern void irq14(void); // Primary ATA
 extern void irq15(void); // Secondary ATA
 
+/* MSI-X vectors (#253; the block pci_msix.h names) and the local APIC's
+ * spurious vector. Dispatched through interrupt_handlers[]; the owning
+ * driver's handler does the APIC EOI (pci_msix_eoi). */
+extern void isr64(void);
+extern void isr65(void);
+extern void isr66(void);
+extern void isr67(void);
+extern void isr255(void);
+
 // Exception handler array
 static void (*exception_handlers[32])(cpu_state_t *state) = {
     divide_error_handler,             // 0
@@ -127,6 +136,15 @@ irq_result_t interrupts_init(void) {
     for (int i = 0; i < 16; i++) {
         idt_set_gate(IRQ_BASE + i, (uint64_t)irq_stubs[i], 0x08, GATE_TYPE_INTERRUPT | DPL_KERNEL);
     }
+
+    // MSI-X block (#253) and the APIC spurious vector: a gate each, so a
+    // message-signalled interrupt lands in interrupt_handler() and a
+    // spurious one is dispatched to nothing (a #GP otherwise).
+    idt_set_gate(64, (uint64_t)isr64, 0x08, GATE_TYPE_INTERRUPT | DPL_KERNEL);
+    idt_set_gate(65, (uint64_t)isr65, 0x08, GATE_TYPE_INTERRUPT | DPL_KERNEL);
+    idt_set_gate(66, (uint64_t)isr66, 0x08, GATE_TYPE_INTERRUPT | DPL_KERNEL);
+    idt_set_gate(67, (uint64_t)isr67, 0x08, GATE_TYPE_INTERRUPT | DPL_KERNEL);
+    idt_set_gate(255, (uint64_t)isr255, 0x08, GATE_TYPE_INTERRUPT | DPL_KERNEL);
 
     // Install IDT
     idt_install();
@@ -251,6 +269,8 @@ void interrupt_handler(cpu_state_t *state) {
     // Handle software interrupts
     if (interrupt_handlers[vector].handler != NULL) {
         interrupt_handlers[vector].handler(state);
+    } else if (vector == 255) {
+        // Local APIC spurious vector (#253): no EOI, nothing to do (SDM §10.9).
     } else {
         boot_log("Unhandled interrupt");
         dump_cpu_state(state);

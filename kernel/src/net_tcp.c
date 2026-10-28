@@ -12,6 +12,7 @@
  */
 
 #include <kernel/net_internal.h>
+#include <kernel/netdev.h>
 #include <kernel/egress.h>
 #include <kernel/interrupts.h> /* timer_get_ticks (TCP timers) */
 
@@ -191,6 +192,23 @@ static uint16_t tcp_cksum(const uint8_t *sip, const uint8_t *dip, const uint8_t 
     return (uint16_t)~sum;
 }
 
+/* The pseudo-header's share of the TCP checksum, folded to 16 bits and
+ * NOT complemented: what a checksum-offloading NIC expects to find in the
+ * checksum field before it adds the segment (#253; virtio-net §5.1.6.2). */
+static uint16_t tcp_pseudo_sum(const uint8_t *sip, const uint8_t *dip, uint16_t seg_len) {
+    uint32_t sum = 0;
+    sum += (uint32_t)((sip[0] << 8) | sip[1]);
+    sum += (uint32_t)((sip[2] << 8) | sip[3]);
+    sum += (uint32_t)((dip[0] << 8) | dip[1]);
+    sum += (uint32_t)((dip[2] << 8) | dip[3]);
+    sum += IP_PROTO_TCP;
+    sum += seg_len;
+    while (sum >> 16) {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    return (uint16_t)sum;
+}
+
 /* Free space in the receive ring = the window we advertise. */
 static uint32_t tcp_rx_free(const tcp_conn_t *c) {
     return TCP_RX_BUF - (c->rx_head - c->rx_tail);
@@ -253,7 +271,16 @@ static void tcp_xmit(tcp_conn_t *c, uint32_t seq, uint8_t flags, const uint8_t *
         tcp[thlen + i] = payload[i];
     }
     uint16_t seg_len = (uint16_t)(thlen + plen);
-    uint16_t csum = tcp_cksum(my_ip, c->rip, tcp, seg_len);
+    uint16_t csum;
+    if (netdev_tx_csum_offload()) {
+        /* The NIC finishes the sum (#253): store the folded pseudo-header
+         * sum, NOT complemented, and skip the walk over the segment. The
+         * device adds the segment from the TCP header on and stores the
+         * complement, which is exactly tcp_cksum's answer. */
+        csum = tcp_pseudo_sum(my_ip, c->rip, seg_len);
+    } else {
+        csum = tcp_cksum(my_ip, c->rip, tcp, seg_len);
+    }
     tcp[16] = (uint8_t)(csum >> 8);
     tcp[17] = (uint8_t)csum;
 
@@ -514,8 +541,10 @@ void tcp_rx_demux(const uint8_t *frame, uint16_t len) {
      * segments (54B) are padded to the 60B Ethernet minimum. */
     uint16_t seg_len = (uint16_t)(total - sizeof(ip_hdr_t));
     const uint8_t *tcp = frame + sizeof(eth_hdr_t) + sizeof(ip_hdr_t);
-    if (tcp_cksum(ip->src, ip->dst, tcp, seg_len) != 0) {
-        return; /* mandatory checksum — SLIRP computes real ones */
+    /* Mandatory checksum — SLIRP computes real ones. Skipped only when the
+     * NIC reported this very frame verified (#253, netdev_rx_csum_valid). */
+    if (!netdev_rx_csum_valid() && tcp_cksum(ip->src, ip->dst, tcp, seg_len) != 0) {
+        return;
     }
     uint8_t doff = (uint8_t)(tcp[12] >> 4);
     if (doff < 5 || (uint16_t)(doff * 4) > seg_len) {
