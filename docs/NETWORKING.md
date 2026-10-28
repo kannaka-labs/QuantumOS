@@ -394,6 +394,8 @@ same code, three translation units plus a shared internal header:
   pointer, and the `netdev_*` forwarders.
 - **`kernel/src/virtio_net.c`** — the virtio-mmio transport and the
   virtio-net device, behind the netdev contract. The NIC Firecracker has.
+- **`kernel/src/e1000.c`** — the Intel 82540EM, behind the same contract
+  (#252). The NIC for hypervisors with neither virtio nor an rtl8139.
 
 The transports keep all their state `static` in their own file, so the
 concurrency invariants (the volatile publish discipline on the UDP tx ring
@@ -514,9 +516,9 @@ couples `ghostd`'s *living* attractor field; the kernel holographic field
 - UDP: 4 sockets, 4-deep rings, 1472-byte datagrams (no IP
   fragmentation), no UDP TX checksum (0 is legal for IPv4), no
   broadcast/multicast send.
-- **Two NIC drivers (virtio-net, rtl8139), IPv4 only.** The probe binds the
-  first one present, so the same kernel image comes up on Firecracker and on
-  QEMU. **The virtio-net driver has not yet been run** — see its section
+- **Three NIC drivers (virtio-net, e1000, rtl8139), IPv4 only.** The probe
+  binds the first one present, so the same kernel image comes up on
+  Firecracker and on QEMU. **The virtio-net driver has not yet been run** — see its section
   below for what that means. The network capability is held by `qsh`,
   `httpd`, and `fieldsyncd` today; one kernel resolve and one TCP connection
   in flight at a time.
@@ -655,6 +657,56 @@ Where it is likeliest wrong, for whoever runs it first: the avail/used ring
 index wrap arithmetic; whether Firecracker wants `QueueNum` written before
 or after the address registers; and whether refusing a `QueueNumMax < 64`
 outright should instead shrink the ring.
+
+## The e1000 driver (`kernel/src/e1000.c`, #252)
+
+The third NIC behind the seam: the Intel 82540EM (`-device e1000` in QEMU,
+PCI `8086:100E`), the emulated NIC on VMware, VirtualBox and most hypervisors
+that offer neither virtio nor an rtl8139, and a real 8254x on real boards.
+It exports `const netdev_ops_t e1000_netdev` (`kernel/include/kernel/e1000.h`)
+and is probed **after** virtio-net and **before** the rtl8139 in
+`kernel/src/netdev.c`. The entry points mirror the rtl8139's one for one:
+`e1000_init` (probe + bring-up), `e1000_present`, `e1000_get_mac`,
+`e1000_transmit`, `e1000_irq`, `e1000_irq_line`, `e1000_receive`.
+
+What differs from the rtl8139 is the hardware model, not the driver's shape:
+
+- **MMIO, not port I/O.** BAR0 is a 128 KB memory window that PCI firmware
+  places in the 3-4 GB hole, above the 1 GB boot identity map, so the probe
+  calls `mmio_identity_map()` (#246) before the first register read. BAR0 is
+  decoded as a 32- or 64-bit memory BAR; an I/O BAR is refused.
+- **Descriptor rings, not a linear buffer.** 32 legacy 16-byte RX
+  descriptors with 2048-byte buffers and 8 TX descriptors, 16-byte aligned
+  from `kmalloc` (VA == physical). Head/tail registers (`RDH`/`RDT`,
+  `TDH`/`TDT`) say who owns what: the IRQ walks the RX ring while the `DD`
+  bit is set, queues each complete (`EOP`, no errors) frame, clears the
+  status and moves `RDT` onto the slot it just consumed. The chip strips the
+  CRC (`RCTL.SECRC`), so the reported length is the frame length.
+- **MAC from the EEPROM.** Words 0-2 are read through `EERD` (START /
+  DONE / ADDR / DATA, the 82540 layout); if DONE never rises the driver
+  falls back to `RAL`/`RAH`, and an all-zero or all-ones result is refused.
+  The address is written back to receive-address 0 with `AV` set; the
+  multicast table is cleared; broadcast is accepted (`RCTL.BAM`).
+- **Interrupts.** `ICR` is read-to-clear, so `e1000_irq` reads it exactly
+  once and treats 0 as "a shared line, not us". Only the RX causes
+  (`RXT0`, `RXDMT0`, `RXO`, `RXSEQ`) are unmasked; TX is polled to `DD`
+  with a bounded spin, as on the rtl8139. `e1000_receive` also drains the
+  ring itself when the software queue is empty (the virtio-net polling
+  fallback), so a mis-routed INTx line degrades to slower, not dead.
+
+Bring-up order: mask all interrupts (`IMC`), `CTRL.RST` and a bounded wait
+for it to self-clear, mask again, `CTRL.SLU | ASDE` with `LRST`/`PHY_RST`/
+`ILOS` clear, MAC, RA0, MTA, RX ring + `RCTL`, TX ring + `TIPG` + `TCTL`,
+then `IMS`. Every wait is bounded; every failure degrades honestly with one
+`NET: e1000 ...` line and a 0 return, which lets the rtl8139 probe run. An
+absent device is silent, like virtio-net.
+
+The gate is `make ci-smoke-net-e1000` (`networking-e1000` job): the same
+`ci-smoke-net` + `ci-smoke-http` with `NET_NIC=e1000` and `NET_UP="NET: e1000
+up"`, plus a check that the rtl8139 did not bind instead. Not done:
+`-device e1000e` (82574L, `8086:10D3`) is a different part (extended
+descriptors by default, a different interrupt register map, MSI-X) and is
+not probed; neither are the other 8254x device ids.
 
 ## modbusd: a Modbus/TCP agent that refuses control writes (stage 4 of #235)
 

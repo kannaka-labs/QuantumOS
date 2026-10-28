@@ -118,7 +118,7 @@ OBJECTS = $(KERNEL_SOURCES:$(KERNEL_DIR)/src/%.c=$(BUILD_DIR)/%.o) \
 -include $(OBJECTS:.o=.d)
 
 # Targets
-.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress
+.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress ci-smoke-net-e1000
 
 all: kernel
 
@@ -1820,6 +1820,18 @@ ci-smoke-net-virtio: kernel
 		echo "ERROR: the virtio-blk disk did not bind alongside virtio-net"; exit 1; \
 	fi
 	@echo "SUCCESS: virtio-net and virtio-blk bound together on virtio-pci"
+
+# CI Smoke Test (e1000, #252): the same ARP/DHCP/ping/DNS and HTTP-200 gates
+# as ci-smoke-net + ci-smoke-http, driven through the Intel 82540EM
+# (-device e1000): an MMIO BAR0 above the boot identity map, legacy 16-byte
+# descriptor rings, an EEPROM-sourced MAC, INTx receive interrupt. The NIC
+# for hypervisors and boards that offer neither virtio nor an rtl8139.
+ci-smoke-net-e1000: kernel
+	@$(MAKE) --no-print-directory ci-smoke-net ci-smoke-http NET_NIC=e1000 'NET_UP=NET: e1000 up'
+	@if grep -qF "NET: rtl8139 up" /tmp/qemu-net.log 2>/dev/null; then \
+		echo "ERROR: an e1000 boot bound the rtl8139 driver"; exit 1; \
+	fi
+	@echo "SUCCESS: ARP/DHCP/DNS/HTTP proven on the e1000 (82540EM)"
 
 # CI Smoke Test (TCP server + httpd — epic #98): the host fetches a live
 # status page FROM QuantumOS. QEMU SLIRP hostfwd maps host 127.0.0.1:18081
