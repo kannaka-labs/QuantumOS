@@ -879,6 +879,8 @@ jobs:
       run: make ci-smoke-net-nogrant
     - name: Allowlist, receipt, byte budget and ttl
       run: make ci-smoke-egress
+    - name: A host grants over the console escape, key-gated (PR A2)
+      run: make ci-smoke-egress-escape
 
   networking-e1000:
     name: Networking Test (e1000 / 82540EM — #252)

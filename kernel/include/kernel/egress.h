@@ -57,4 +57,25 @@ void egress_account(uint32_t len);
 /* The reason string for a verdict, for log lines and the shell. */
 const char *egress_reason(int verdict);
 
+/* The console escape (PR A2): `ESC ] egress ; <key> ; <spec> BEL`. A host that booted the
+ * kernel with `egress_key=<16 hex>` on the command line may grant, or replace a grant, over
+ * the console after boot. The key is the authority, not the wire: the escape is honoured on
+ * COM1 and on the vsock shell channel alike, and refused without a key on the command line,
+ * with a wrong key, or with a spec the parser refuses. Ring 3 never sees the command line,
+ * so a console user cannot forge one; every refusal is a pid-0 EPERM row in the ledger. */
+#define EGRESS_KEY_HEX 16
+#define EGRESS_SPEC_MAX 255
+
+/* Remember the host's key from `egress_key=`: exactly 16 hex digits, or the escape stays
+ * dead (logged). */
+void egress_set_key(const char *hex);
+
+/* An escape payload arrived (`<key>;<spec>`, `len` bytes, not NUL-terminated). Interrupt
+ * context: records the offer and returns; nothing is parsed, logged or receipted here. */
+void egress_offer(const char *payload, uint32_t len);
+
+/* Thread context (the net thread): apply a recorded offer, logging and receipting the
+ * outcome. Returns 1 when a grant was activated or replaced, 0 otherwise. */
+int egress_apply_pending(void);
+
 #endif /* EGRESS_H */

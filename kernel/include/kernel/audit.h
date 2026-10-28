@@ -77,7 +77,8 @@
                          * death linkage for verifiers. */
 #define AUDIT_EGRESS                                                                               \
     11 /* an egress verdict or grant event (ADR-0030): pid 0 + DEVICE_ID_NET +
-                         * permissions 1|2|3 = granted|expired|budget spent; otherwise the
+                         * permissions 1|2|3|4 = granted|expired|budget spent|console offer
+                         * refused (EPERM); otherwise the
                          * sender's pid, resource_id = destination IPv4 as a u32 (0 for a
                          * listen check), permissions = (proto << 16) | port, verdict OK or
                          * EPERM. The receipt: attempted and allowed are both on the record. */

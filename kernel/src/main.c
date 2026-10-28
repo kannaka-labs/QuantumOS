@@ -534,13 +534,20 @@ static void demo_thread_beta(void) {
 // A no-op on the NIC-less default boot.
 static void net_thread(void) {
     if (netdev_present() && !egress_configured()) {
-        /* ADR-0030: a NIC is not networking. No ARP, no DHCP, no DNS, no frame leaves.
-         * The service loop still runs so ring-3 requests are answered (refused). */
+        /* ADR-0030: a NIC is not networking. No ARP, no DHCP, no DNS, no frame leaves;
+         * ring-3 requests are refused at the syscall. Wait here for a host to grant over
+         * the console escape (PR A2), draining the NIC meanwhile so its ring cannot wedge
+         * (netdev_receive drops every frame while no grant is live). */
         boot_log("NET: NIC present, no egress grant: networking off");
-    } else {
-        net_init();
-        net_selftest();
+        uint8_t frame[NET_FRAME_MAX];
+        while (!egress_apply_pending()) {
+            while (netdev_receive(frame, sizeof(frame)) > 0) {
+            }
+            __asm__ volatile("hlt");
+        }
     }
+    net_init();
+    net_selftest();
     // Then serve ring-3 resolve requests forever (SYS_RESOLVE). Network
     // I/O must live here, in an IF=1 thread, because a syscall runs with
     // interrupts disabled and could never pump the NIC's RX interrupt.
@@ -959,6 +966,11 @@ static void parse_boot_cmdline(uint32_t info_addr) {
     static char egress_spec[512];
     if (cmdline_get_value(cmd, "egress=", egress_spec, (int)sizeof(egress_spec))) {
         egress_configure(egress_spec);
+    }
+    /* PR A2: the host's key for granting over the console escape later. Never logged. */
+    static char egress_key_hex[32];
+    if (cmdline_get_value(cmd, "egress_key=", egress_key_hex, (int)sizeof(egress_key_hex))) {
+        egress_set_key(egress_key_hex);
     }
     /* Parse the (possibly comma-separated) peer= list directly — do NOT gate on
      * cmdline_get_ipv4, which hard-rejects the ',' in a multi-peer list. */

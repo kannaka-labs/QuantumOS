@@ -18,6 +18,7 @@
  */
 
 #include <kernel/console.h>
+#include <kernel/egress.h>
 #include <kernel/quantum.h>
 #include <kernel/boot.h>
 #include <kernel/vga.h>
@@ -125,19 +126,30 @@ int console_com1_present(void) {
     return com1_present;
 }
 
-/* Session reseed escape (ADR-0025). A host that restores this VM from a
- * snapshot sends   ESC ] q s e e d ;  <16 hex digits>  BEL   on COM1 before
- * handing the console to a user. The sequence is consumed here (it never
- * reaches the shell) and its value is mixed into the quantum generator, so
- * every restored copy of one snapshot draws its own stream. Any byte that does
- * not continue the sequence flushes what was held, in order, as ordinary input
- * (arrow keys, ESC [ ..., are unaffected). Typing the sequence by hand only
- * mixes more entropy in, which is harmless. Bounded: at most 25 bytes held. */
-static const char RESEED_PREFIX[] = "\x1b]qseed;";
-#define RESEED_PREFIX_LEN (sizeof(RESEED_PREFIX) - 1)
+/* Console escapes, consumed here so they never reach the shell:
+ *
+ *   ESC ] q s e e d ;  <16 hex digits>  BEL     session reseed (ADR-0025): a host that
+ *                                               restored this VM from a snapshot sends it
+ *                                               before handing the console to a user
+ *   ESC ] e g r e s s ;  <key> ; <spec>  BEL    egress grant (ADR-0030, PR A2): a host grants
+ *                                               networking after boot, proving itself with
+ *                                               the egress_key= it booted the kernel with
+ *
+ * Any byte that does not continue a sequence flushes what was held, in order, as ordinary
+ * input (arrow keys, ESC [ ..., are unaffected). Typing a reseed by hand only mixes more
+ * entropy in, which is harmless; typing a grant by hand fails the key check in egress.c and
+ * lands in the audit ledger. Bounded: at most OSC_MAX bytes held. The egress payload is
+ * handed to egress_offer() in this interrupt context, which only records it; the net thread
+ * parses, applies and logs it. */
+static const char OSC_QSEED[] = "\x1b]qseed;";
+static const char OSC_EGRESS[] = "\x1b]egress;";
+#define OSC_QSEED_LEN (sizeof(OSC_QSEED) - 1)
+#define OSC_EGRESS_LEN (sizeof(OSC_EGRESS) - 1)
 #define RESEED_HEX_LEN 16
-static uint8_t reseed_buf[RESEED_PREFIX_LEN + RESEED_HEX_LEN];
-static uint32_t reseed_len;
+#define OSC_MAX (OSC_EGRESS_LEN + EGRESS_KEY_HEX + 1 + EGRESS_SPEC_MAX)
+static uint8_t osc_buf[OSC_MAX];
+static uint32_t osc_len;
+static uint8_t osc_cand; /* bit 0: still could be qseed; bit 1: still could be egress */
 
 static int hex_val(uint8_t c) {
     if (c >= '0' && c <= '9')
@@ -149,49 +161,96 @@ static int hex_val(uint8_t c) {
     return -1;
 }
 
-static void reseed_flush(void) {
-    for (uint32_t i = 0; i < reseed_len; i++) {
-        ring_push(reseed_buf[i]);
-    }
-    reseed_len = 0;
+/* The grant grammar's alphabet (egress.c): a stray control byte or space ends the sequence. */
+static int egress_spec_char(uint8_t c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' ||
+           c == ':' || c == '/' || c == ',' || c == ';' || c == '=' || c == '*' || c == '-' ||
+           c == '_';
 }
 
-/* One received COM1 byte: either part of the reseed escape, or input. */
-static void com1_rx_byte(uint8_t b) {
-    if (reseed_len < RESEED_PREFIX_LEN) {
-        if (b == (uint8_t)RESEED_PREFIX[reseed_len]) {
-            reseed_buf[reseed_len++] = b;
-            return;
-        }
-        reseed_flush();
-        if (b == (uint8_t)RESEED_PREFIX[0]) { /* a fresh ESC may start a new one */
-            reseed_buf[reseed_len++] = b;
-            return;
-        }
-        ring_push(b);
+static void osc_flush(void) {
+    for (uint32_t i = 0; i < osc_len; i++) {
+        ring_push(osc_buf[i]);
+    }
+    osc_len = 0;
+    osc_cand = 0;
+}
+
+/* `b` did not continue the sequence: release what was held as input. A fresh ESC may start
+ * a new one; anything else is input too. */
+static void osc_reject(uint8_t b) {
+    osc_flush();
+    if (b == 0x1b) {
+        osc_buf[osc_len++] = b;
+        osc_cand = 3;
         return;
     }
-    if (reseed_len < RESEED_PREFIX_LEN + RESEED_HEX_LEN) {
-        if (hex_val(b) >= 0) {
-            reseed_buf[reseed_len++] = b;
-            return;
-        }
-        reseed_flush();
-        ring_push(b);
-        return;
-    }
-    /* prefix + 16 hex held: BEL completes it, anything else is input */
-    if (b == 0x07) {
-        uint64_t seed = 0;
-        for (uint32_t i = 0; i < RESEED_HEX_LEN; i++) {
-            seed = (seed << 4) | (uint64_t)hex_val(reseed_buf[RESEED_PREFIX_LEN + i]);
-        }
-        reseed_len = 0;
-        quantum_session_reseed(seed);
-        return;
-    }
-    reseed_flush();
     ring_push(b);
+}
+
+/* One received console byte: part of an escape, or input. */
+static void com1_rx_byte(uint8_t b) {
+    if (osc_len == 0) {
+        if (b == 0x1b) {
+            osc_buf[osc_len++] = b;
+            osc_cand = 3;
+            return;
+        }
+        ring_push(b);
+        return;
+    }
+    int in_q = (osc_cand & 1) && osc_len < OSC_QSEED_LEN;
+    int in_e = (osc_cand & 2) && osc_len < OSC_EGRESS_LEN;
+    if (in_q || in_e) { /* still inside a prefix: the two diverge at their third byte */
+        uint8_t cand = 0;
+        if (in_q && b == (uint8_t)OSC_QSEED[osc_len]) {
+            cand |= 1;
+        }
+        if (in_e && b == (uint8_t)OSC_EGRESS[osc_len]) {
+            cand |= 2;
+        }
+        if (!cand) {
+            osc_reject(b);
+            return;
+        }
+        osc_cand = cand;
+        osc_buf[osc_len++] = b;
+        return;
+    }
+    if (osc_cand & 1) { /* qseed payload: exactly 16 hex, then BEL */
+        if (osc_len - OSC_QSEED_LEN < RESEED_HEX_LEN) {
+            if (hex_val(b) >= 0) {
+                osc_buf[osc_len++] = b;
+                return;
+            }
+            osc_reject(b);
+            return;
+        }
+        if (b == 0x07) {
+            uint64_t seed = 0;
+            for (uint32_t i = 0; i < RESEED_HEX_LEN; i++) {
+                seed = (seed << 4) | (uint64_t)hex_val(osc_buf[OSC_QSEED_LEN + i]);
+            }
+            osc_len = 0;
+            osc_cand = 0;
+            quantum_session_reseed(seed);
+            return;
+        }
+        osc_reject(b);
+        return;
+    }
+    /* egress payload: <key>;<spec> in the grammar's alphabet, bounded, then BEL */
+    if (b == 0x07) {
+        egress_offer((const char *)osc_buf + OSC_EGRESS_LEN, osc_len - OSC_EGRESS_LEN);
+        osc_len = 0;
+        osc_cand = 0;
+        return;
+    }
+    if (egress_spec_char(b) && osc_len < OSC_MAX) {
+        osc_buf[osc_len++] = b;
+        return;
+    }
+    osc_reject(b);
 }
 
 void console_input_bytes(const uint8_t *buf, uint32_t len) {
