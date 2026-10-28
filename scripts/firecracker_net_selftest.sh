@@ -35,7 +35,7 @@ sudo dnsmasq --interface="$TAP" --bind-interfaces --except-interface=lo \
 
 cp "$KERNEL" "$D/kernel.elf"
 cat > "$D/vm.json" <<EOF
-{"boot-source": {"kernel_image_path": "$D/kernel.elf", "boot_args": ""},
+{"boot-source": {"kernel_image_path": "$D/kernel.elf", "boot_args": "egress=ttl=3600;bytes=1073741824;allow=*;listen="},
  "drives": [],
  "machine-config": {"vcpu_count": 1, "mem_size_mib": 128},
  "network-interfaces": [{"iface_id": "eth0", "guest_mac": "02:fc:00:00:00:15", "host_dev_name": "$TAP"}]}

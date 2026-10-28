@@ -1,4 +1,5 @@
 #include <kernel/types.h>
+#include <kernel/egress.h>
 #include <kernel/boot.h>
 #include <kernel/memory.h>
 #include <kernel/interrupts.h>
@@ -532,8 +533,14 @@ static void demo_thread_beta(void) {
 // the NIC RX IRQ can fire, ARP-resolves the user-net gateway, then idles.
 // A no-op on the NIC-less default boot.
 static void net_thread(void) {
-    net_init();
-    net_selftest();
+    if (netdev_present() && !egress_configured()) {
+        /* ADR-0030: a NIC is not networking. No ARP, no DHCP, no DNS, no frame leaves.
+         * The service loop still runs so ring-3 requests are answered (refused). */
+        boot_log("NET: NIC present, no egress grant: networking off");
+    } else {
+        net_init();
+        net_selftest();
+    }
     // Then serve ring-3 resolve requests forever (SYS_RESOLVE). Network
     // I/O must live here, in an IF=1 thread, because a syscall runs with
     // interrupts disabled and could never pump the NIC's RX interrupt.
@@ -615,6 +622,36 @@ static int cmdline_has_word(const char *cmd, const char *word) {
         if (word[k] == '\0' && (p[k] == '\0' || p[k] == ' ' || p[k] == '\t')) {
             return 1;
         }
+    }
+    return 0;
+}
+
+/* Copy the value of `<key>value` (a whitespace-bounded token) into out, NUL-terminated.
+ * Returns 1 when found and it fit, 0 otherwise. For tokens whose value has its own
+ * grammar (ADR-0030's egress=), which the owning module parses. */
+static int cmdline_get_value(const char *cmd, const char *key, char *out, int cap) {
+    for (const char *p = cmd; *p; p++) {
+        if (p != cmd && p[-1] != ' ' && p[-1] != '\t') {
+            continue;
+        }
+        int k = 0;
+        while (key[k] && p[k] == key[k]) {
+            k++;
+        }
+        if (key[k] != '\0') {
+            continue;
+        }
+        const char *v = p + k;
+        int n = 0;
+        while (v[n] && v[n] != ' ' && v[n] != '\t') {
+            if (n >= cap - 1) {
+                return 0;
+            }
+            out[n] = v[n];
+            n++;
+        }
+        out[n] = '\0';
+        return n > 0;
     }
     return 0;
 }
@@ -916,6 +953,12 @@ static void parse_boot_cmdline(uint32_t info_addr) {
     if (cmdline_get_ipv4(cmd, "ip=", octets)) {
         net_set_static_ip(octets);
         boot_log("NET: static ip configured from cmdline (ip=)");
+    }
+    /* ADR-0030: networking is a grant. Without `egress=` a present NIC binds and does
+     * nothing; with a bad spec the grant is refused (logged) and the boot stays offline. */
+    static char egress_spec[512];
+    if (cmdline_get_value(cmd, "egress=", egress_spec, (int)sizeof(egress_spec))) {
+        egress_configure(egress_spec);
     }
     /* Parse the (possibly comma-separated) peer= list directly — do NOT gate on
      * cmdline_get_ipv4, which hard-rejects the ',' in a multi-peer list. */

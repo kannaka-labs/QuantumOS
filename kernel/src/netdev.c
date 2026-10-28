@@ -14,6 +14,7 @@
 #include <kernel/virtio_net.h>
 #include <kernel/rtl8139.h>
 #include <kernel/boot.h>
+#include <kernel/egress.h>
 
 /* Drivers, in probe order. The first whose init() returns 1 is bound.
  * virtio-net is FIRST deliberately (ADR-0024): it is the paravirtual NIC
@@ -62,7 +63,16 @@ void netdev_get_mac(uint8_t out[ETH_ADDR_LEN]) {
 }
 
 int netdev_transmit(const uint8_t *frame, uint16_t len) {
-    return (bound && bound->transmit) ? bound->transmit(frame, len) : -1;
+    /* ADR-0030: no grant, or a spent one, and the frame stays here. Counted after a
+     * successful hand-off, so the budget measures what reached the wire. */
+    if (!bound || !bound->transmit || !egress_active()) {
+        return -1;
+    }
+    int r = bound->transmit(frame, len);
+    if (r == 0) {
+        egress_account(len);
+    }
+    return r;
 }
 
 void netdev_irq(void) {
@@ -76,5 +86,15 @@ uint8_t netdev_irq_line(void) {
 }
 
 uint16_t netdev_receive(uint8_t *buf, uint16_t max) {
-    return (bound && bound->receive) ? bound->receive(buf, max) : 0;
+    uint16_t n = (bound && bound->receive) ? bound->receive(buf, max) : 0;
+    if (n == 0) {
+        return 0;
+    }
+    /* ADR-0030: inbound frames are drained from the NIC regardless (the ring must not
+     * wedge) but dropped here when no grant is live, and counted when one is. */
+    if (!egress_active()) {
+        return 0;
+    }
+    egress_account(n);
+    return n;
 }

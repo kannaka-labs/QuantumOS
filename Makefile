@@ -118,7 +118,7 @@ OBJECTS = $(KERNEL_SOURCES:$(KERNEL_DIR)/src/%.c=$(BUILD_DIR)/%.o) \
 -include $(OBJECTS:.o=.d)
 
 # Targets
-.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng
+.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress
 
 all: kernel
 
@@ -1633,12 +1633,17 @@ ci-smoke-disk-upgrade: kernel
 NET_NIC ?= rtl8139
 NET_UP ?= NET: rtl8139 up
 NET_EXTRA ?=
+# ADR-0030: networking is an egress grant. Every gate that gives the guest a NIC also
+# gives it a grant on the command line; the nogrant/egress gates below test the policy.
+# The wide grant (allow=*) is for gates whose subject is the stack or a driver, not policy.
+EGRESS_WIDE ?= egress=ttl=3600;bytes=1073741824;allow=*;listen=4747,8080,502,4000
+NET_APPEND ?= $(EGRESS_WIDE)
 
 ci-smoke-net: kernel
 	@echo "=== QuantumOS Networking Smoke Test ($(NET_NIC) + user-net) ==="
 	@echo "[1/3] Booting with -device $(NET_NIC) on QEMU user-net (+ shell nslookup + udping)..."
 	@( printf 'nslookup example.com\nudping example.com\n'; sleep 15 ) | timeout 17s qemu-system-x86_64 \
-		-kernel $(BUILD_DIR)/kernel.elf32 \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "$(NET_APPEND)" \
 		-netdev user,id=n0 -device $(NET_NIC),netdev=n0 $(NET_EXTRA) -serial stdio -m 128M \
 		-display none -no-reboot 2>&1 | tee /tmp/qemu-net.log || true
 	@echo ""
@@ -1755,7 +1760,7 @@ ci-smoke-http: kernel
 	 ok=0; for i in $$(seq 1 50); do if curl -s -o /dev/null http://127.0.0.1:18080/; then ok=1; break; fi; sleep 0.2; done; \
 	 [ $$ok = 1 ] || { echo "ERROR: loopback httpd never came up"; cat /tmp/qos-httpd.log 2>/dev/null || true; exit 1; }; \
 	 ( printf 'http 10.0.2.2 18080\nhttp example.com\n'; sleep 20 ) | timeout 22s qemu-system-x86_64 \
-		-kernel $(BUILD_DIR)/kernel.elf32 \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "$(NET_APPEND)" \
 		-netdev user,id=n0 -device $(NET_NIC),netdev=n0 $(NET_EXTRA) -serial stdio -m 128M \
 		-display none -no-reboot 2>&1 | tee /tmp/qemu-http.log || true
 	@echo ""
@@ -1842,7 +1847,7 @@ ci-smoke-httpd: kernel
 	@set -e; \
 	 rm -f /tmp/qemu-httpd.log /tmp/qos-httpd-1.txt /tmp/qos-httpd-2.txt; \
 	 ( sleep 120 ) | timeout 125s qemu-system-x86_64 \
-		-kernel $(BUILD_DIR)/kernel.elf32 \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "$(EGRESS_WIDE)" \
 		-netdev user,id=n0,hostfwd=tcp:127.0.0.1:18081-:8080 \
 		-device rtl8139,netdev=n0 \
 		-serial stdio -m 128M -display none -no-reboot > /tmp/qemu-httpd.log 2>&1 & \
@@ -1922,13 +1927,13 @@ ci-smoke-2net: kernel
 	@# end of a headless boot — the grep gates below are the verdict.
 	@rm -f /tmp/qos-2net-a.log /tmp/qos-2net-b.log; \
 	 ( printf 'net2 10.0.0.2\n'; sleep 30 ) | timeout 34s qemu-system-x86_64 \
-		-kernel $(BUILD_DIR)/kernel.elf32 -append "ip=10.0.0.1 quiet" \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "ip=10.0.0.1 quiet $(EGRESS_WIDE)" \
 		-netdev socket,id=n0,udp=127.0.0.1:7811,localaddr=127.0.0.1:7810 \
 		-device rtl8139,netdev=n0,mac=52:54:00:00:97:01 \
 		-serial stdio -m 128M -display none -no-reboot > /tmp/qos-2net-a.log 2>&1 & \
 	 APID=$$!; \
 	 ( printf 'net2 10.0.0.1\n'; sleep 30 ) | timeout 34s qemu-system-x86_64 \
-		-kernel $(BUILD_DIR)/kernel.elf32 -append "ip=10.0.0.2 quiet" \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "ip=10.0.0.2 quiet $(EGRESS_WIDE)" \
 		-netdev socket,id=n0,udp=127.0.0.1:7810,localaddr=127.0.0.1:7811 \
 		-device rtl8139,netdev=n0,mac=52:54:00:00:97:02 \
 		-serial stdio -m 128M -display none -no-reboot > /tmp/qos-2net-b.log 2>&1 & \
@@ -2126,6 +2131,51 @@ ci-smoke-resonant:
 ci-smoke-rng: kernel
 	@echo "=== QuantumOS virtio-rng gate (#254) ==="
 	QOS_KERNEL=$(BUILD_DIR)/kernel.elf32 python3 scripts/test_qos_rng.py
+
+# ADR-0030 negative control: a NIC with NO egress= token. The driver binds, the stack
+# stays down (no DHCP line), and ring 3 is refused with the grant's reason.
+ci-smoke-net-nogrant: kernel
+	@echo "=== QuantumOS egress gate: NIC present, no grant (ADR-0030) ==="
+	@( printf 'http example.com\nudping example.com\n'; sleep 12 ) | timeout 14s qemu-system-x86_64 \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "quiet" \
+		-netdev user,id=n0 -device rtl8139,netdev=n0 -serial stdio -m 128M \
+		-display none -no-reboot 2>&1 | tee /tmp/qemu-nogrant.log || true
+	@grep -qF "NET: rtl8139 up" /tmp/qemu-nogrant.log || { echo "ERROR: the NIC did not bind (it must bind, then idle)"; exit 1; }
+	@grep -qF "NET: NIC present, no egress grant: networking off" /tmp/qemu-nogrant.log || { echo "ERROR: missing the networking-off line"; cat /tmp/qemu-nogrant.log; exit 1; }
+	@if grep -qE "NET: DHCP lease|NET: ARP 10.0.2.2 is at MAC" /tmp/qemu-nogrant.log; then echo "ERROR: the stack came up without a grant"; exit 1; fi
+	@grep -qF "qsh: http: refused by the egress grant" /tmp/qemu-nogrant.log || { echo "ERROR: http was not refused with the grant's reason"; cat /tmp/qemu-nogrant.log; exit 1; }
+	@echo "=== egress nogrant gate PASSED ==="
+
+# ADR-0030 policy gate: one destination allowed; another refused and receipted; a byte
+# budget that trips; a ttl that expires. Each line is a separate assertion.
+EGRESS_NARROW = egress=ttl=3600;bytes=1073741824;allow=example.com:80/tcp;listen=
+ci-smoke-egress: kernel
+	@echo "=== QuantumOS egress gate: allowlist, receipt, budget, ttl (ADR-0030) ==="
+	@echo "[1/3] allowlist: example.com:80 allowed, 10.0.2.2:18080 refused and receipted..."
+	@( printf 'http example.com\nhttp 10.0.2.2 18080\nudping example.com\negress\n'; sleep 20 ) | timeout 22s qemu-system-x86_64 \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "$(EGRESS_NARROW)" \
+		-netdev user,id=n0 -device rtl8139,netdev=n0 -serial stdio -m 128M \
+		-display none -no-reboot 2>&1 | tee /tmp/qemu-egress.log || true
+	@grep -qF "NET: egress granted" /tmp/qemu-egress.log || { echo "ERROR: grant not accepted"; cat /tmp/qemu-egress.log; exit 1; }
+	@grep -qE "qsh: http example.com -> HTTP/1.[01] 200" /tmp/qemu-egress.log || { echo "ERROR: the allowed destination did not answer"; cat /tmp/qemu-egress.log; exit 1; }
+	@grep -c "qsh: http: refused by the egress grant" /tmp/qemu-egress.log | grep -q "^1$$" || { echo "ERROR: exactly one http refusal expected (10.0.2.2:18080)"; exit 1; }
+	@grep -qF "qsh: udping: refused by the egress grant" /tmp/qemu-egress.log || { echo "ERROR: udp to a non-allowlisted port was not refused"; exit 1; }
+	@grep -qE "kind=EGRESS .*verdict=EPERM" /tmp/qemu-egress.log || { echo "ERROR: no EPERM egress receipt in the ledger"; exit 1; }
+	@grep -qE "kind=EGRESS .*verdict=OK" /tmp/qemu-egress.log || { echo "ERROR: no OK egress receipt in the ledger"; exit 1; }
+	@echo "[2/3] byte budget: 6000 bytes covers DHCP+DNS+one fetch, not a second..."
+	@( printf 'http example.com\nhttp example.com\n'; sleep 20 ) | timeout 22s qemu-system-x86_64 \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "egress=ttl=3600;bytes=6000;allow=example.com:80/tcp;listen=" \
+		-netdev user,id=n0 -device rtl8139,netdev=n0 -serial stdio -m 128M \
+		-display none -no-reboot 2>&1 | tee /tmp/qemu-egress-budget.log || true
+	@grep -qF "NET: egress grant exhausted (bytes): networking off" /tmp/qemu-egress-budget.log || { echo "ERROR: the byte budget never tripped"; cat /tmp/qemu-egress-budget.log; exit 1; }
+	@echo "[3/3] ttl: a 6 s grant expires before a late fetch..."
+	@( sleep 9; printf 'http example.com\n'; sleep 8 ) | timeout 19s qemu-system-x86_64 \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "egress=ttl=6;bytes=1073741824;allow=example.com:80/tcp;listen=" \
+		-netdev user,id=n0 -device rtl8139,netdev=n0 -serial stdio -m 128M \
+		-display none -no-reboot 2>&1 | tee /tmp/qemu-egress-ttl.log || true
+	@grep -qF "NET: egress grant expired (ttl): networking off" /tmp/qemu-egress-ttl.log || { echo "ERROR: the ttl never expired"; cat /tmp/qemu-egress-ttl.log; exit 1; }
+	@grep -qF "qsh: http: refused by the egress grant" /tmp/qemu-egress-ttl.log || { echo "ERROR: a fetch after expiry was not refused"; exit 1; }
+	@echo "=== egress gate PASSED ==="
 
 ci-smoke-qseed: kernel
 	@echo "=== QuantumOS CI Smoke Test (qseed handoff) ==="

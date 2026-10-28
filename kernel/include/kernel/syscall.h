@@ -314,6 +314,7 @@
 #define SYSCALL_EPERM ((uint64_t) - 4)  /* no capability authorising the op */
 #define SYSCALL_EIO ((uint64_t) - 5)    /* delivery failed (e.g. queue full) */
 #define SYSCALL_ENOENT ((uint64_t) - 6) /* no such file on the initrd */
+#define SYSCALL_EEGRESS ((uint64_t) - 7) /* refused by the egress grant (ADR-0030) */
 
 /* User memory window: identity-mapped, user-bit pages above the
  * kernel heap. Each user process gets one 2 MB region (code at the

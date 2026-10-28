@@ -124,7 +124,8 @@ static void cmd_help(void) {
     out(A_CAT "  files  " A0 A_CMD "ls" A0 " " A_CMD "cat" A0 " " A_CMD "write" A0 " " A_CMD "rm" A0
               " " A_CMD "sync" A0 "  " A_DIM "browse and edit the initrd" A0 "\r\n");
     out(A_CAT "  net    " A0 A_CMD "http" A0 " <host>   " A_CMD "nslookup" A0 "   " A_CMD
-              "udping" A0 "   " A_DIM "reach the network" A0 "\r\n");
+              "udping" A0 "   " A_CMD "egress" A0 "   " A_DIM
+              "reach the network, within the grant" A0 "\r\n");
     out(A_CAT "  system " A0 A_CMD "ps" A0 " " A_CMD "free" A0 " " A_CMD "uptime" A0 " " A_CMD
               "date" A0 " " A_CMD "pid" A0 " " A_CMD "echo" A0 "  " A_DIM "inspect the machine" A0
               "\r\n");
@@ -393,6 +394,42 @@ static void cmd_field(void) {
  * entry. `audit` reads it read-only (SYS_AUDIT), first the stats line then every
  * live entry. The AUDIT: prefix is a merge gate. (Read over COM1: a cryptographic
  * export over the attested COM2 channel is a filed follow-up.) */
+/* The egress receipt (ADR-0030): the ledger's EGRESS rows only. res=DEV:<destination IPv4
+ * as a decimal u32, 0 for a listen check>, perms=(proto<<16)|port, verdict OK or EPERM,
+ * count = how many times. pid 0 rows are the grant itself (perms 1 granted, 2 expired,
+ * 3 budget spent). The kernel wrote every row; this only filters. */
+static void cmd_egress(void) {
+    static char buf[AUDIT_TEXT_MAX];
+    long n = audit_(AUDIT_OP_READ, buf, sizeof(buf));
+    int shown = 0;
+    long start = 0;
+    for (long i = 0; i <= n; i++) {
+        if (i == n || buf[i] == '\n') {
+            long len = i - start;
+            int hit = 0;
+            for (long k = start; k + 11 <= i; k++) {
+                if (buf[k] == 'k' && buf[k + 1] == 'i' && buf[k + 2] == 'n' && buf[k + 3] == 'd' &&
+                    buf[k + 4] == '=' && buf[k + 5] == 'E' && buf[k + 6] == 'G' &&
+                    buf[k + 7] == 'R' && buf[k + 8] == 'E' && buf[k + 9] == 'S' &&
+                    buf[k + 10] == 'S') {
+                    hit = 1;
+                    break;
+                }
+            }
+            if (hit && len > 0) {
+                out_bytes(buf + start, (int)len);
+                out("\r\n");
+                shown++;
+            }
+            start = i + 1;
+        }
+    }
+    if (!shown) {
+        out("qsh: egress: no egress events in the ledger (no grant was given, or nothing "
+            "asked)\r\n");
+    }
+}
+
 static void cmd_audit(void) {
     static char buf[AUDIT_TEXT_MAX];
     long n = audit_(AUDIT_OP_STATS, buf, sizeof(buf));
@@ -505,8 +542,9 @@ static void cmd_net2(const char *peer) {
     req.port = NET2_PORT;
     long sock = udp_(UDP_BIND, &req);
     if (sock < 0) {
-        out(sock == -4 ? "qsh: net2: denied (no network capability)\r\n"
-                       : "qsh: net2: bind failed (no network?)\r\n");
+        out(sock == -4            ? "qsh: net2: denied (no network capability)\r\n"
+            : sock == SYS_EEGRESS ? "qsh: net2: refused by the egress grant\r\n"
+                                  : "qsh: net2: bind failed (no network?)\r\n");
         return;
     }
 
@@ -756,6 +794,7 @@ static void cmd_udping(const char *host) {
         req.sock = sock;
         udp_(UDP_CLOSE, &req);
         out(sr == UDP_WOULDBLOCK ? "qsh: udping: send queue busy\r\n"
+            : sr == SYS_EEGRESS  ? "qsh: udping: refused by the egress grant\r\n"
                                  : "qsh: udping: send failed\r\n");
         return;
     }
@@ -963,6 +1002,8 @@ static void cmd_http(const char *args) {
         http_close(&req);
         if (cr == -4) {
             out("qsh: http: denied (no network capability)\r\n");
+        } else if (cr == SYS_EEGRESS) {
+            out("qsh: http: refused by the egress grant\r\n");
         } else {
             out("qsh: http: connect failed\r\n");
         }
@@ -1748,6 +1789,8 @@ static void execute(const char *line) {
         cmd_field();
     } else if (is_cmd(line, "audit")) {
         cmd_audit();
+    } else if (is_cmd(line, "egress")) {
+        cmd_egress();
     } else if (is_cmd(line, "manifest")) {
         cmd_manifest();
     } else if ((a = arg_of(line, "net2")) != 0) {

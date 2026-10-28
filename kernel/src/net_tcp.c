@@ -12,6 +12,7 @@
  */
 
 #include <kernel/net_internal.h>
+#include <kernel/egress.h>
 #include <kernel/interrupts.h> /* timer_get_ticks (TCP timers) */
 
 /* ============================================================================
@@ -707,6 +708,9 @@ long net_tcp_connect(uint32_t pid, const uint8_t *ip, uint16_t port) {
     if (!net_nic_present()) {
         return NET_TCP_ENONET;
     }
+    if (egress_check(pid, ip, port, EGRESS_PROTO_TCP) != EGRESS_OK) {
+        return NET_TCP_EGRESS; /* ADR-0030: receipted by egress_check */
+    }
     if (srv_owned_by(pid)) {
         return NET_TCP_EINVAL; /* one connection per pid: this pid listens */
     }
@@ -751,6 +755,9 @@ long net_tcp_listen(uint32_t pid, uint16_t port) {
     }
     if (port == 0) {
         return NET_TCP_EINVAL;
+    }
+    if (egress_listen_ok(pid, port) != EGRESS_OK) {
+        return NET_TCP_EGRESS; /* ADR-0030: inbound only on granted listen ports */
     }
     if (tcb.owner_pid == pid) {
         return NET_TCP_EINVAL; /* one connection per pid: this pid connects */

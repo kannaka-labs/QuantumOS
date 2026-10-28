@@ -886,6 +886,8 @@ static uint64_t udp_map_err(long r) {
         return RESOLVE_WOULDBLOCK;
     case NET_UDP_ENONET:
         return SYSCALL_EIO;
+    case NET_UDP_EGRESS:
+        return SYSCALL_EEGRESS;
     default:
         return (uint64_t)r;
     }
@@ -990,6 +992,8 @@ static uint64_t tcp_map_err(long r) {
         return RESOLVE_WOULDBLOCK;
     case NET_TCP_ENONET:
         return SYSCALL_EIO;
+    case NET_TCP_EGRESS:
+        return SYSCALL_EEGRESS;
     default:
         return (uint64_t)r;
     }

@@ -42,6 +42,10 @@ import threading
 import time
 import uuid
 
+# ADR-0030: the grant every harness VM boots with. Wide (any destination) because the
+# harness tests the stack and the citizens, not egress policy; still budgeted and receipted.
+EGRESS_WIDE = "egress=ttl=86400;bytes=4294967296;allow=*;listen=4747,8080,502,4000"
+
 # ---- wire constants (user/swarm.h) ----------------------------------------
 # These module constants ARE the host ring of the ADR-0020 wire freeze:
 # scripts/extract-wire.py imports this module and twins each value against the
@@ -634,7 +638,7 @@ class QosVM:
         # the QSH banner, ISOLATION-VERIFIED settle marker, and net-readiness
         # gate all still work. -netdev gives the guest its NIC so qos_fetch can
         # reach the network (SSRF-guarded host-side in fetch()).
-        tokens = []
+        tokens = [EGRESS_WIDE]   # ADR-0030: the harness's VMs are networked on purpose
         if append_extra:
             tokens.append(append_extra.strip())
         if qseed:

@@ -57,6 +57,7 @@
 /* SYS_RESOLVE / SYS_UDP: still pending (poll again) / ring full. */
 #define RESOLVE_WOULDBLOCK (-11)
 #define UDP_WOULDBLOCK (-11)
+#define SYS_EEGRESS (-7) /* refused by the egress grant (ADR-0030) */
 
 /* SYS_UDP operations (arg 1) */
 #define UDP_BIND 0

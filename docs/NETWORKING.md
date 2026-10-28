@@ -792,3 +792,43 @@ to stop, so the permanent failure gets the permanent error.
 `httpd` on `:8080` and `modbusd` on `:502` answering **in the same boot** —
 which is the acceptance test for this branch, and the reason the Modbus agent
 (stage 4) is worth having at all.
+
+## The egress grant (ADR-0030, `kernel/src/egress.c`)
+
+A NIC is not networking. Without an `egress=` token on the boot command line a present NIC
+binds, the boot log names it, and nothing else happens: no ARP, no DHCP, no DNS, no frame leaves
+(`NET: NIC present, no egress grant: networking off`). Static `ip=` mode is included.
+
+```
+egress=ttl=600;bytes=4194304;allow=10.0.2.2:53/udp,example.com:80/tcp;listen=8080
+```
+
+- `ttl` seconds from boot and `bytes` of total frame traffic (both directions, infrastructure
+  included) are both required. When either is spent the stack quiesces:
+  `NET: egress grant expired (ttl)` / `exhausted (bytes)`.
+- `allow` lists destinations ring 3 may send to as `ip|host:port/udp|tcp`; a host entry matches
+  the kernel's own DNS answer for that name (`egress_note_resolution`). `*` is the wide grant for
+  gates and benchmarks whose subject is the stack or a driver, not policy.
+- `listen` lists local ports inbound may be accepted on: TCP `listen` and UDP binds to a named
+  port. Empty by default, so `httpd` (8080), `modbusd` (502) and fieldsyncd (4747) run only when
+  granted. Ephemeral UDP binds are not listeners.
+
+Enforcement is one check at the three places ring-3 traffic reaches the wire: `net_udp_sendto`,
+`net_tcp_connect` and the two bind/listen paths (`egress_check`, `egress_listen_ok`). Refusals
+reach the shell as `SYS_EEGRESS` (-7): `qsh: http: refused by the egress grant`. The byte
+counters live in `netdev_transmit`/`netdev_receive` (`egress_account`), so every frame is seen.
+
+Every verdict is a row in the kernel's audit ledger (`AUDIT_EGRESS`): the sender's pid, the
+destination as a u32, `(proto << 16) | port`, OK or EPERM, coalesced with a count. The grant's
+own events are pid-0 rows (1 granted, 2 expired, 3 budget spent). `qsh egress` prints those
+rows; `audit` carries them off the machine as before.
+
+Gates: `make ci-smoke-net-nogrant` (a NIC with no grant: binds, stays offline, `http` refused)
+and `make ci-smoke-egress` (allowed vs refused destination, both receipted; a byte budget that
+trips; a ttl that expires). Every other networking gate now passes `$(NET_APPEND)` /
+`$(EGRESS_WIDE)` on its command line, and `scripts/qos_bridge.py` adds the same wide grant to
+every VM it boots. Public functions: `egress_configure`, `egress_configured`, `egress_active`,
+`egress_check`, `egress_listen_ok`, `egress_note_resolution`, `egress_account`, `egress_reason`.
+
+Not in this PR: the COM1 grant escape for restored VMs (ADR-0030 lists it; no console VM has a
+NIC yet, so it waits for PR A2 rather than touching the reseed parser the console depends on).

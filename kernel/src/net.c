@@ -15,6 +15,7 @@
  */
 
 #include <kernel/net.h>
+#include <kernel/egress.h>
 #include <kernel/netdev.h>
 #include <kernel/boot.h>
 #include <kernel/net_internal.h>
@@ -1061,6 +1062,7 @@ void net_service_loop(void) {
         if (resolve_state == RESOLVE_PENDING) {
             uint8_t ip[4];
             if (dns_resolve(resolve_host, dns_rand_txid(), dns_rand_sport(), ip) == 0) {
+                egress_note_resolution(resolve_host, ip); /* a host allow entry now matches */
                 for (int i = 0; i < 4; i++) {
                     resolve_ip[i] = ip[i];
                 }

@@ -176,6 +176,8 @@ static const char *kind_name(uint16_t k) {
         return "QSUBMIT";
     case AUDIT_UNLINK:
         return "UNLINK";
+    case AUDIT_EGRESS:
+        return "EGRESS";
     case AUDIT_KIND_EMPTY:
         return "EMPTY";
     default:
