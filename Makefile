@@ -1862,6 +1862,11 @@ ci-smoke-net-virtio-nofeat: kernel
 # segments (and so merged RX buffers, #253) happen. Separate from
 # ci-smoke-http so the small-page gate keeps its exact byte expectations.
 HTTP_BIG_BYTES ?= 65536
+# #329 throughput floor, by the GUEST's clock (qsh prints `... in N ms`, ticks
+# at 100 Hz): the old 8 KiB-ring stack took >= 4000 ms for this fetch, paced by
+# scheduler round trips per window, not by CPU — so the bound is stable under a
+# slow TCG runner. The fixed stack measures ~800 ms on debain2.
+HTTP_BIG_MS ?= 2500
 ci-smoke-http-big: kernel
 	@echo "=== QuantumOS TCP Client Smoke Test ($(HTTP_BIG_BYTES)-byte fetch, $(NET_NIC)) ==="
 	@set -e; \
@@ -1887,6 +1892,18 @@ ci-smoke-http-big: kernel
 		grep -E "qsh: http|NET:" /tmp/qemu-httpbig.log 2>/dev/null || true; exit 1; \
 	 fi; \
 	 echo "SUCCESS: $$n bytes received for a $(HTTP_BIG_BYTES)-byte body over $(NET_NIC)"
+	@# #329: the transfer must beat HTTP_BIG_MS, and the virtio-net driver must
+	@# not have dropped a frame for lack of software-queue room (each drop is a
+	@# peer RTO — the retransmissions the old 16-slot queue hid behind "it passed").
+	@ms=$$(grep -oE "bytes received in [0-9]+ ms" /tmp/qemu-httpbig.log 2>/dev/null | grep -oE "[0-9]+ ms" | grep -oE "[0-9]+" | tail -1); \
+	 if [ -z "$$ms" ]; then echo "ERROR: fetch line carries no transfer time (qsh: ... in N ms)"; exit 1; fi; \
+	 if [ "$$ms" -gt $(HTTP_BIG_MS) ]; then \
+		echo "ERROR: $(HTTP_BIG_BYTES)-byte fetch took $$ms ms (> $(HTTP_BIG_MS) ms, #329 throughput floor)"; exit 1; \
+	 fi; \
+	 echo "SUCCESS: $(HTTP_BIG_BYTES)-byte fetch in $$ms ms (floor $(HTTP_BIG_MS) ms, #329)"
+	@if grep -qF "RX software queue full" /tmp/qemu-httpbig.log 2>/dev/null; then \
+		echo "ERROR: the virtio-net RX software queue overflowed during the fetch (#329)"; exit 1; \
+	fi
 
 # #253 checksum offload needs a backend with a virtio-net header: QEMU
 # withholds CSUM/GUEST_CSUM on user-net (SLIRP), so this gate gives the guest
@@ -1933,6 +1950,14 @@ ci-smoke-net-virtio-tap: kernel
 		echo "ERROR: fetch over tap did not deliver $(HTTP_BIG_BYTES) bytes (got '$$n')"; exit 1; \
 	 fi; \
 	 echo "SUCCESS: csum negotiated over tap; $$n bytes fetched with device-completed TX checksums (#253)"
+	@ms=$$(grep -oE "bytes received in [0-9]+ ms" /tmp/qemu-nettap.log 2>/dev/null | grep -oE "[0-9]+ ms" | grep -oE "[0-9]+" | tail -1); \
+	 if [ -z "$$ms" ] || [ "$$ms" -gt $(HTTP_BIG_MS) ]; then \
+		echo "ERROR: fetch over tap took '$$ms' ms (> $(HTTP_BIG_MS) ms, #329 throughput floor)"; exit 1; \
+	 fi; \
+	 echo "SUCCESS: $(HTTP_BIG_BYTES)-byte fetch over tap in $$ms ms (floor $(HTTP_BIG_MS) ms, #329)"
+	@if grep -qF "RX software queue full" /tmp/qemu-nettap.log 2>/dev/null; then \
+		echo "ERROR: the virtio-net RX software queue overflowed during the tap fetch (#329)"; exit 1; \
+	fi
 
 # CI Smoke Test (e1000, #252): the same ARP/DHCP/ping/DNS and HTTP-200 gates
 # as ci-smoke-net + ci-smoke-http, driven through the Intel 82540EM

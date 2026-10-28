@@ -35,7 +35,8 @@
  * Honest scope: stop-and-wait send (one outstanding segment <= MSS),
  * in-order receive only (a segment must start exactly at rcv_nxt;
  * anything else is dropped and the peer retransmits), window = free
- * receive-ring space, short TIME_WAIT (~1s, not 2MSL). The server
+ * receive-ring space (64 KiB ring, zero below one MSS — #329), short
+ * TIME_WAIT (~1s, not 2MSL). The server
  * accepts ONE connection at a time: a SYN arriving while it is busy
  * matches nothing and is silently dropped — the peer's own SYN retry
  * lands after the next re-listen. At most one half-open can exist
@@ -46,7 +47,16 @@
 
 #define IP_PROTO_TCP 6
 #define TCP_MSS 1460
-#define TCP_RX_BUF 8192 /* power of two: free-running index & (size-1) */
+/* Receive ring per connection: power of two (free-running index & (size-1)).
+ * 64 KiB since #329: the ring is the window we advertise, and every time it
+ * filled the transfer stalled for a scheduler round trip (the ring-3 reader
+ * drains it, then the net thread re-advertises) — ~200-440 ms per 8 KiB at
+ * the 50 ms quantum. 128 KiB rather than 64: the 16-bit window field caps
+ * the advertisement at 65535, and a ring of exactly that size hits a zero
+ * window (one more round trip) on any response a few bytes over 64 KiB —
+ * headers on a 64 KiB body, for one. With twice the ring the full window
+ * stays open until 64 KiB is unread. */
+#define TCP_RX_BUF 131072
 #define TCP_EPHEMERAL_BASE 49152
 #define TCP_RETX_TICKS 50      /* ~0.5s at 100 Hz between (re)transmits */
 #define TCP_MAX_RETRIES 8      /* then the connection enters ERROR */
@@ -250,7 +260,16 @@ static void tcp_xmit(tcp_conn_t *c, uint32_t seq, uint8_t flags, const uint8_t *
     tcp[13] = flags;
     uint32_t wnd = tcp_rx_free(c);
     if (wnd > 0xFFFF) {
-        wnd = 0xFFFF;
+        wnd = 0xFFFF; /* no window scaling: the field is 16 bits */
+    }
+    /* Receiver-side silly-window avoidance (RFC 1122 §4.2.3.3, #329): a
+     * window under one MSS is advertised as zero. A Linux peer answers a
+     * runt window by waiting ~200 ms before sending the runt; it answers
+     * zero by probing, and the proactive update in tcp_service_one reopens
+     * the window the moment a full MSS of ring is free. Shrinking the right
+     * edge is harmless here: the ring drops what it cannot hold anyway. */
+    if (wnd < TCP_MSS) {
+        wnd = 0;
     }
     tcp[14] = (uint8_t)(wnd >> 8);
     tcp[15] = (uint8_t)wnd;

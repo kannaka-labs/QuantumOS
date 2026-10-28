@@ -70,8 +70,12 @@
 #define TX_Q 1
 #define NUM_QUEUES 2
 
-/* Ring size: a power of two. 64 RX buffers of ~1.6 KB is about 100 KiB. */
-#define QSZ 64
+/* Ring size: a power of two. 128 since #329: with MRG_RXBUF the RX ring is
+ * posted as 1 KiB chunks, so a full-size frame takes two, and a peer filling
+ * the stack's 64 KiB window sends ~45 of them in one burst — 64 descriptors
+ * (32 frames) lost the tail of every burst to retransmission. 128 KiB of RX
+ * memory merged, ~200 KiB single-buffer. */
+#define QSZ 128
 
 /* With VERSION_1 the header is always 12 bytes (num_buffers present). */
 #define NET_HDR_LEN 12
@@ -148,10 +152,15 @@ static uint8_t *rx_buf[QSZ]; /* rx_chunk bytes each */
 static uint8_t *tx_buf;      /* single polled TX buffer */
 
 /* Software RX queue the drain fills and the net layer pops. */
-#define RXQ_SLOTS 16
+/* 64 frames since #329 (was 16): the IRQ drains a whole burst into this
+ * queue at once and the net thread pops it on its next tick, so the queue
+ * must hold the largest burst the advertised window allows (~45 frames for
+ * 64 KiB) or the tail is dropped and retransmitted after the peer's RTO. */
+#define RXQ_SLOTS 64
 static uint8_t rxq_data[RXQ_SLOTS][NET_FRAME_MAX];
 static uint16_t rxq_len[RXQ_SLOTS];
 static uint8_t rxq_csum_ok[RXQ_SLOTS]; /* device said DATA_VALID */
+static volatile int rxq_full_seen;     /* queue-full drop logged once (#329) */
 static volatile int rxq_head, rxq_tail;
 
 /* Bounded spin for TX completion. */
@@ -302,6 +311,13 @@ static int rx_drain(void) {
         int nxt = (rxq_tail + 1) % RXQ_SLOTS;
         if (nxt == rxq_head) {
             drop = 1; /* software queue full: drop, never overwrite */
+            /* Said once (#329): a full queue is a burst the net thread did
+             * not pop in time, and every drop costs the peer an RTO. The
+             * gates assert this line is absent for a 64 KiB fetch. */
+            if (!rxq_full_seen) {
+                rxq_full_seen = 1;
+                boot_log("NET: virtio-net RX software queue full: frame dropped");
+            }
         }
         uint32_t flen = 0;
         for (uint16_t k = 0; k < nbufs; k++) {

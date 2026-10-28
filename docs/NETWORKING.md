@@ -292,6 +292,27 @@ records the findings). The load-bearing pieces the attack forced:
   space; after the app drains the ring the net thread proactively
   re-advertises, instead of deadlocking on a peer that is waiting for a
   window it was last told was zero.
+- **A window the scheduler can live with (#329).** The receive ring is
+  128 KiB per connection (was 8 KiB) and a window under one MSS is
+  advertised as zero (RFC 1122 §4.2.3.3). Measured at the QEMU netdev
+  with `-object filter-dump`: every time the 8 KiB ring filled, the
+  transfer waited one scheduler round trip for the ring-3 reader to drain
+  it and another for the net thread to re-advertise (200–440 ms each at
+  the 50 ms quantum), and the sub-MSS runt it then advertised cost a Linux
+  peer a further ~200 ms of sender-side silly-window avoidance. A 64 KiB
+  fetch was 4.5 s on every NIC configuration; it is 0.8 s now, with the
+  stack streaming the body in ~0.1 s and the remaining two ~400 ms gaps
+  being the shell's own turns (the request after connect, the close after
+  EOF), not the stack. The virtio-net driver's software RX queue grew from
+  16 to 64 frames and its virtqueue from 64 to 128 descriptors for the
+  same reason: a peer filling a 64 KiB window sends ~45 frames in one
+  burst, and the tail of every burst was dropped and retransmitted after
+  the peer's RTO. The driver logs `NET: virtio-net RX software queue full:
+  frame dropped` once if that ever happens again; `ci-smoke-http-big` and
+  the tap gate assert the line is absent and hold the 64 KiB fetch to
+  `HTTP_BIG_MS` (2500 ms by the guest's own clock, printed by `qsh http`
+  as `... bytes received in N ms`). Still stop-and-wait on the send side:
+  one outstanding segment per round trip is the next pipe to widen.
 - **A terminal ERROR + net-thread-only retire.** A syscall never resets a
   net-thread-owned field; ERROR is sticky until an abort retires the TCB
   to a pristine CLOSED (the UDP three-state lesson), and the ephemeral
