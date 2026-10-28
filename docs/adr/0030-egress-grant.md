@@ -137,3 +137,22 @@ What shipped in PR A differs from the decision in four small ways, each stated h
 - **Infrastructure traffic** is counted in `bytes` but not itemised in the receipt. Per-frame
   rows for ARP and DHCP would be a flood with nothing to read in it.
 - **UDP binds to a named port** count as listeners (`listen`); ephemeral binds do not.
+
+## Amendment (PR A2, 2026-10-28)
+
+The console escape shipped, with one addition the decision did not have:
+
+- **The escape carries a key.** `ESC ] egress ; <key> ; <spec> BEL`, where `<key>` must equal
+  the `egress_key=<16 hex>` the host put on the boot command line. Without it, anyone typing at
+  the console (COM1 or the vsock channel, both run one parser) could grant themselves egress,
+  which contradicts the decision's own rule that grants come from the host, never from ring 3.
+  Ring 3 cannot read the command line, so the key is the host's alone. No key on the command
+  line, no escape: the default stays closed.
+- **Refused offers are receipted**, as pid-0 `EPERM` rows (permissions 4), beside the grant's
+  own given/expired/spent rows. An attempt is on the record whether or not it succeeded.
+- **The interrupt records; the net thread applies.** The console byte handler only parks the
+  payload. The net thread, which now waits offline instead of giving up when no grant was on
+  the command line, parses it, commits it with interrupts off, logs and receipts it, and brings
+  the stack up. A later escape replaces the grant from the service loop the same way.
+- **Specs are capped** at 255 bytes on the wire; the parser's limits (8 allow entries, 8 listen
+  ports) are unchanged.

@@ -1054,6 +1054,7 @@ int net_poll_resolve(uint8_t *out_ip) {
 void net_service_loop(void) {
     uint8_t frame[NET_FRAME_MAX];
     for (;;) {
+        egress_apply_pending(); /* a host may replace the grant over the console (ADR-0030) */
         udp_retire_closing();
         while (net_rx(frame, sizeof(frame)) > 0) {
         }

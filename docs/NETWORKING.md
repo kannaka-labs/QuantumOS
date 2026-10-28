@@ -885,5 +885,25 @@ trips; a ttl that expires). Every other networking gate now passes `$(NET_APPEND
 every VM it boots. Public functions: `egress_configure`, `egress_configured`, `egress_active`,
 `egress_check`, `egress_listen_ok`, `egress_note_resolution`, `egress_account`, `egress_reason`.
 
-Not in this PR: the COM1 grant escape for restored VMs (ADR-0030 lists it; no console VM has a
-NIC yet, so it waits for PR A2 rather than touching the reseed parser the console depends on).
+### Granting after boot: the console escape (PR A2)
+
+A host that restores a VM from a snapshot, or decides after boot that this VM may talk, grants
+over the console the same way it reseeds (ADR-0025):
+
+```
+ESC ] egress ; <key> ; ttl=600;bytes=4194304;allow=*;listen= BEL
+```
+
+The key is the authority, not the wire. The kernel takes it from `egress_key=<16 hex>` on the
+boot command line (`egress_set_key`), which ring 3 never sees; an escape with no key on the
+command line, a wrong key, or a spec the parser refuses is logged (`NET: egress escape
+refused: ...`) and receipted as a pid-0 EPERM row (permissions 4), so a console user typing
+the sequence by hand is on the record and gets nothing. The escape is honoured on COM1 and on
+the vsock shell channel alike, since both run the same parser. The console interrupt only
+records the offer (`egress_offer`); the net thread, which was waiting offline, applies it
+(`egress_apply_pending`), brings the stack up (`NET: egress granted over the console escape`),
+and from then on checks the mailbox each service turn, so a later escape replaces the grant.
+A replacement is parsed into a scratch table first and committed with interrupts off, so a
+syscall's check never sees half of each. Gate: `make ci-smoke-egress-escape` (forged key
+refused and offline; the host's key grants and the stack comes up; no key on the command
+line, the escape is dead).

@@ -60,7 +60,8 @@ int console_rx_pending(void);
 
 /* Console input that arrived on another wire (the vsock shell channel,
  * ADR-0029): runs the same escape parsing as COM1 receive (session reseed,
- * ADR-0025) and lands in the same input ring. Interrupts must be off. */
+ * ADR-0025; the key-gated egress grant, ADR-0030) and lands in the same input
+ * ring. Interrupts must be off. */
 void console_input_bytes(const uint8_t *buf, uint32_t len);
 
 /* Write `len` raw bytes to COM1, polling THR-empty per byte. The whole

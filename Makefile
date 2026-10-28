@@ -118,7 +118,7 @@ OBJECTS = $(KERNEL_SOURCES:$(KERNEL_DIR)/src/%.c=$(BUILD_DIR)/%.o) \
 -include $(OBJECTS:.o=.d)
 
 # Targets
-.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress ci-smoke-net-e1000
+.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress ci-smoke-egress-escape ci-smoke-net-e1000
 
 all: kernel
 
@@ -1826,6 +1826,39 @@ ci-smoke-net-virtio: kernel
 # (-device e1000): an MMIO BAR0 above the boot identity map, legacy 16-byte
 # descriptor rings, an EEPROM-sourced MAC, INTx receive interrupt. The NIC
 # for hypervisors and boards that offer neither virtio nor an rtl8139.
+# ADR-0030 PR A2: a host grants over the console escape, key-gated. Boot 1 carries
+# egress_key= and no egress=: a forged escape (wrong key) is refused and the stack stays
+# off; the host's escape grants and the stack comes up. Boot 2 has no key at all: the
+# very same escape is dead. Grant escape bytes: ESC ] egress ; <key> ; <spec> BEL.
+EGRESS_KEY_TEST ?= 0123456789abcdef
+ci-smoke-egress-escape: kernel
+	@echo "=== QuantumOS egress gate: a host grants over the console escape (ADR-0030, PR A2) ==="
+	@echo "[1/2] forged key refused and the stack stays off; the host's key grants and it comes up..."
+	@( printf '\033]egress;ffffffffffffffff;ttl=600;bytes=4000000;allow=*;listen=\007'; sleep 3; \
+	   printf 'http 10.0.2.2 18080\n'; sleep 2; \
+	   printf '\033]egress;$(EGRESS_KEY_TEST);ttl=600;bytes=4000000;allow=*;listen=\007'; sleep 10; \
+	   printf 'nslookup example.com\n'; sleep 6 ) | timeout 26s qemu-system-x86_64 \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "quiet egress_key=$(EGRESS_KEY_TEST)" \
+		-netdev user,id=n0 -device rtl8139,netdev=n0 -serial stdio -m 128M \
+		-display none -no-reboot 2>&1 | tee /tmp/qemu-escape.log || true
+	@grep -qF "NET: egress_key set" /tmp/qemu-escape.log || { echo "ERROR: the key was not taken from the cmdline"; cat /tmp/qemu-escape.log; exit 1; }
+	@grep -qF "NET: NIC present, no egress grant: networking off" /tmp/qemu-escape.log || { echo "ERROR: the boot did not start offline"; cat /tmp/qemu-escape.log; exit 1; }
+	@grep -qF "NET: egress escape refused: key mismatch" /tmp/qemu-escape.log || { echo "ERROR: the forged escape was not refused"; cat /tmp/qemu-escape.log; exit 1; }
+	@grep -qF "qsh: http: refused by the egress grant" /tmp/qemu-escape.log || { echo "ERROR: http was not refused before the grant"; cat /tmp/qemu-escape.log; exit 1; }
+	@grep -qF "NET: egress granted over the console escape" /tmp/qemu-escape.log || { echo "ERROR: the host's escape did not grant"; cat /tmp/qemu-escape.log; exit 1; }
+	@grep -qF "NET: DHCP lease" /tmp/qemu-escape.log || { echo "ERROR: the stack did not come up after the grant"; cat /tmp/qemu-escape.log; exit 1; }
+	@grep -qE "qsh: example.com -> [0-9]+" /tmp/qemu-escape.log || { echo "ERROR: nslookup did not resolve after the grant"; cat /tmp/qemu-escape.log; exit 1; }
+	@test "$$(grep -naF 'key mismatch' /tmp/qemu-escape.log | head -1 | cut -d: -f1)" -lt "$$(grep -naF 'granted over the console escape' /tmp/qemu-escape.log | head -1 | cut -d: -f1)" \
+		|| { echo "ERROR: the refusal did not precede the grant"; exit 1; }
+	@echo "[2/2] no egress_key on the cmdline: the same escape is dead..."
+	@( printf '\033]egress;$(EGRESS_KEY_TEST);ttl=600;bytes=4000000;allow=*;listen=\007'; sleep 10 ) | timeout 12s qemu-system-x86_64 \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "quiet" \
+		-netdev user,id=n0 -device rtl8139,netdev=n0 -serial stdio -m 128M \
+		-display none -no-reboot 2>&1 | tee /tmp/qemu-escape-nokey.log || true
+	@grep -qF "NET: egress escape refused: no egress_key on the cmdline" /tmp/qemu-escape-nokey.log || { echo "ERROR: the keyless escape was not refused"; cat /tmp/qemu-escape-nokey.log; exit 1; }
+	@if grep -qE "NET: DHCP lease|egress granted" /tmp/qemu-escape-nokey.log; then echo "ERROR: the stack came up with no key on the cmdline"; exit 1; fi
+	@echo "=== egress escape gate PASSED ==="
+
 ci-smoke-net-e1000: kernel
 	@$(MAKE) --no-print-directory ci-smoke-net ci-smoke-http NET_NIC=e1000 'NET_UP=NET: e1000 up'
 	@if grep -qF "NET: rtl8139 up" /tmp/qemu-net.log 2>/dev/null; then \
