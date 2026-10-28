@@ -1045,12 +1045,12 @@ static void cmd_http(const char *args) {
     /* Read the response to EOF, capturing the first line and counting
      * bytes. The idle timer resets on progress so a large transfer isn't
      * cut short; only a genuine stall trips the bound. */
-    char chunk[256];
+    char chunk[2048]; /* 2 KiB per RECV (#329): 8x fewer syscalls per window than 256 */
     char status[80];
     int slen = 0, got_status = 0;
     long total = 0;
     int reset = 0;
-    long tr = ticks();
+    long tr = ticks(); /* t0 (set before the request went out) is the transfer clock, #329 */
     for (int guard = 0; guard < 2000000; guard++) {
         heartbeat();
         if (ticks() - tr > 800) {
@@ -1116,7 +1116,12 @@ static void cmd_http(const char *args) {
     /* Be honest about a truncated transfer: a mid-stream reset drains what
      * was buffered and then returns an error, which must NOT read as a
      * clean fetch. */
-    o = ghost_put(b, o, reset ? " bytes then connection reset\r\n" : " bytes received\r\n");
+    o = ghost_put(b, o, reset ? " bytes then connection reset" : " bytes received");
+    /* Transfer time in ms (ticks at 100 Hz), so a gate can hold the stack to
+     * a throughput floor that is paced by the guest's own clock (#329). */
+    o = ghost_put(b, o, " in ");
+    o = ghost_put_u(b, o, (unsigned)((ticks() - t0) * 10));
+    o = ghost_put(b, o, " ms\r\n");
     out_bytes(b, o);
 }
 
