@@ -971,7 +971,8 @@ static void cmd_http(const char *args) {
             return;
         }
         if (r != 0) {
-            out("qsh: http: could not resolve host\r\n");
+            out(r == SYS_EEGRESS ? "qsh: http: refused by the egress grant\r\n"
+                                 : "qsh: http: could not resolve host\r\n");
             return;
         }
     }
