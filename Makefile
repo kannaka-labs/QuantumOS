@@ -2136,7 +2136,7 @@ ci-smoke-rng: kernel
 # stays down (no DHCP line), and ring 3 is refused with the grant's reason.
 ci-smoke-net-nogrant: kernel
 	@echo "=== QuantumOS egress gate: NIC present, no grant (ADR-0030) ==="
-	@( printf 'http example.com\nudping example.com\n'; sleep 12 ) | timeout 14s qemu-system-x86_64 \
+	@( printf 'http 10.0.2.2 18080\nudping example.com\nnslookup example.com\n'; sleep 12 ) | timeout 14s qemu-system-x86_64 \
 		-kernel $(BUILD_DIR)/kernel.elf32 -append "quiet" \
 		-netdev user,id=n0 -device rtl8139,netdev=n0 -serial stdio -m 128M \
 		-display none -no-reboot 2>&1 | tee /tmp/qemu-nogrant.log || true
@@ -2144,6 +2144,8 @@ ci-smoke-net-nogrant: kernel
 	@grep -qF "NET: NIC present, no egress grant: networking off" /tmp/qemu-nogrant.log || { echo "ERROR: missing the networking-off line"; cat /tmp/qemu-nogrant.log; exit 1; }
 	@if grep -qE "NET: DHCP lease|NET: ARP 10.0.2.2 is at MAC" /tmp/qemu-nogrant.log; then echo "ERROR: the stack came up without a grant"; exit 1; fi
 	@grep -qF "qsh: http: refused by the egress grant" /tmp/qemu-nogrant.log || { echo "ERROR: http was not refused with the grant's reason"; cat /tmp/qemu-nogrant.log; exit 1; }
+	@grep -qF "qsh: udping: refused by the egress grant" /tmp/qemu-nogrant.log || { echo "ERROR: udping was not refused with the grant's reason"; cat /tmp/qemu-nogrant.log; exit 1; }
+	@grep -qF "qsh: nslookup: refused by the egress grant" /tmp/qemu-nogrant.log || { echo "ERROR: nslookup was not refused with the grant's reason"; cat /tmp/qemu-nogrant.log; exit 1; }
 	@echo "=== egress nogrant gate PASSED ==="
 
 # ADR-0030 policy gate: one destination allowed; another refused and receipted; a byte
@@ -2162,9 +2164,9 @@ ci-smoke-egress: kernel
 	@grep -qF "qsh: udping: refused by the egress grant" /tmp/qemu-egress.log || { echo "ERROR: udp to a non-allowlisted port was not refused"; exit 1; }
 	@grep -qE "kind=EGRESS .*verdict=EPERM" /tmp/qemu-egress.log || { echo "ERROR: no EPERM egress receipt in the ledger"; exit 1; }
 	@grep -qE "kind=EGRESS .*verdict=OK" /tmp/qemu-egress.log || { echo "ERROR: no OK egress receipt in the ledger"; exit 1; }
-	@echo "[2/3] byte budget: 6000 bytes covers DHCP+DNS+one fetch, not a second..."
+	@echo "[2/3] byte budget: 2500 bytes covers DHCP+ARP+DNS, not two fetches..."
 	@( printf 'http example.com\nhttp example.com\n'; sleep 20 ) | timeout 22s qemu-system-x86_64 \
-		-kernel $(BUILD_DIR)/kernel.elf32 -append "egress=ttl=3600;bytes=6000;allow=example.com:80/tcp;listen=" \
+		-kernel $(BUILD_DIR)/kernel.elf32 -append "egress=ttl=3600;bytes=2500;allow=example.com:80/tcp;listen=" \
 		-netdev user,id=n0 -device rtl8139,netdev=n0 -serial stdio -m 128M \
 		-display none -no-reboot 2>&1 | tee /tmp/qemu-egress-budget.log || true
 	@grep -qF "NET: egress grant exhausted (bytes): networking off" /tmp/qemu-egress-budget.log || { echo "ERROR: the byte budget never tripped"; cat /tmp/qemu-egress-budget.log; exit 1; }

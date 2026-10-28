@@ -635,6 +635,8 @@ static void cmd_nslookup(const char *host) {
         out_bytes(b, o);
     } else if (r == -4) {
         out("qsh: nslookup: denied (no network capability)\r\n");
+    } else if (r == SYS_EEGRESS) {
+        out("qsh: nslookup: refused by the egress grant\r\n");
     } else if (r == RESOLVE_WOULDBLOCK) {
         out("qsh: nslookup: timed out\r\n");
     } else {

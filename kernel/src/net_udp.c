@@ -231,11 +231,11 @@ long net_udp_sendto(uint32_t pid, long sock, const uint8_t *dip, uint16_t dport,
     if (!net_nic_present()) {
         return NET_UDP_ENONET;
     }
+    if (egress_check(pid, dip, dport, EGRESS_PROTO_UDP) != EGRESS_OK) {
+        return NET_UDP_EGRESS; /* ADR-0030: refused before any lease wait; receipted */
+    }
     if (!net_ready()) {
         return NET_UDP_EAGAIN; /* lease still coming up — poll */
-    }
-    if (egress_check(pid, dip, dport, EGRESS_PROTO_UDP) != EGRESS_OK) {
-        return NET_UDP_EGRESS; /* ADR-0030: receipted by egress_check */
     }
     uint32_t head = udp_tx_head;
     if (head - udp_tx_tail == UDP_TXQ_DEPTH) {
