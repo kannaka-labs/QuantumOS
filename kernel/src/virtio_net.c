@@ -168,6 +168,11 @@ static void vzero(volatile void *p, uint32_t n) {
     }
 }
 
+/* EtherType of a frame, big-endian on the wire. */
+static inline uint16_t frame_type(const uint8_t *frame) {
+    return (uint16_t)(((uint16_t)frame[12] << 8) | frame[13]);
+}
+
 static inline uint16_t le16_at(const uint8_t *p) {
     return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
 }
@@ -227,6 +232,14 @@ static void rx_publish(uint16_t d) {
 static int rx_finish_csum(uint8_t *f, uint32_t flen, uint16_t start, uint16_t offset) {
     if ((uint32_t)start + offset + 2 > flen) {
         return 0;
+    }
+    /* Sum to the end of the IP datagram, not the frame: a padded runt would
+     * otherwise fold its padding into the checksum. */
+    if (flen >= ETH_HLEN + 20 && ((uint16_t)frame_type(f)) == ETH_TYPE_IPV4) {
+        uint32_t ip_end = (uint32_t)ETH_HLEN + (((uint32_t)f[ETH_HLEN + 2] << 8) | f[ETH_HLEN + 3]);
+        if (ip_end >= (uint32_t)start + offset + 2 && ip_end < flen) {
+            flen = ip_end;
+        }
     }
     uint32_t sum = 0;
     uint32_t i = start;
@@ -480,6 +493,15 @@ static int bring_up(void) {
     return 1;
 }
 
+/* Does the n-byte word at p spell `word` exactly? (No strncmp in-kernel.) */
+static int word_is(const char *p, int n, const char *word) {
+    int i = 0;
+    while (i < n && word[i] && p[i] == word[i]) {
+        i++;
+    }
+    return i == n && word[i] == ' ';
+}
+
 void virtio_net_set_nofeat(const char *list) {
     /* Comma-separated words; unknown ones are logged and ignored, so a typo
      * never silently disables something else. */
@@ -490,12 +512,11 @@ void virtio_net_set_nofeat(const char *list) {
             q++;
         }
         int n = (int)(q - p);
-        if (n == 4 && p[0] == 'c' && p[1] == 's' && p[2] == 'u' && p[3] == 'm') {
+        if (word_is(p, n, "csum")) {
             nofeat_mask |= NOFEAT_CSUM;
-        } else if (n == 5 && p[0] == 'm' && p[1] == 'r' && p[2] == 'g' && p[3] == 'r' &&
-                   p[4] == 'x') {
+        } else if (word_is(p, n, "mrgrx")) {
             nofeat_mask |= NOFEAT_MRGRX;
-        } else if (n == 4 && p[0] == 'm' && p[1] == 's' && p[2] == 'i' && p[3] == 'x') {
+        } else if (word_is(p, n, "msix")) {
             nofeat_mask |= NOFEAT_MSIX;
         } else if (n > 0) {
             boot_log("NET: virtio_net.nofeat: unknown feature word ignored");
@@ -559,7 +580,7 @@ static void tx_fill_hdr(uint8_t *hdr, const uint8_t *frame, uint16_t len) {
     if (!feat_csum || len < ETH_HLEN + 20) {
         return;
     }
-    if (((uint16_t)frame[12] << 8 | frame[13]) != ETH_TYPE_IPV4) {
+    if (frame_type(frame) != ETH_TYPE_IPV4) {
         return;
     }
     uint16_t ihl = (uint16_t)((frame[ETH_HLEN] & 0x0F) * 4);

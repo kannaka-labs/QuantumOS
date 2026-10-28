@@ -165,33 +165,6 @@ static tcp_conn_t *srv_free_slot(void) {
 }
 static uint16_t tcp_ephemeral_next = TCP_EPHEMERAL_BASE;
 
-/* TCP checksum over the pseudo-header ++ segment as ONE running sum
- * (checksum16 finalizes — it cannot be composed across two buffers).
- * Returns 0 for a valid received segment (its stored checksum in place)
- * and the value to store for a transmitted one (checksum field zeroed). */
-static uint16_t tcp_cksum(const uint8_t *sip, const uint8_t *dip, const uint8_t *seg,
-                          uint16_t seg_len) {
-    uint32_t sum = 0;
-    sum += (uint32_t)((sip[0] << 8) | sip[1]);
-    sum += (uint32_t)((sip[2] << 8) | sip[3]);
-    sum += (uint32_t)((dip[0] << 8) | dip[1]);
-    sum += (uint32_t)((dip[2] << 8) | dip[3]);
-    sum += IP_PROTO_TCP;
-    sum += seg_len;
-    uint32_t i = 0;
-    while (i + 1 < seg_len) {
-        sum += (uint32_t)((seg[i] << 8) | seg[i + 1]);
-        i += 2;
-    }
-    if (i < seg_len) {
-        sum += (uint32_t)(seg[i] << 8);
-    }
-    while (sum >> 16) {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-    return (uint16_t)~sum;
-}
-
 /* The pseudo-header's share of the TCP checksum, folded to 16 bits and
  * NOT complemented: what a checksum-offloading NIC expects to find in the
  * checksum field before it adds the segment (#253; virtio-net §5.1.6.2). */
@@ -207,6 +180,27 @@ static uint16_t tcp_pseudo_sum(const uint8_t *sip, const uint8_t *dip, uint16_t 
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
     return (uint16_t)sum;
+}
+
+/* TCP checksum over the pseudo-header ++ segment as ONE running sum
+ * (checksum16 finalizes — it cannot be composed across two buffers).
+ * Returns 0 for a valid received segment (its stored checksum in place)
+ * and the value to store for a transmitted one (checksum field zeroed). */
+static uint16_t tcp_cksum(const uint8_t *sip, const uint8_t *dip, const uint8_t *seg,
+                          uint16_t seg_len) {
+    uint32_t sum = tcp_pseudo_sum(sip, dip, seg_len); /* folding early is harmless */
+    uint32_t i = 0;
+    while (i + 1 < seg_len) {
+        sum += (uint32_t)((seg[i] << 8) | seg[i + 1]);
+        i += 2;
+    }
+    if (i < seg_len) {
+        sum += (uint32_t)(seg[i] << 8);
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    return (uint16_t)~sum;
 }
 
 /* Free space in the receive ring = the window we advertise. */
