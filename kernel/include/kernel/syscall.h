@@ -166,8 +166,9 @@
                          * client, #98 server). Ops: TCP_OP_CONNECT (active
                          * open to ip:port, WOULD_BLOCK while the handshake
                          * runs, 0 once ESTABLISHED, EIO on refuse/timeout),
-                         * TCP_OP_SEND (<= MSS bytes, WOULD_BLOCK while a
-                         * segment is outstanding), TCP_OP_RECV (bytes from
+                         * TCP_OP_SEND (<= 8192 bytes per call; returns how
+                         * many fit in the 64 KiB send ring, WOULD_BLOCK when
+                         * none do — #331), TCP_OP_RECV (bytes from
                          * the receive ring, 0 = peer closed / EOF,
                          * WOULD_BLOCK when empty), TCP_OP_CLOSE (graceful
                          * FIN, poll to CLOSED), TCP_OP_STATUS, TCP_OP_LISTEN

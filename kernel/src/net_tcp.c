@@ -32,11 +32,15 @@
  * ABORT can never be clobbered by a syscall's CLOSE (the design-attack
  * blocker).
  *
- * Honest scope: stop-and-wait send (one outstanding segment <= MSS),
- * in-order receive only (a segment must start exactly at rcv_nxt;
- * anything else is dropped and the peer retransmits), window = free
- * receive-ring space (64 KiB ring, zero below one MSS — #329), short
- * TIME_WAIT (~1s, not 2MSL). The server
+ * Honest scope: windowed send from a 64 KiB ring (#331) — up to
+ * min(peer window, cwnd) outstanding, slow start / linear growth / one
+ * segment after an RTO (RFC 5681 §3.1), fast retransmit on three
+ * duplicate ACKs with NewReno partial-ACK recovery (§3.2), go-back-N on
+ * timeout, a fixed 500 ms RTO (no RTT estimator), no SACK, no window
+ * scaling; in-order receive only (a segment must start exactly at
+ * rcv_nxt; anything else is dropped and the peer retransmits), window =
+ * free receive-ring space (128 KiB ring, zero below one MSS — #329),
+ * short TIME_WAIT (~1s, not 2MSL). The server
  * accepts ONE connection at a time: a SYN arriving while it is busy
  * matches nothing and is silently dropped — the peer's own SYN retry
  * lands after the next re-listen. At most one half-open can exist
@@ -57,6 +61,13 @@
  * headers on a 64 KiB body, for one. With twice the ring the full window
  * stays open until 64 KiB is unread. */
 #define TCP_RX_BUF 131072
+/* Send ring per connection (#331): power of two. 64 KiB is the most a peer
+ * without window scaling can ever let us have in flight (the 16-bit window
+ * field), so a bigger ring could only hold bytes no window would take. Before
+ * this the stack staged ONE segment and answered SEND with WOULDBLOCK until
+ * that segment was acknowledged — a scheduler round trip per 1460 bytes. */
+#define TCP_TX_BUF 65536
+#define TCP_IW (10 * TCP_MSS) /* initial congestion window (RFC 6928) */
 #define TCP_EPHEMERAL_BASE 49152
 #define TCP_RETX_TICKS 50      /* ~0.5s at 100 Hz between (re)transmits */
 #define TCP_MAX_RETRIES 8      /* then the connection enters ERROR */
@@ -104,9 +115,19 @@ typedef struct {
     volatile uint32_t rx_head; /* producer: net thread demux */
     volatile uint32_t rx_tail; /* consumer: RECV syscall */
 
-    uint8_t tx[TCP_MSS];
-    uint16_t tx_len;
-    volatile int tx_pending; /* syscall stages data + sets 1; net thread clears on ACK */
+    /* Send ring (#331). Three free-running byte counters index it:
+     *   tx_tail <= tx_sent <= tx_head   (compared by subtraction)
+     * bytes [tx_tail, tx_sent) are in flight, [tx_sent, tx_head) staged and
+     * not yet transmitted. snd_nxt - snd_una == tx_sent - tx_tail while data
+     * is outstanding; the FIN only ever flies once that difference is zero. */
+    uint8_t tx[TCP_TX_BUF];
+    volatile uint32_t tx_head; /* producer: SEND syscall (publish store) */
+    volatile uint32_t tx_tail; /* consumer: net thread, advanced by ACKs */
+    uint32_t tx_sent;          /* net thread only */
+    uint32_t snd_wnd;          /* peer's advertised window (no scaling) */
+    uint32_t cwnd, ssthresh;   /* congestion window / slow-start threshold, bytes */
+    uint32_t recover;          /* right edge at the last loss (NewReno) */
+    int dupacks;               /* consecutive duplicate ACKs */
 
     int fin_sent;     /* our FIN transmitted (occupies one seq) */
     int fin_received; /* peer FIN consumed */
@@ -311,6 +332,116 @@ static void tcp_ack(tcp_conn_t *c) {
     tcp_xmit(c, c->snd_nxt, TCP_ACK, NULL, 0, 0);
 }
 
+/* Transmit `len` bytes of the send ring starting at stream offset `off`
+ * (a free-running byte count) as one PSH|ACK segment with sequence `seq`.
+ * The ring span may wrap, so it is first laid flat (net thread only). */
+static void tcp_xmit_data(tcp_conn_t *c, uint32_t off, uint32_t seq, uint16_t len) {
+    static uint8_t seg[TCP_MSS]; /* net thread only */
+    for (uint16_t i = 0; i < len; i++) {
+        seg[i] = c->tx[(off + i) & (TCP_TX_BUF - 1)];
+    }
+    tcp_xmit(c, seq, TCP_PSH | TCP_ACK, seg, len, 0);
+}
+
+/* Resend the one segment at snd_una (fast retransmit / NewReno partial
+ * ACK): the first in-flight segment's worth, at most one MSS. */
+static void tcp_retransmit_head(tcp_conn_t *c) {
+    uint32_t inflight = c->tx_sent - c->tx_tail;
+    if (inflight == 0) {
+        return;
+    }
+    tcp_xmit_data(c, c->tx_tail, c->snd_una, (uint16_t)(inflight < TCP_MSS ? inflight : TCP_MSS));
+}
+
+/* Send-side state for a fresh connection (both open paths, net thread). */
+static void tcp_send_init(tcp_conn_t *c) {
+    c->tx_head = c->tx_tail = c->tx_sent = 0;
+    c->snd_wnd = TCP_MSS; /* until the first ACK says otherwise */
+    c->cwnd = TCP_IW;
+    c->ssthresh = TCP_TX_BUF;
+    c->recover = c->snd_una;
+    c->dupacks = 0;
+}
+
+static uint32_t tcp_max_u32(uint32_t a, uint32_t b) {
+    return a > b ? a : b;
+}
+
+/* Fill the send window (net thread, ESTABLISHED / CLOSE_WAIT): transmit
+ * staged bytes until min(peer window, cwnd) is in flight, one MSS per
+ * segment. Also the data retransmission timer and the zero-window probe. */
+static void tcp_send_window(tcp_conn_t *c, uint32_t now) {
+    uint32_t outstanding = c->snd_nxt - c->snd_una;
+
+    /* Retransmission timeout: everything in flight is presumed lost. Go
+     * back to snd_una with a one-segment window (RFC 5681 §3.1) and let
+     * the loop below resend; the FIN has its own timer and only ever
+     * flies once the data is acknowledged, so it is never in this count. */
+    if (outstanding > 0 && (uint32_t)(now - c->retx_tick) >= TCP_RETX_TICKS) {
+        if (++c->retries > TCP_MAX_RETRIES) {
+            c->state = TCPS_ERROR;
+            return;
+        }
+        c->ssthresh = tcp_max_u32(outstanding / 2, 2 * TCP_MSS);
+        c->cwnd = TCP_MSS;
+        c->recover = c->snd_nxt;
+        c->snd_nxt = c->snd_una;
+        c->tx_sent = c->tx_tail;
+        c->dupacks = 0;
+        c->retx_tick = now;
+        outstanding = 0;
+    }
+
+    uint32_t staged = c->tx_head - c->tx_sent; /* one read of the producer's counter */
+    if (staged == 0) {
+        return;
+    }
+
+    /* Zero window: probe with one byte of new data every RTO while nothing
+     * is in flight (RFC 1122 §4.2.2.17). Its ACK carries the reopened
+     * window; a probe that is never acknowledged ends the connection
+     * through the timeout path above, like any other dead peer. */
+    if (c->snd_wnd == 0) {
+        if (outstanding == 0 && (uint32_t)(now - c->retx_tick) >= TCP_RETX_TICKS) {
+            tcp_xmit_data(c, c->tx_sent, c->snd_nxt, 1);
+            c->snd_nxt += 1;
+            c->tx_sent += 1;
+            c->retx_tick = now;
+        }
+        return;
+    }
+
+    uint32_t wnd = c->snd_wnd < c->cwnd ? c->snd_wnd : c->cwnd;
+    int timer_idle = (outstanding == 0);
+    while (staged > 0 && outstanding < wnd) {
+        uint32_t room = wnd - outstanding;
+        uint32_t len = staged < TCP_MSS ? staged : TCP_MSS;
+        if (len > room) {
+            /* Sender-side silly-window avoidance (RFC 1122 §4.2.3.4): never
+             * cut a full segment down to a sub-MSS hole while data is in
+             * flight — the ACK that drains the hole opens a full one. With
+             * nothing in flight the runt goes, so a peer with a tiny window
+             * is never deadlocked. */
+            if (outstanding > 0) {
+                break;
+            }
+            len = room;
+        }
+        tcp_xmit_data(c, c->tx_sent, c->snd_nxt, (uint16_t)len);
+        c->snd_nxt += len;
+        c->tx_sent += len;
+        staged -= len;
+        outstanding += len;
+    }
+    /* The timer runs from the OLDEST unacknowledged byte: start it when
+     * the window was empty, leave it alone otherwise (an advancing ACK
+     * restarts it). Never reset `retries` here — after an RTO the window
+     * is empty by construction, and a reset would retry forever. */
+    if (timer_idle && outstanding > 0) {
+        c->retx_tick = now;
+    }
+}
+
 /* Zero the whole TCB and return it to CLOSED (net thread only). The
  * leading `state` field is zeroed LAST, behind a publish barrier: a
  * preempting syscall that reads `state` mid-zero still sees the old
@@ -351,7 +482,7 @@ static void tcp_rearm_listen(tcp_conn_t *c) {
  * exclusive branches (a data+FIN segment must have both consumed and
  * one ACK covering both). */
 static int tcp_rx_one(tcp_conn_t *c, const eth_hdr_t *eth, const ip_hdr_t *ip, uint16_t sport,
-                      uint16_t dport, uint8_t flags, uint32_t seq, uint32_t ack,
+                      uint16_t dport, uint8_t flags, uint32_t seq, uint32_t ack, uint32_t wnd,
                       const uint8_t *payload, uint16_t payload_len) {
     int st = c->state;
     if (st == TCPS_CLOSED || st == TCPS_ERROR) {
@@ -380,6 +511,7 @@ static int tcp_rx_one(tcp_conn_t *c, const eth_hdr_t *eth, const ip_hdr_t *ip, u
         c->rcv_nxt = seq + 1;
         c->iss = (uint32_t)timer_get_ticks() * 2654435761u + 0x2000;
         c->snd_una = c->snd_nxt = c->iss + 1; /* the SYN|ACK occupies iss */
+        tcp_send_init(c);
         c->retries = 0;
         c->retx_tick = (uint32_t)timer_get_ticks();
         c->state = TCPS_SYN_RCVD;
@@ -423,6 +555,8 @@ static int tcp_rx_one(tcp_conn_t *c, const eth_hdr_t *eth, const ip_hdr_t *ip, u
         if ((flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK) && ack == c->snd_nxt) {
             c->rcv_nxt = seq + 1;
             c->snd_una = ack;
+            c->snd_wnd = wnd; /* the peer's first window (#331) */
+            c->retries = 0;
             c->state = TCPS_ESTABLISHED;
             tcp_ack(c); /* completes the handshake */
         }
@@ -450,21 +584,66 @@ static int tcp_rx_one(tcp_conn_t *c, const eth_hdr_t *eth, const ip_hdr_t *ip, u
          * same call. */
     }
 
-    /* (1) ACK field — advance snd_una (forward only, wrap-safe). */
+    /* (1) ACK field — advance snd_una (forward only, wrap-safe), release
+     * the acknowledged span of the send ring, grow the congestion window,
+     * and watch for the duplicate ACKs that mean a hole (#331). */
     if (flags & TCP_ACK) {
         int advanced = 0;
         if (SEQ_GT(ack, c->snd_una) && !SEQ_GT(ack, c->snd_nxt)) {
+            uint32_t acked = ack - c->snd_una;
             c->snd_una = ack;
             advanced = 1;
+            c->retries = 0;
+            c->retx_tick = (uint32_t)timer_get_ticks(); /* timer from the new oldest byte */
+            c->dupacks = 0;
+            if (!c->fin_sent) {
+                /* Data acknowledged. The FIN only flies once every data byte
+                 * is acked, so in a FIN state this ACK covers the FIN alone
+                 * and the ring has nothing left to release. */
+                c->tx_tail += acked;
+                /* Slow start below ssthresh (one MSS per full MSS acked),
+                 * linear above it (RFC 5681 §3.1), never past the ring. */
+                if (c->cwnd < c->ssthresh) {
+                    c->cwnd += acked < TCP_MSS ? acked : TCP_MSS;
+                } else {
+                    c->cwnd += (TCP_MSS * TCP_MSS) / c->cwnd;
+                }
+                if (c->cwnd > TCP_TX_BUF) {
+                    c->cwnd = TCP_TX_BUF;
+                }
+                /* NewReno partial ACK: still short of the right edge at the
+                 * time of loss, so the next hole starts at the new snd_una —
+                 * resend it now rather than wait for three more duplicates. */
+                if (SEQ_GT(c->recover, c->snd_una)) {
+                    tcp_retransmit_head(c);
+                }
+            }
+        } else if (ack == c->snd_una && payload_len == 0 && wnd == c->snd_wnd && !c->fin_sent &&
+                   SEQ_GT(c->snd_nxt, c->snd_una)) {
+            /* Duplicate ACK (RFC 5681 §2: same ack, no data, same window,
+             * data in flight). Three in a row mean the segment at snd_una is
+             * gone while later ones arrived: resend just that one and halve
+             * the window (§3.2). Recovery lasts until the ACK passes the right
+             * edge at the time of loss, so the duplicates our own retransmits
+             * provoke cannot trigger it again. */
+            if (++c->dupacks == 3 && !SEQ_GT(c->recover, c->snd_una)) {
+                uint32_t outstanding = c->snd_nxt - c->snd_una;
+                c->ssthresh = tcp_max_u32(outstanding / 2, 2 * TCP_MSS);
+                c->cwnd = c->ssthresh;
+                c->recover = c->snd_nxt;
+                tcp_retransmit_head(c);
+            }
         }
-        /* Clear tx_pending ONLY when this ACK actually advanced snd_una. A
-         * pure/duplicate ACK finds snd_una == snd_nxt whenever the app has
-         * STAGED data that the net thread has not transmitted yet (net_tcp_send
-         * sets tx_pending but leaves snd_nxt until tcp_service sends), so an
-         * unconditional clear here silently drops the staged response — e.g. a
-         * half-closing client's FIN|ACK landing between stage and transmit. */
+        if (ack == c->snd_una) {
+            c->snd_wnd = wnd; /* the peer's window rides on every current ACK */
+            /* Any current ACK proves the peer alive, so the retransmission
+             * budget is for a peer that has gone SILENT, not one that keeps
+             * answering zero-window probes (or duplicate-ACKing a hole)
+             * while its reader is slow. The program's own deadlines bound
+             * how long it waits on such a peer. */
+            c->retries = 0;
+        }
         if (advanced && c->snd_una == c->snd_nxt) {
-            c->tx_pending = 0; /* our outstanding data (or FIN) fully acknowledged */
             if (c->fin_sent) {
                 if (c->state == TCPS_FIN_WAIT_1) {
                     c->state = TCPS_FIN_WAIT_2;
@@ -570,17 +749,19 @@ void tcp_rx_demux(const uint8_t *frame, uint16_t len) {
         ((uint32_t)tcp[4] << 24) | ((uint32_t)tcp[5] << 16) | ((uint32_t)tcp[6] << 8) | tcp[7];
     uint32_t ack =
         ((uint32_t)tcp[8] << 24) | ((uint32_t)tcp[9] << 16) | ((uint32_t)tcp[10] << 8) | tcp[11];
+    uint32_t wnd = ((uint32_t)tcp[14] << 8) | tcp[15]; /* peer window, unscaled (#331) */
     uint16_t payload_off = (uint16_t)(doff * 4);
     uint16_t payload_len = (uint16_t)(seg_len - payload_off);
     const uint8_t *payload = tcp + payload_off;
 
-    if (tcp_rx_one(&tcb, eth, ip, sport, dport, flags, seq, ack, payload, payload_len)) {
+    if (tcp_rx_one(&tcb, eth, ip, sport, dport, flags, seq, ack, wnd, payload, payload_len)) {
         return;
     }
     /* Server slots are disjoint by listen port, so at most one matches;
      * stop at the first that consumes the segment. */
     for (int i = 0; i < TCP_MAX_LISTENERS; i++) {
-        if (tcp_rx_one(&tcb_srv[i], eth, ip, sport, dport, flags, seq, ack, payload, payload_len)) {
+        if (tcp_rx_one(&tcb_srv[i], eth, ip, sport, dport, flags, seq, ack, wnd, payload,
+                       payload_len)) {
             return;
         }
     }
@@ -631,6 +812,7 @@ static void tcp_service_one(tcp_conn_t *c, uint32_t now) {
             c->have_mac = 1;
             c->iss = (uint32_t)timer_get_ticks() * 2654435761u + 0x1000;
             c->snd_una = c->snd_nxt = c->iss + 1; /* the SYN occupies iss */
+            tcp_send_init(c);
             c->rcv_nxt = 0;
             c->state = TCPS_SYN_SENT;
             c->retries = 0;
@@ -671,25 +853,17 @@ static void tcp_service_one(tcp_conn_t *c, uint32_t now) {
         return;
     }
 
-    /* Data: transmit fresh, or retransmit an outstanding segment. */
-    if (c->tx_pending && (c->state == TCPS_ESTABLISHED || c->state == TCPS_CLOSE_WAIT)) {
-        if (c->snd_una == c->snd_nxt) { /* fresh (nothing outstanding) */
-            tcp_xmit(c, c->snd_nxt, TCP_PSH | TCP_ACK, c->tx, c->tx_len, 0);
-            c->snd_nxt += c->tx_len;
-            c->retries = 0;
-            c->retx_tick = now;
-        } else if ((uint32_t)(now - c->retx_tick) >= TCP_RETX_TICKS) {
-            if (++c->retries > TCP_MAX_RETRIES) {
-                c->state = TCPS_ERROR;
-                return;
-            }
-            tcp_xmit(c, c->snd_una, TCP_PSH | TCP_ACK, c->tx, c->tx_len, 0);
-            c->retx_tick = now;
+    /* Data: fill the send window, retransmit on timeout, probe a zero
+     * window (#331). */
+    if (c->state == TCPS_ESTABLISHED || c->state == TCPS_CLOSE_WAIT) {
+        tcp_send_window(c, now);
+        if (c->state == TCPS_ERROR) {
+            return; /* retransmission exhausted */
         }
     }
 
-    /* Graceful close: once our data has drained, send the FIN. */
-    if (c->close_req && !c->fin_sent && !c->tx_pending && c->snd_una == c->snd_nxt &&
+    /* Graceful close: once every staged byte is acknowledged, send the FIN. */
+    if (c->close_req && !c->fin_sent && c->tx_head == c->tx_tail && c->snd_una == c->snd_nxt &&
         (c->state == TCPS_ESTABLISHED || c->state == TCPS_CLOSE_WAIT)) {
         tcp_xmit(c, c->snd_nxt, TCP_FIN | TCP_ACK, NULL, 0, 0);
         c->snd_nxt += 1;
@@ -893,18 +1067,23 @@ long net_tcp_send(uint32_t pid, const uint8_t *buf, uint16_t len) {
     if (len == 0) {
         return 0;
     }
-    if (len > TCP_MSS) {
-        len = TCP_MSS;
+    /* Copy what fits into the send ring and say how much (#331): a partial
+     * write is the normal answer near a full ring, WOULDBLOCK only when
+     * nothing fits. tx_tail may be stale here (the net thread advances it)
+     * — that only ever under-counts the free space. */
+    uint32_t head = c->tx_head;
+    uint32_t free = TCP_TX_BUF - (head - c->tx_tail);
+    if (free == 0) {
+        return NET_TCP_WOULDBLOCK;
     }
-    if (c->tx_pending) {
-        return NET_TCP_WOULDBLOCK; /* a segment is still outstanding */
+    if (len > free) {
+        len = (uint16_t)free;
     }
     for (uint16_t i = 0; i < len; i++) {
-        c->tx[i] = buf[i];
+        c->tx[(head + i) & (TCP_TX_BUF - 1)] = buf[i];
     }
-    c->tx_len = len;
     publish_barrier();
-    c->tx_pending = 1;
+    c->tx_head = head + len; /* the publish store: the net thread sends from here */
     return len;
 }
 

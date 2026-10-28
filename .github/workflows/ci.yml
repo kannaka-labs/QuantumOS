@@ -845,6 +845,8 @@ jobs:
       run: make ci-smoke-net
     - name: Fetch a web page over the ring-3 TCP client (epic #82)
       run: make ci-smoke-http
+    - name: Upload 256 KiB through the windowed TCP sender, byte-checked by a host sink (#331)
+      run: make ci-smoke-tcp-put
     - name: The same ARP/DHCP/DNS/HTTP gates through virtio-net-pci (ADR-0024), offloads on (#253)
       run: make ci-smoke-net-virtio
     - name: virtio-net with every offload switched off from the cmdline (virtio_net.nofeat=, #253)

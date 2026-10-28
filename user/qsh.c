@@ -123,8 +123,8 @@ static void cmd_help(void) {
               "try: run /bin/qtop" A0 "\r\n");
     out(A_CAT "  files  " A0 A_CMD "ls" A0 " " A_CMD "cat" A0 " " A_CMD "write" A0 " " A_CMD "rm" A0
               " " A_CMD "sync" A0 "  " A_DIM "browse and edit the initrd" A0 "\r\n");
-    out(A_CAT "  net    " A0 A_CMD "http" A0 " <host>   " A_CMD "nslookup" A0 "   " A_CMD
-              "udping" A0 "   " A_CMD "egress" A0 "   " A_DIM
+    out(A_CAT "  net    " A0 A_CMD "http" A0 " <host>   " A_CMD "tcpput" A0 "   " A_CMD
+              "nslookup" A0 "   " A_CMD "udping" A0 "   " A_CMD "egress" A0 "   " A_DIM
               "reach the network, within the grant" A0 "\r\n");
     out(A_CAT "  system " A0 A_CMD "ps" A0 " " A_CMD "free" A0 " " A_CMD "uptime" A0 " " A_CMD
               "date" A0 " " A_CMD "pid" A0 " " A_CMD "echo" A0 "  " A_DIM "inspect the machine" A0
@@ -1125,6 +1125,160 @@ static void cmd_http(const char *args) {
     out_bytes(b, o);
 }
 
+/* ------------------------------------------------------------------ *
+ * tcpput <ip> <port> <bytes>: push a deterministic byte pattern to a TCP
+ * sink and report the ACKNOWLEDGED throughput (#331) — the send-side
+ * twin of `http`. Byte k of the stream is 0x20 + (k % 95), which the
+ * host sink (scripts/tcp_sink.py) checks offset by offset, so a stack
+ * that reorders, duplicates or drops under a windowed send fails on
+ * content, not just on the clock. The time printed runs from the first
+ * SEND until the close completes, i.e. until the peer has acknowledged
+ * every byte and the FIN — never merely until the bytes were staged.
+ * Dotted-quad only: this is a measurement, not a client.
+ * ------------------------------------------------------------------ */
+#define TCPPUT_CHUNK 4096 /* bytes offered per SEND; the kernel takes what fits */
+#define TCPPUT_MAX (16u << 20)
+
+static void cmd_tcpput(const char *args) {
+    unsigned char ip[4];
+    const char *p = args;
+    if (!parse_ipv4(p, ip)) {
+        out("qsh: tcpput: usage: tcpput <ip> <port> <bytes>\r\n");
+        return;
+    }
+    while (*p && *p != ' ') {
+        p++;
+    }
+    while (*p == ' ') {
+        p++;
+    }
+    unsigned port = 0;
+    while (*p >= '0' && *p <= '9') {
+        port = port * 10 + (unsigned)(*p - '0');
+        p++;
+    }
+    while (*p == ' ') {
+        p++;
+    }
+    unsigned total = 0;
+    while (*p >= '0' && *p <= '9' && total < TCPPUT_MAX) {
+        total = total * 10 + (unsigned)(*p - '0');
+        p++;
+    }
+    if (port == 0 || port > 65535 || total == 0 || total > TCPPUT_MAX) {
+        out("qsh: tcpput: usage: tcpput <ip> <port> <bytes>  (bytes <= 16 MiB)\r\n");
+        return;
+    }
+
+    tcp_req_t req;
+    for (unsigned i = 0; i < sizeof(req); i++) {
+        ((unsigned char *)&req)[i] = 0;
+    }
+
+    /* Connect (time-bounded poll), as `http` does. */
+    long cr = UDP_WOULDBLOCK;
+    long t0 = ticks();
+    for (int guard = 0; guard < 200000 && ticks() - t0 < 600; guard++) {
+        heartbeat();
+        req.sock = 0;
+        for (int i = 0; i < 4; i++) {
+            req.ip[i] = ip[i];
+        }
+        req.port = (unsigned short)port;
+        cr = tcp_(TCP_CONNECT, &req);
+        if (cr != UDP_WOULDBLOCK) {
+            break;
+        }
+        yield();
+    }
+    if (cr != 0) {
+        http_close(&req);
+        if (cr == -4) {
+            out("qsh: tcpput: denied (no network capability)\r\n");
+        } else if (cr == SYS_EEGRESS) {
+            out("qsh: tcpput: refused by the egress grant\r\n");
+        } else {
+            out("qsh: tcpput: connect failed\r\n");
+        }
+        return;
+    }
+
+    /* Stream the pattern. SEND takes what fits in the kernel's send ring
+     * and returns the count; WOULDBLOCK means the ring is full — yield and
+     * retry. The idle bound resets on progress so a long transfer is never
+     * cut short; only a genuine stall trips it. */
+    static char chunk[TCPPUT_CHUNK];
+    unsigned sent = 0;
+    int failed = 0;
+    t0 = ticks();
+    long tr = t0;
+    for (int guard = 0; guard < 20000000 && sent < total; guard++) {
+        heartbeat();
+        if (ticks() - tr > 800) {
+            failed = 1; /* 8 s without a byte accepted */
+            break;
+        }
+        unsigned n = total - sent;
+        if (n > sizeof(chunk)) {
+            n = (unsigned)sizeof(chunk);
+        }
+        for (unsigned i = 0; i < n; i++) {
+            chunk[i] = (char)(0x20 + ((sent + i) % 95));
+        }
+        req.buf = chunk;
+        req.len = (unsigned short)n;
+        long sr = tcp_(TCP_SEND, &req);
+        if (sr == UDP_WOULDBLOCK) {
+            yield();
+            continue;
+        }
+        if (sr <= 0) {
+            failed = 1;
+            break;
+        }
+        sent += (unsigned)sr;
+        tr = ticks();
+    }
+
+    /* Close, and WAIT for it: the kernel sends the FIN only after every
+     * staged byte is acknowledged, and CLOSE returns 0 only once the FIN
+     * is acknowledged too — so 0 here means the peer holds every byte. */
+    long close_r = UDP_WOULDBLOCK;
+    long tc = ticks();
+    for (int guard = 0; guard < 2000000 && ticks() - tc < 1500; guard++) {
+        heartbeat();
+        close_r = tcp_(TCP_CLOSE, &req);
+        if (close_r != UDP_WOULDBLOCK) {
+            break;
+        }
+        yield();
+    }
+    long ms = (ticks() - t0) * 10;
+
+    char b[128];
+    int o = ghost_put(b, 0, "qsh: tcpput ");
+    for (int i = 0; i < 4; i++) {
+        o = ghost_put_u(b, o, ip[i]);
+        if (i < 3) {
+            b[o++] = '.';
+        }
+    }
+    b[o++] = ':';
+    o = ghost_put_u(b, o, port);
+    o = ghost_put(b, o, ": ");
+    o = ghost_put_u(b, o, sent);
+    if (failed) {
+        o = ghost_put(b, o, " bytes then send failed after ");
+    } else if (close_r != 0) {
+        o = ghost_put(b, o, " bytes staged but the close did not complete in ");
+    } else {
+        o = ghost_put(b, o, " bytes sent in ");
+    }
+    o = ghost_put_u(b, o, (unsigned)ms);
+    o = ghost_put(b, o, " ms\r\n");
+    out_bytes(b, o);
+}
+
 static void cmd_sync(void) {
     long r = sync_();
     if (r >= 0) {
@@ -1817,6 +1971,10 @@ static void execute(const char *line) {
         cmd_http(a);
     } else if (is_cmd(line, "http")) {
         out("qsh: http: usage: http <host> [port]\r\n");
+    } else if ((a = arg_of(line, "tcpput")) != 0) {
+        cmd_tcpput(a);
+    } else if (is_cmd(line, "tcpput")) {
+        out("qsh: tcpput: usage: tcpput <ip> <port> <bytes>\r\n");
     } else if (is_cmd(line, "free")) {
         cmd_free();
     } else if (is_cmd(line, "uptime")) {
