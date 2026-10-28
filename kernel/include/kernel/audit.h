@@ -75,7 +75,8 @@
                          * Recorded under the SURVIVING owner — never REAP, which must keep
                          * meaning "owner died"; resource_id (== the dead pid) carries the
                          * death linkage for verifiers. */
-#define AUDIT_EGRESS 11 /* an egress verdict or grant event (ADR-0030): pid 0 + DEVICE_ID_NET +
+#define AUDIT_EGRESS                                                                               \
+    11 /* an egress verdict or grant event (ADR-0030): pid 0 + DEVICE_ID_NET +
                          * permissions 1|2|3 = granted|expired|budget spent; otherwise the
                          * sender's pid, resource_id = destination IPv4 as a u32 (0 for a
                          * listen check), permissions = (proto << 16) | port, verdict OK or
