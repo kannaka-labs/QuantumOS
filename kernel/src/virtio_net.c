@@ -499,7 +499,7 @@ static int word_is(const char *p, int n, const char *word) {
     while (i < n && word[i] && p[i] == word[i]) {
         i++;
     }
-    return i == n && word[i] == ' ';
+    return i == n && word[i] == '\0';
 }
 
 void virtio_net_set_nofeat(const char *list) {
