@@ -60,6 +60,10 @@ static int str_eq(const char *a, const char *b) {
     return *a == *b;
 }
 
+static int ip4_eq(const uint8_t *a, const uint8_t *b) {
+    return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
+}
+
 static uint32_t ip_u32(const uint8_t ip[4]) {
     return ((uint32_t)ip[0] << 24) | ((uint32_t)ip[1] << 16) | ((uint32_t)ip[2] << 8) | ip[3];
 }
@@ -273,7 +277,7 @@ int egress_check(uint32_t pid, const uint8_t dip[4], uint16_t dport, uint8_t pro
                 v = EGRESS_OK;
                 break;
             }
-            if (!a->has_ip || !ip_eq(a->ip, dip)) {
+            if (!a->has_ip || !ip4_eq(a->ip, dip)) {
                 continue;
             }
             if (a->port == dport && a->proto == proto) {
