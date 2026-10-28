@@ -44,7 +44,7 @@ import uuid
 
 # ADR-0030: the grant every harness VM boots with. Wide (any destination) because the
 # harness tests the stack and the citizens, not egress policy; still budgeted and receipted.
-EGRESS_WIDE = "egress=ttl=86400;bytes=4294967296;allow=*;listen=4747,8080,502,4000"
+EGRESS_WIDE = "egress=ttl=86400;bytes=4294967296;allow=*;listen=4747,8080,502,4000,9999"
 
 # ---- wire constants (user/swarm.h) ----------------------------------------
 # These module constants ARE the host ring of the ADR-0020 wire freeze:

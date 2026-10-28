@@ -1636,7 +1636,7 @@ NET_EXTRA ?=
 # ADR-0030: networking is an egress grant. Every gate that gives the guest a NIC also
 # gives it a grant on the command line; the nogrant/egress gates below test the policy.
 # The wide grant (allow=*) is for gates whose subject is the stack or a driver, not policy.
-EGRESS_WIDE ?= egress=ttl=3600;bytes=1073741824;allow=*;listen=4747,8080,502,4000
+EGRESS_WIDE ?= egress=ttl=3600;bytes=1073741824;allow=*;listen=4747,8080,502,4000,9999
 NET_APPEND ?= $(EGRESS_WIDE)
 
 ci-smoke-net: kernel
