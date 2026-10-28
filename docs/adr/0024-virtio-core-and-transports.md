@@ -89,9 +89,10 @@ reads return nothing, without touching the port.
   the host's tap, and fetches `HTTP/1.0 200 OK` from a host `http.server`. The MMIO
   path has no CI gate: QEMU's `microvm` machine cannot load the PVH image (its loader
   finds the Multiboot header first), and CI runners have no KVM for Firecracker.
-- **Not done, in order of value:** an e1000 driver for hypervisors and bare metal that
-  offer neither virtio nor an rtl8139; checksum offload (`CSUM`/`GUEST_CSUM`) and
+- **Not done, in order of value:** checksum offload (`CSUM`/`GUEST_CSUM`) and
   `MRG_RXBUF`; MSI-X; and multiqueue (`MQ`), which needs SMP to matter (ADR-0005).
+  (The e1000 driver for hypervisors and bare metal that offer neither virtio nor an
+  rtl8139 landed in #252, behind the same netdev seam.)
   Packed virtqueues and `EVENT_IDX` are throughput work this single-core kernel does
   not yet need.
 

@@ -12,6 +12,7 @@
 
 #include <kernel/netdev.h>
 #include <kernel/virtio_net.h>
+#include <kernel/e1000.h>
 #include <kernel/rtl8139.h>
 #include <kernel/boot.h>
 #include <kernel/egress.h>
@@ -25,6 +26,7 @@
  * 0 and the rtl8139 probe runs exactly as before. */
 static const netdev_ops_t *const drivers[] = {
     &virtio_net_netdev,
+    &e1000_netdev,
     &rtl8139_netdev,
 };
 
