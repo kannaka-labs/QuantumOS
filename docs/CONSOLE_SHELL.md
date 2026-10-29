@@ -318,10 +318,11 @@ visible on a UEFI screen too.
   off often does not provide. There is no native USB HID driver (a
   separate, larger issue); fall back to COM1 where the board has one.
   QEMU/OVMF emulates an i8042, so the CI gate does not prove this on
-  real hardware — reports go to #265.
-- The multiboot memory map is not read; the PMM assumes 128 MB
-  (`memory.c` hardcodes it), so RAM beyond that is ignored on real
-  machines.
+  real hardware — reports go to [HARDWARE.md](HARDWARE.md) via the
+  Hardware report issue template (#265).
+- RAM is sized from the multiboot memory map (#215) but capped at the
+  1 GB low identity map, so machines with more than 1 GB use only the
+  first 1 GB.
 - Peer IPC capabilities (qsh ↔ ghostd) are not re-minted on watchdog
   restart — only declared *resource* caps are. A reborn shell keeps its
   console but loses `ghost` until this service.c limitation is fixed

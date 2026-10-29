@@ -142,7 +142,9 @@ an external **USB keyboard** needs the firmware's PS/2 legacy emulation,
 which UEFI-only firmware with CSM off often does not provide (there is no USB
 HID driver yet — fall back to a serial console where the board has one).
 RAM beyond what the firmware's memory map reports is not used. Hardware
-reports (what booted where) are collected in #265.
+reports (what booted where, and how far) live in
+[docs/HARDWARE.md](docs/HARDWARE.md); add yours with the **Hardware
+report** issue template (#265).
 
 ### One-Command Verification
 New contributors can verify their entire setup works with a single command:
@@ -499,7 +501,8 @@ We have specialized validation for AI-assisted development:
 - **Subsystem docs** (as-built): [Runtime & field memory](docs/RUNTIME.md),
   [Networking](docs/NETWORKING.md), [Persistent storage](docs/PERSISTENT_STORAGE.md),
   [Console & shell](docs/CONSOLE_SHELL.md), [Program execution](docs/PROGRAM_EXECUTION.md),
-  [initrd VFS](docs/INITRD_VFS.md), [Microkernel design](docs/MICROKERNEL_DESIGN.md)
+  [initrd VFS](docs/INITRD_VFS.md), [Microkernel design](docs/MICROKERNEL_DESIGN.md),
+  [Hardware reports](docs/HARDWARE.md) (real machines, what booted where)
 
 > Older design documents under `docs/` predate the implementation and describe intent, not the
 > shipped system — the ADRs above are the authoritative as-built record where they disagree.

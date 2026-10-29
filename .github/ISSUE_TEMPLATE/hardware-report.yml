@@ -1,0 +1,87 @@
+name: Hardware report
+description: Tell us what happened when you booted QuantumOS on a real machine (success or failure)
+title: "[HW]: "
+labels: ["bare-metal", "documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks. Every real boot, even one that stops at the GRUB menu, goes into
+        [docs/HARDWARE.md](https://github.com/kannaka-labs/QuantumOS/blob/main/docs/HARDWARE.md).
+        That page explains the boot ladder and which kernel lines to copy. Use the
+        **QuantumOS (console, verbose kernel log)** GRUB entry if you can: it prints
+        every detection line.
+
+  - type: input
+    id: machine
+    attributes:
+      label: Machine / board
+      description: Make and model, or the motherboard for a desktop. CPU if you know it.
+      placeholder: "ASUS VivoBook X515, Intel i3-1115G4"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: firmware-mode
+    attributes:
+      label: Firmware mode
+      description: How the machine booted the stick. CSM means a UEFI firmware with legacy boot enabled.
+      options:
+        - BIOS (legacy-only firmware)
+        - CSM (UEFI firmware, legacy/compatibility boot enabled)
+        - UEFI (no CSM; the stick booted as an EFI device)
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: QuantumOS version
+      description: The release tag of the ISO, or the commit you built it from.
+      placeholder: "v0.6.1, or main at e543f1f"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how-far
+    attributes:
+      label: How far it got
+      description: The highest rung reached. The splash shows a percent stage; note it below if it froze there.
+      options:
+        - Did not reach the GRUB menu (the firmware never booted the stick)
+        - GRUB menu
+        - Splash (note the percent stage in "Notes")
+        - "QuantumOS ready"
+        - qsh prompt shown
+        - qsh usable on its own keyboard
+        - Kernel panic (red banner; photo please)
+    validations:
+      required: true
+
+  - type: textarea
+    id: detected
+    attributes:
+      label: What was detected (disk, NIC, keyboard)
+      description: Copy the kernel's CONS / ATA / NET / PMMHIGH lines if you can read them, and say whether typing worked at the prompt.
+      placeholder: |
+        CONS: no COM1 UART detected — screen/keyboard console only
+        ATA: no disk — persistence disabled
+        NET: no network device found
+        keyboard: built-in, typing works
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Which GRUB entry you used, firmware settings you changed (SATA mode, Secure Boot, USB legacy), anything odd on screen.
+      placeholder: Default console entry; Secure Boot off; SATA set to AHCI.
+
+  - type: textarea
+    id: photo
+    attributes:
+      label: Photo of the screen
+      description: Drag an image into this box. For a failure, the spot where it stopped; for a success, the qsh prompt.
+      placeholder: Drag a photo here.
