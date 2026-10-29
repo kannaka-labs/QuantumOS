@@ -30,6 +30,19 @@ python3 ../provider-broker/provider_broker.py envelope --db broker.db --per-day 
 claude mcp add quantumos -- python3 $PWD/qos_hub.py serve --config $PWD/hub.json --db $PWD/broker.db
 ```
 
+Or install it as a Claude Code plugin from the constellation marketplace, which registers the
+same server from the manifests at the repository root (`.claude-plugin/plugin.json`, `.mcp.json`):
+
+```
+pip install quantumos-host-tools                       # qos-hub on PATH
+mkdir -p ~/.qos-hub && cp hub.example.json ~/.qos-hub/hub.json   # fix the paths; adjust the policies
+qos-broker envelope --db ~/.qos-hub/broker.db --per-day 2 --per-action 1 --classes storage,compute,qpu --max-lease 24h
+claude plugin marketplace add kannaka-labs/kannaka-constellation-marketplace
+claude plugin install quantumos@kannaka-constellation
+```
+
+The plugin reads `~/.qos-hub/hub.json` and `~/.qos-hub/broker.db`; nothing in it carries a key.
+
 When the agent hits an `ask` tool it gets `tell_your_human`. You then:
 
 ```

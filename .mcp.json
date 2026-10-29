@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "quantumos": {
+      "command": "qos-hub",
+      "args": [
+        "serve",
+        "--config",
+        "${HOME}/.qos-hub/hub.json",
+        "--db",
+        "${HOME}/.qos-hub/broker.db"
+      ]
+    }
+  }
+}

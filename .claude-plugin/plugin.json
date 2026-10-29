@@ -1,0 +1,20 @@
+{
+  "name": "quantumos",
+  "version": "0.6.2",
+  "description": "QuantumOS for Claude Code: the hub, one policy-gated MCP endpoint for the Kannaka constellation (allow / ask / deny per tool, every call in a ledger), fronting kannaka-memory, kannaka-quantum, Kannaktopus, the provider broker, 0xSCADA, the steward, kannaka-hdl, kannaka-apps, the Hive's buzz CLI, kannaka-lens, kannaka-cannon and kannaka-crystal; plus the QuantumOS kernel's own MCP (qos-mcp) when you want to boot the OS itself.",
+  "author": {
+    "name": "Kannaka Labs",
+    "email": "nflach78@gmail.com"
+  },
+  "homepage": "https://github.com/kannaka-labs/QuantumOS",
+  "keywords": [
+    "quantumos",
+    "mcp",
+    "hub",
+    "policy",
+    "kannaka",
+    "microkernel",
+    "capabilities",
+    "qpu"
+  ]
+}
