@@ -89,7 +89,10 @@ The example config wires up:
   environment, never from this file;
 - `lens`: [kannaka-lens](https://github.com/kannaka-labs/kannaka-lens) `show --json` of a project
   record is allowed; `run` asks, because it spends minutes of CPU on a clip and writes what it saw
-  into the HRM.
+  into the HRM;
+- `crystal`: [kannaka-crystal](https://github.com/kannaka-labs/kannaka-crystal) `materials` and the
+  `primitives` registry reads (by class and persistence floor, or one `CRY-######`), all allowed;
+  evolving, promoting, pruning and publishing are not listed.
 
 ## MCP servers over HTTP
 
