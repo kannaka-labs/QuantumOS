@@ -136,6 +136,23 @@ def test_the_example_scada_templates_name_real_commands():
     assert d["policy"]["scada.asset_create"] == "ask"
 
 
+def test_the_example_templates_for_the_stale_repos_name_real_commands():
+    """kannaka-hdl, kannaka-apps and kannaka-buzz entries: real subcommands, writes ask."""
+    d = json.loads((HERE / "hub.example.json").read_text())
+    first = lambda s: {t["argv"][0] for t in d["servers"][s]["cli"]["tools"].values()}
+    assert first("hdl") <= {"check", "grow"}                 # kannaka-hdl's CLI verbs
+    assert first("apps") <= {"list", "run"}                  # khdl-app <run|list>
+    assert first("buzz") <= {"channels", "messages"}         # buzz-cli groups used here
+    plan = d["servers"]["apps"]["cli"]["tools"]["plan"]["argv"]
+    assert plan[-1] == "--dry-run", "plan must never execute an app"
+    for tool, policy in (("apps.run", "ask"), ("buzz.send", "ask"), ("apps.plan", "allow"), ("hdl.grow", "allow")):
+        assert d["policy"][tool] == policy
+    for s in ("hdl", "apps", "buzz"):
+        for t in d["servers"][s]["cli"]["tools"].values():
+            for a in t["argv"]:
+                assert "{" not in a or (a.startswith("{") and a.endswith("}")), f"{s}: placeholder must fill a whole argv slot: {a}"
+
+
 class Colourful:
     async def list_tools(self):
         return NS(tools=[NS(name="status", description="", inputSchema={"type": "object"})])
