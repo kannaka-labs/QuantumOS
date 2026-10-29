@@ -40,7 +40,7 @@ concurrency:
 jobs:
   boot-gate:
     name: Boot Gate (qemu-wasm in headless Chromium)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     steps:
       - uses: actions/checkout@v4
 
@@ -96,7 +96,7 @@ jobs:
     name: Deploy to GitHub Pages
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: boot-gate
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     permissions:
       pages: write
       id-token: write

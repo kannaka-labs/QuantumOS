@@ -6,7 +6,9 @@ Getting from a clean checkout to a booting kernel. For the architecture see
 ## Prerequisites
 
 - **GCC** — the system compiler is auto-detected; an `x86_64-elf-*` cross-compiler is used if
-  present but is **not** required (Ubuntu 24.04 builds with system gcc).
+  present but is **not** required (Ubuntu 24.04 and 26.04 build with system gcc; CI runs on
+  26.04). The flags pin the ISA to plain `x86-64` whatever the compiler's default, and
+  `make ci-isa-baseline` checks the binaries (#346).
 - **QEMU** (`qemu-system-x86`) for booting and the CI gates.
 - **GNU make**, `nasm`. For the GRUB ISO: `grub-pc-bin`, `grub-efi-amd64-bin` (the UEFI half of
   the hybrid image), `xorriso`, `mtools`; `ovmf` to test the UEFI boot in QEMU.
