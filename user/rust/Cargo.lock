@@ -7,15 +7,15 @@ name = "qsys"
 version = "0.2.0"
 
 [[package]]
-name = "rfieldd"
-version = "0.1.0"
+name = "rhello"
+version = "0.2.0"
 dependencies = [
  "qsys",
 ]
 
 [[package]]
-name = "rhello"
-version = "0.2.0"
+name = "rkannaka"
+version = "0.1.0"
 dependencies = [
  "qsys",
 ]

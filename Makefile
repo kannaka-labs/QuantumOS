@@ -102,7 +102,7 @@ USER_PROGS = init echo client hbsvc ghostd ghost_test paradoxd paradox_test swar
 #   RUST_SERVICES  are embedded in the kernel and started by citizens.c with
 #                  a declarative grant, like every C service.
 RUST_PROGS = rhello
-RUST_SERVICES = rfieldd
+RUST_SERVICES = rkannaka
 USER_ELF_OBJS = $(USER_PROGS:%=$(USER_BUILD)/%_elf.o) $(RUST_SERVICES:%=$(USER_BUILD)/%_elf.o)
 
 # libq: the freestanding ring-3 runtime, built as a static archive and linked
@@ -971,29 +971,34 @@ ci-smoke: kernel
 		echo ""; echo "=== Smoke Test FAILED ==="; exit 1; \
 	fi
 	@echo "SUCCESS: Rust no_std citizen ran, crossed the ABI both ways, and was capability-gated (RHELLO)"
-	@# Rust SERVICE with a heap and a capability (#340 slices 2-3): rfieldd is
-	@# embedded like kannakad and started with CAP_RESOURCE_FIELD over region 7.
-	@# A Vec grows/shrinks/regrows through the GlobalAlloc over libq's arena;
-	@# three imprints land; a byte-corrupted probe recalls the EXACT stored
-	@# text; SYS_FIELD_INFO counts the three; and a recall against region 1 is
-	@# refused with exactly EPERM (the grant names ONE region, for Rust as for C).
-	@for gate in "RFIELD: alloc ok: vec grown to 1000 (sum=3496500)" \
-	             "RFIELD: imprinted 3/3 into region 7" \
-	             "RFIELD: winner=\"a rust citizen remembers the field\" slot=" \
-	             "RFIELD: field_info live=3 capacity=8" \
-	             "RFIELD: cross-region denied (EPERM)" \
-	             "rfieldd: FIELD VERIFIED"; do \
+	@# Rust SERVICE with a heap and a capability (#340): rkannaka, the Rust
+	@# kannaka client, is embedded like kannakad and started with
+	@# CAP_RESOURCE_FIELD over region 7. A Vec grows/shrinks/regrows through
+	@# the GlobalAlloc over libq's arena; a recall against region 1 is refused
+	@# with exactly EPERM (the grant names ONE region, for Rust as for C); then
+	@# it replays rootfs/etc/kannaka.session: imprints with importance, a
+	@# recall whose 4-byte-corrupted probe must return the EXACT stored text
+	@# (checked by the session's own `expect` lines), and `info`.
+	@for gate in "RKAN: alloc ok: vec grown to 1000 (sum=3496500)" \
+	             "RKAN: cross-region denied (EPERM)" \
+	             "RKAN: imprint slot=0 energy=29490 \"the swarm remembers what the field was told\"" \
+	             "RKAN: recall k=3 \"the swarm remembers what the fjeld was tald\" n=3" \
+	             "RKAN:   winner=\"the swarm remembers what the field was told\" slot=0 score=" \
+	             "RKAN: expect ok \"the swarm remembers what the field was told\"" \
+	             "RKAN: expect ok \"importance is energy in q15\"" \
+	             "RKAN: info live=3 capacity=8" \
+	             "rkannaka: SESSION VERIFIED (3 imprints, 2 recalls, 2 expects ok)"; do \
 		if ! grep -q -- "$$gate" /tmp/qemu-boot.log 2>/dev/null; then \
-			echo "ERROR: Rust service gate missing: $$gate"; \
+			echo "ERROR: Rust kannaka client gate missing: $$gate"; \
 			echo "Boot log:"; cat /tmp/qemu-boot.log 2>/dev/null || true; \
 			echo ""; echo "=== Smoke Test FAILED ==="; exit 1; \
 		fi; \
 	done
-	@if grep -q "RFIELD: FAIL\|RFIELD: PANIC\|rfieldd: FIELD FAILED" /tmp/qemu-boot.log 2>/dev/null; then \
-		echo "ERROR: the Rust service reported a failure:"; grep "RFIELD\|rfieldd" /tmp/qemu-boot.log; \
+	@if grep -q "RKAN: FAIL\|RKAN: PANIC\|rkannaka: SESSION FAILED" /tmp/qemu-boot.log 2>/dev/null; then \
+		echo "ERROR: the Rust kannaka client reported a failure:"; grep "RKAN\|rkannaka" /tmp/qemu-boot.log; \
 		echo ""; echo "=== Smoke Test FAILED ==="; exit 1; \
 	fi
-	@echo "SUCCESS: Rust service allocated over the libq arena and used its field capability (RFIELD)"
+	@echo "SUCCESS: Rust kannaka client replayed its session over the kernel field (RKAN)"
 	@# first native app citizen: 'run /bin/consciousnessd' runs a fixed-point
 	@# Kuramoto field on libq; the order parameter must actually synchronise
 	@# (r climb past 0.8) for the CONSCIOUSNESS EMERGED marker to print.

@@ -97,15 +97,20 @@ arena (`user/libq/heap.c`, linked into every Rust citizen; only one that
 declares the allocator pulls the 64 KB arena in), so `Vec` and `String`
 work; `alloc::format!` stays out, for the same `core::fmt` reason.
 
-Rust citizens can also be *services*: `rfieldd` (`user/rust/rfieldd`,
-#340) is embedded in the kernel like `kannakad` and started by `citizens.c`
-with a declarative `CAP_RESOURCE_FIELD` grant over region 7. Its boot-time
-gate lines: `RFIELD: alloc ok` (a `Vec` grown to 1,000, shrunk, regrown and
-dropped through the libq arena), `RFIELD: imprinted 3/3 into region 7`,
-`RFIELD: winner="a rust citizen remembers the field"` (a byte-corrupted
-probe recalls the exact stored text), `RFIELD: field_info live=3`,
-`RFIELD: cross-region denied (EPERM)` (region 1 is kannakad's, and the
-grant names one region), and the verdict `rfieldd: FIELD VERIFIED`.
+Rust citizens can also be *services*: `rkannaka` (`user/rust/rkannaka`,
+#340), the Rust kannaka client of the kernel field, is embedded in the
+kernel like `kannakad` and started by `citizens.c` with a declarative
+`CAP_RESOURCE_FIELD` grant over region 7. At boot it proves the allocator
+(`RKAN: alloc ok`: a `Vec` grown to 1,000, shrunk, regrown and dropped
+through the libq arena) and the gate (`RKAN: cross-region denied (EPERM)`:
+region 1 is kannakad's, and the grant names one region), then replays
+`/etc/kannaka.session` from the initrd (the RAM overlay shadows it, so a
+session can be replaced at runtime): `imprint <importance> <text>`,
+`recall <k> <probe>`, `expect <text>` (the last winner must be exactly
+this) and `info`. Each verb prints an `RKAN:` line; the shipped session's
+corrupted probes recall the exact stored text, and the verdict is
+`rkannaka: SESSION VERIFIED (3 imprints, 2 recalls, 2 expects ok)`. Text
+longer than 64 bytes is truncated and said so (ADR-0032 records why).
 
 The session runs `run /bin/rhello` and gates on four lines:
 

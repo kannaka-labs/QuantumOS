@@ -40,7 +40,7 @@ extern const uint8_t _binary_swarm_svc_elf_start[], _binary_swarm_svc_elf_end[];
 extern const uint8_t _binary_qsh_elf_start[], _binary_qsh_elf_end[];
 extern const uint8_t _binary_quantumd_elf_start[], _binary_quantumd_elf_end[];
 extern const uint8_t _binary_kannakad_elf_start[], _binary_kannakad_elf_end[];
-extern const uint8_t _binary_rfieldd_elf_start[], _binary_rfieldd_elf_end[];
+extern const uint8_t _binary_rkannaka_elf_start[], _binary_rkannaka_elf_end[];
 extern const uint8_t _binary_fieldsyncd_elf_start[], _binary_fieldsyncd_elf_end[];
 extern const uint8_t _binary_httpd_elf_start[], _binary_httpd_elf_end[];
 extern const uint8_t _binary_modbusd_elf_start[], _binary_modbusd_elf_end[];
@@ -65,7 +65,7 @@ void user_fieldsync_demo_init(uint32_t ghostd_pid);
 void user_httpd_init(void);
 void user_modbusd_init(void);
 void user_kannaka_demo_init(void);
-void user_rfieldd_init(void);
+void user_rkannaka_init(void);
 void user_quota_test_init(void);
 void user_delegation_demo_init(void);
 void user_cpu_hog_init(void);
@@ -106,7 +106,7 @@ void user_init(void) {
     user_ghost_demo_init();
     user_quantum_demo_init();
     user_kannaka_demo_init();
-    user_rfieldd_init();
+    user_rkannaka_init();
     user_qsv_init();
     /* qpud (the QPU executor) BEFORE qpu_test (the submitter): qpu_test
      * declares a dependency on qpud AND its bounded poll needs the executor
@@ -170,31 +170,32 @@ void user_kannaka_demo_init(void) {
     }
 }
 
-/* Bring up rfieldd — the first Rust SERVICE (#340, ADR-0032): a no_std Rust
- * program built from user/rust, embedded like kannakad, with the same kind of
- * declarative grant: CAP_RESOURCE_FIELD over region 7 (the one region no C
- * citizen names), re-minted and scrubbed on every start. It allocates over
- * libq's arena and recalls through the capability; monitored, it heartbeats
- * after its one-shot demo. Nothing in the kernel treats it as anything but
- * another ELF service. */
-void user_rfieldd_init(void) {
-    service_definition_t rfieldd_def = {
-        .name = "rfieldd",
+/* Bring up rkannaka — the Rust kannaka client of the kernel field (#340,
+ * ADR-0032): a no_std Rust program built from user/rust, embedded like
+ * kannakad, with the same kind of declarative grant: CAP_RESOURCE_FIELD over
+ * region 7 (the one region no C citizen names), re-minted and scrubbed on
+ * every start. It allocates over libq's arena and replays
+ * /etc/kannaka.session (imprint / recall / expect / info) through the
+ * capability; monitored, it heartbeats after the replay. Nothing in the
+ * kernel treats it as anything but another ELF service. */
+void user_rkannaka_init(void) {
+    service_definition_t rkannaka_def = {
+        .name = "rkannaka",
         .entry = NULL, /* user-process service */
-        .user_elf_start = _binary_rfieldd_elf_start,
-        .user_elf_end = _binary_rfieldd_elf_end,
+        .user_elf_start = _binary_rkannaka_elf_start,
+        .user_elf_end = _binary_rkannaka_elf_end,
         .dependencies = {NULL},
         .max_restarts = 2,
         .grant_field = 1,
         .field_region = 7,
     };
     uint32_t sid = 0;
-    if (service_register(&rfieldd_def, &sid) == SVC_SUCCESS &&
-        service_start("rfieldd", NULL) == SVC_SUCCESS) {
+    if (service_register(&rkannaka_def, &sid) == SVC_SUCCESS &&
+        service_start("rkannaka", NULL) == SVC_SUCCESS) {
         service_monitor(sid, true);
-        boot_log("rust citizens: rfieldd (ring 3) allocating and recalling via the kernel field");
+        boot_log("kannaka-memory: rkannaka (ring 3, Rust) replaying its session via the kernel field");
     } else {
-        boot_log("Warning: rfieldd service failed to start");
+        boot_log("Warning: rkannaka service failed to start");
     }
 }
 
