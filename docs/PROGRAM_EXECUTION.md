@@ -77,19 +77,35 @@ The piped session ends with `run /bin/hello` before `exit`:
 
 ## Rust citizens (#263 slice 1, ADR-0032)
 
-A program on the initrd does not have to be C. `user/rust/rhello.rs` is a
-`no_std`, `no_main` Rust program: the Makefile compiles it with plain
-`rustc` for `x86_64-unknown-none` (soft-float, no SSE, no red zone — the
-C citizens' flags in Rust's terms) into a static archive, then links it
+A program on the initrd does not have to be C. `user/rust/rhello` is a
+`no_std` Rust program: the Makefile builds the `user/rust` cargo workspace
+for `x86_64-unknown-none` (soft-float, no SSE, no red zone — the C
+citizens' flags in Rust's terms; `--offline`, a committed `Cargo.lock`, no
+external dependencies) into one static archive per citizen, then links each
 with the same gcc command and `user.ld` as every C citizen, plus
 `--gc-sections` (without it the panic paths behind each slice index pull
 in all of `core::fmt`: 179 KB of text instead of 9.6 KB, measured). The
 loader sees an ordinary ET_EXEC at `USER_VBASE`.
 
-`user/rust/qsys.rs` is the syscall layer, the Rust twin of `usys.h`: the
-same `int 0x80` convention, the same numbers, and `#[repr(C)]` request and
-response structs whose sizes are pinned at compile time (76 and 136 bytes
-for the field twins), so a layout drift fails the build on both sides.
+`user/rust/qsys` is the syscall layer, the Rust twin of `usys.h`: the same
+`int 0x80` convention, the same numbers, the full wrapper surface (process,
+console, files, spawn/waitpid, audit, manifest, the field, cap_derive), and
+`#[repr(C)]` request and response structs whose sizes are pinned at compile
+time (76, 136, 40, 332 and 24 bytes), so a layout drift fails the build on
+both sides. `qsys::heap::LibqAlloc` is a `GlobalAlloc` over libq's own
+arena (`user/libq/heap.c`, linked into every Rust citizen; only one that
+declares the allocator pulls the 64 KB arena in), so `Vec` and `String`
+work; `alloc::format!` stays out, for the same `core::fmt` reason.
+
+Rust citizens can also be *services*: `rfieldd` (`user/rust/rfieldd`,
+#340) is embedded in the kernel like `kannakad` and started by `citizens.c`
+with a declarative `CAP_RESOURCE_FIELD` grant over region 7. Its boot-time
+gate lines: `RFIELD: alloc ok` (a `Vec` grown to 1,000, shrunk, regrown and
+dropped through the libq arena), `RFIELD: imprinted 3/3 into region 7`,
+`RFIELD: winner="a rust citizen remembers the field"` (a byte-corrupted
+probe recalls the exact stored text), `RFIELD: field_info live=3`,
+`RFIELD: cross-region denied (EPERM)` (region 1 is kannakad's, and the
+grant names one region), and the verdict `rfieldd: FIELD VERIFIED`.
 
 The session runs `run /bin/rhello` and gates on four lines:
 
@@ -103,9 +119,9 @@ The session runs `run /bin/rhello` and gates on four lines:
 4. `exited (code 7)` — it ended on purpose; a panic prints `RHELLO: PANIC`
    and exits 99, and any `RHELLO: FAIL`/`PANIC` line fails the gate
 
-Building needs stable `rustc` with the bare-metal target
-(`rustup target add x86_64-unknown-none`; `make install-deps` does it).
-There is no allocator yet; that is slice 2.
+Building needs a stable Rust toolchain (`rustc` + `cargo`) with the
+bare-metal target (`rustup target add x86_64-unknown-none`;
+`make install-deps` does it).
 
 ## Watchdog hardening (bundled from the phase-1 adversarial review)
 

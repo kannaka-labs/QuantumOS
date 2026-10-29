@@ -1,0 +1,12 @@
+[package]
+name = "qsys"
+version = "0.2.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "The ring-3 syscall layer for QuantumOS Rust citizens: the Rust twin of user/usys.h (ADR-0032)"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

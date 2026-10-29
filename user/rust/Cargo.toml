@@ -1,0 +1,21 @@
+# The Rust citizens of QuantumOS (ADR-0032). One cargo workspace, built by the
+# Makefile with `cargo build --release --offline --target x86_64-unknown-none`
+# into build/x86_64/user/cargo/; each citizen is a staticlib the Makefile then
+# links with the C citizens' gcc line and user.ld. No external dependencies,
+# ever: Cargo.lock is committed and --offline makes a stray dependency a build
+# error rather than a download.
+[workspace]
+resolver = "2"
+members = ["qsys", "rhello", "rfieldd"]
+
+# The C citizens' flags in Rust's terms: no unwinding (the kernel has no
+# unwinder and the panic handler prints and exits), no debug info in the
+# archive (user.ld would keep core's DWARF), the same -O2.
+[profile.release]
+panic = "abort"
+opt-level = 2
+debug = false
+codegen-units = 1
+
+[profile.dev]
+panic = "abort"

@@ -10,9 +10,10 @@ Getting from a clean checkout to a booting kernel. For the architecture see
 - **QEMU** (`qemu-system-x86`) for booting and the CI gates.
 - **GNU make**, `nasm`. For the GRUB ISO: `grub-pc-bin`, `grub-efi-amd64-bin` (the UEFI half of
   the hybrid image), `xorriso`, `mtools`; `ovmf` to test the UEFI boot in QEMU.
-- **Rust** (stable `rustc` via rustup) with the bare-metal target:
-  `rustup target add x86_64-unknown-none`. The Rust citizens in `user/rust/` (ADR-0032) are
-  part of every build, so the kernel does not build without it.
+- **Rust** (stable `rustc` + `cargo` via rustup) with the bare-metal target:
+  `rustup target add x86_64-unknown-none`. The Rust citizens in `user/rust/` (ADR-0032, a cargo
+  workspace built `--offline` with no external dependencies) are part of every build, so the
+  kernel does not build without it.
 - Windows: use WSL2 (Ubuntu). The kernel builds and boots inside WSL.
 
 ```bash

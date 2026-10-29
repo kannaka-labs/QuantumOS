@@ -1,7 +1,7 @@
 # 32. Rust citizens: the path for running the Kannaka tools inside QuantumOS
 
 Date: 2026-10-29
-Status: Accepted (slice 1 shipped; later slices are separate PRs)
+Status: Accepted (slice 1 shipped in #339; slices 2 and 3 shipped in the #340 PR)
 
 ## Context
 
@@ -53,6 +53,44 @@ interpreter's memory and a second ABI on top. If a tool ever needs it, it is a l
 - `make ci-smoke` and the Integration job run `run /bin/rhello` and gate on all three lines plus
   `exited (code 7)`; any `RHELLO: FAIL` or `RHELLO: PANIC` line fails the gate.
 
+### Slices 2 and 3, as shipped (#340)
+
+- **One build path.** `user/rust` is a cargo workspace: the `qsys` crate and one staticlib crate
+  per citizen, built by the Makefile with `cargo build --release --offline --target
+  x86_64-unknown-none` into `build/x86_64/user/cargo/`, then linked by the same gcc line as
+  before. `Cargo.lock` is committed and holds only the workspace's own crates; `--offline` makes a
+  stray external dependency a build error rather than a download. The profile (panic=abort, -O2,
+  no debug info) lives in the workspace `Cargo.toml`.
+- **The full `usys.h` surface in `qsys`:** process, console, files, spawn/waitpid, audit,
+  manifest, sysinfo, the field (imprint, recall, field_info) and cap_derive, with every twin's
+  size pinned at compile time (76, 136, 40, 332, 24 bytes).
+- **The allocator is libq's.** `qsys::heap::LibqAlloc` is a `GlobalAlloc` whose `alloc`,
+  `dealloc` and `realloc` call `malloc`, `free` and `realloc` in `user/libq/heap.c`: the same
+  static 64 KB bss arena, the same first-fit free list, the same 16-byte alignment (larger
+  alignments are refused with null, which `alloc` turns into a loud panic exit). The Makefile
+  links `libq.a` into every Rust citizen inside a `--start-group`; only a citizen that declares
+  `#[global_allocator]` pulls `heap.o` and the arena in, so `/bin/rhello` keeps its no-heap floor.
+  The compiler's own `memcpy`/`memset` (from `compiler_builtins`) are weak symbols, so they
+  coexist with libq's without a duplicate-definition error (measured: `W memcpy`, `W memset`,
+  `T malloc`, `T free` in the linked service).
+- **A Rust service with authority.** `rfieldd` is embedded in the kernel like `kannakad` and
+  registered by `citizens.c` with `grant_field = 1, field_region = 7` (the one region no C
+  citizen names), re-minted and scrubbed at every start, monitored, heartbeating after its demo.
+  Nothing in the kernel treats it as anything but another ELF service.
+- **The gate replaces "-4 is the proof" with a successful recall**, as the follow-up issue asked:
+  a `Vec` grown to 1,000 entries, shrunk to 10, regrown, dropped and allocated again; three
+  imprints into region 7; a byte-corrupted probe recalling the *exact* stored text
+  (`RFIELD: winner="a rust citizen remembers the field"`); `SYS_FIELD_INFO` counting the three; and
+  the negative control, a recall against region 1 refused with exactly -4. `rfieldd: FIELD
+  VERIFIED` is the verdict line; any `RFIELD: FAIL`, `RFIELD: PANIC` or `FIELD FAILED` fails
+  `make ci-smoke` and the Integration job.
+
+| rfieldd, measured on debain2 | result |
+|---|---|
+| text / data / bss | 14,144 / 376 / 65,568 bytes (the bss is libq's arena) |
+| SSE / x87 instructions | 0 |
+| `/bin/rhello` text, cargo-built | 8,069 bytes (rustc-built in #339: 9,653) |
+
 ### Toolchain facts, measured on debain2 (rustc 1.99.1, gcc, binutils ld)
 
 | what | result |
@@ -88,8 +126,9 @@ that want the floor lower use `opt-level=z` or write their hot loops index-free.
   it, nothing. A Rust tool that needs the field must be a *service* with a declarative grant
   (`CAP_RESOURCE_FIELD` over its region), the way `kannakad` is, or receive a derived capability
   from the shell through `SYS_CAP_DERIVE`. Neither needs a new kernel mechanism.
-- **Effort.** Slice 1 is one PR. Slice 2 (allocator + a `qsys` crate proper, cargo-built) is one
-  PR. The first Kannaka tool slice is the one whose scope the follow-up issue sets.
+- **Effort.** Slice 1 was one PR (#339). Slices 2 and 3 (the allocator, the `qsys` crate, a
+  capability-holding service) were one PR together, because the slice-2 gate already needed a
+  granted region. The first Kannaka tool slice is the one whose scope #340 sets.
 
 ## Consequences
 
@@ -98,14 +137,17 @@ that want the floor lower use `opt-level=z` or write their hot loops index-free.
   capability gate as C. Every later Rust citizen inherits that proof.
 - No kernel change, no new syscall, no new loader path. The contract freeze (ADR-0020) is
   untouched.
-- `rustc` alone, no cargo and no lockfile, keeps the build deterministic and the dependency
-  surface at `core` + `compiler_builtins`.
+- cargo with `--offline` and a committed lockfile that names only the workspace's own crates keeps
+  the build deterministic and the dependency surface at `core` + `alloc` + `compiler_builtins`;
+  adding an external crate is a visible decision (a lockfile diff) and never a download in CI.
 
 **Negative and residual.**
 - A second toolchain. `make` now needs stable `rustc` with the bare-metal target; the Makefile
   says how to get it and `install-deps` does it, but a box without Rust no longer builds the
   kernel at all. Making the Rust citizens optional would make the gate optional, which is worse.
-- No allocator yet, so nothing with a `Vec` runs. That is slice 2, deliberately separate.
+- The allocator is libq's 64 KB static arena, per process, with 16-byte alignment: a `Vec` that
+  outgrows it gets null, and `alloc` turns that into a panic exit. There is no SYS_BRK; the arena
+  is the budget, as it is for C.
 - `panic=abort` with a handler that only prints: no unwinding, no backtrace. Bugs surface as
   `RHELLO: PANIC` and an exit code, which is what a kernel without unwinding support can offer.
 - The 179 KB trap is one `--gc-sections` away from returning whenever a link line is copied
@@ -121,4 +163,11 @@ that want the floor lower use `opt-level=z` or write their hot loops index-free.
   Integration session and SHELL_GATES).
 - Gate lines: `RHELLO: rust no_std citizen on QuantumOS pid=`, `RHELLO: SYS_AUDIT stats copied `,
   `RHELLO: SYS_RECALL capless -> -4 (EPERM)`, `exited (code 7)`.
+- PR for #340 slices 2 and 3: `user/rust/Cargo.toml`, `Cargo.lock`, `qsys/`, `rhello/`,
+  `rfieldd/`; `Makefile` (the cargo stamp rule, `RUST_SERVICES`, the `RFIELD` gate block);
+  `kernel/src/citizens.c` (`user_rfieldd_init`, region 7); `.github/workflows/ci.yml`
+  (SHELL_GATES). Gate lines: `RFIELD: alloc ok: vec grown to 1000 (sum=3496500)`,
+  `RFIELD: imprinted 3/3 into region 7`, `RFIELD: winner="a rust citizen remembers the field"
+  slot=`, `RFIELD: field_info live=3 capacity=8`, `RFIELD: cross-region denied (EPERM)`,
+  `rfieldd: FIELD VERIFIED`.
 - Measurements above: debain2, 2026-10-29, QEMU 10.0.11 TCG, `-m 128M`.

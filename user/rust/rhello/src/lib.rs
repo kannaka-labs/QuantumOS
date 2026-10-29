@@ -1,10 +1,11 @@
 //! /bin/rhello: the first Rust citizen of QuantumOS (#263 slice 1, ADR-0032).
 //!
-//! A `no_std`, `no_main` program on the `x86_64-unknown-none` target, built
-//! by the Makefile with plain `rustc` into a static archive and linked by the
-//! same gcc command and `user.ld` as every C citizen. It rides the initrd as
+//! A `no_std` program on the `x86_64-unknown-none` target, built by cargo (one
+//! workspace, `user/rust`) into a static archive and linked by the same gcc
+//! command and `user.ld` as every C citizen. It rides the initrd as
 //! `/bin/rhello` and the shell starts it with `run /bin/rhello` through
-//! SYS_SPAWN, exactly like `/bin/hello`.
+//! SYS_SPAWN, exactly like `/bin/hello`. It declares no allocator: nothing here
+//! needs one, and the gate proves the no-heap floor stays the size of hello.elf.
 //!
 //! What it proves, each as a gate line `make ci-smoke` checks:
 //!   1. the toolchain: Rust code runs in ring 3 on a kernel with no FPU save
@@ -15,14 +16,12 @@
 //!      SYS_RECALL with a 76-byte `#[repr(C)]` twin of `field_recall_req_t`
 //!      is refused with exactly -4 (EPERM), because a spawned program holds
 //!      no capability over the field. The refusal is the proof: the gate
-//!      that guards C callers guards Rust callers the same way.
+//!      that guards C callers guards Rust callers the same way. (rfieldd,
+//!      #340, is the citizen that holds the capability and gets the recall.)
 //!
 //! SPDX-License-Identifier: GPL-2.0-only
 
 #![no_std]
-#![no_main]
-
-mod qsys;
 
 use qsys::{FieldRecallOut, FieldRecallReq, Line};
 
