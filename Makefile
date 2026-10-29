@@ -32,7 +32,14 @@ GDB = gdb-multiarch
 # offsets and sizeof, which manifests as wild memory corruption at runtime
 # (found live in epic #62 phase 2). CI builds clean and never sees it; local
 # incremental builds absolutely do.
+# -march=x86-64: the ISA is the baseline, EXPLICITLY. A distribution's gcc may
+# default higher (Ubuntu 26.04's amd64v3 build defaults to x86-64-v3: BMI,
+# LZCNT, POPCNT, MOVBE ...), and a kernel built that way faults on QEMU's
+# default CPU model before the IDT exists — measured in #346 as a reset loop at
+# "Initializing physical memory manager" (12 such instructions in memory.o).
+# `make ci-isa-baseline` proves no such instruction is in the kernel or the citizens.
 CFLAGS = -Wall -Wextra -Werror -nostdlib -ffreestanding -mno-red-zone \
+         -march=x86-64 -mtune=generic \
          -mno-mmx -mno-sse -mno-sse2 -fno-omit-frame-pointer \
          -fno-stack-protector -fno-pic -fno-pie -mcmodel=kernel \
          -MMD -MP \
@@ -126,6 +133,7 @@ OBJECTS = $(KERNEL_SOURCES:$(KERNEL_DIR)/src/%.c=$(BUILD_DIR)/%.o) \
 -include $(OBJECTS:.o=.d)
 
 # Targets
+.PHONY: ci-isa-baseline
 .PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-sched-load ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-iso-uefi ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress ci-smoke-egress-escape ci-smoke-net-e1000 ci-smoke-net-virtio-nofeat ci-smoke-http-big ci-smoke-net-virtio-tap ci-smoke-tcp-put
 
 all: kernel
@@ -151,6 +159,7 @@ $(BUILD_DIR)/kernel.elf32: $(BUILD_DIR)/kernel.elf
 # object so the kernel can carry it and the ELF loader can map it.
 USER_CFLAGS = -Wall -Wextra -Werror -nostdlib -ffreestanding -fno-pic -fno-pie \
               -no-pie -static -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
+              -march=x86-64 -mtune=generic \
               -fno-stack-protector -fno-asynchronous-unwind-tables -O2
 
 # libq objects. mem.o and str.o define libc-named functions, so they carry the
@@ -2972,6 +2981,31 @@ ci-smoke-iso: $(BUILD_DIR)/kernel.iso
 # VGA-text line. Needs the `ovmf` package. Commands are typed only once the
 # shell has announced itself (the firmware and GRUB menu would otherwise
 # eat bytes piped from t=0).
+# --- ISA baseline gate (#346) ------------------------------------------------
+# The kernel and every ring-3 program must be plain x86-64: QEMU's default CPU
+# model (and any machine the ISO is written for) need not have BMI1/2, LZCNT,
+# POPCNT, MOVBE or AVX. A gcc that defaults to x86-64-v3 (Ubuntu 26.04's
+# amd64v3 build) emits them freely, and the kernel then faults inside PMM init
+# before the IDT exists (measured: a reset loop in every QEMU gate). The flags
+# say -march=x86-64; this gate proves the binaries agree. The user ELFs are
+# kept (.SECONDARY) so the scan can read them after the kernel link.
+ISA_ABOVE_BASELINE = tzcnt|lzcnt|popcnt|andn|bextr|bzhi|shlx|shrx|sarx|blsr|blsi|blsmsk|pext|pdep|movbe|rorx|mulx|vzeroupper|vmovdqa|vmovdqu|vpxor|vpor|vpand
+.SECONDARY: $(USER_PROGS:%=$(USER_BUILD)/%.elf) $(RUST_SERVICES:%=$(USER_BUILD)/%.elf)
+ci-isa-baseline: kernel
+	@echo "=== ISA baseline gate (#346): no x86-64-v2/v3 instructions in the kernel or the citizens ==="
+	@fail=0; n_files=0; \
+	for f in $(BUILD_DIR)/kernel.elf $(USER_BUILD)/*.elf; do \
+		n_files=$$((n_files + 1)); \
+		n=$$($(OBJDUMP) -d "$$f" | grep -c -E '\s($(ISA_ABOVE_BASELINE))(\s|$$)'); \
+		if [ "$$n" != 0 ]; then \
+			echo "ERROR: $$f carries $$n instruction(s) above the x86-64 baseline:"; \
+			$(OBJDUMP) -d "$$f" | grep -E '\s($(ISA_ABOVE_BASELINE))(\s|$$)' | head -5; \
+			fail=1; \
+		fi; \
+	done; \
+	if [ "$$fail" != 0 ]; then echo ""; echo "=== ISA baseline gate FAILED ==="; exit 1; fi; \
+	echo "SUCCESS: $$n_files ELF images (kernel + citizens) are x86-64 baseline; no v2/v3 instruction found"
+
 ci-smoke-iso-uefi: $(BUILD_DIR)/kernel.iso
 	@echo "=== QuantumOS UEFI/OVMF boot test (#264, console image on a GOP framebuffer) ==="
 	python3 scripts/test_qos_iso_uefi.py $(BUILD_DIR)/kernel.iso

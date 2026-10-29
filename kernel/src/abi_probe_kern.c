@@ -32,8 +32,7 @@ struct abi_ent {
     unsigned long long value;
 };
 
-#define ABI(n, v)                                                                                  \
-    { n, (unsigned long long)(v) }
+#define ABI(n, v) {n, (unsigned long long)(v)}
 
 __attribute__((used, section(".abi_ents"))) const struct abi_ent abi_kern[] = {
     /* --- syscall numbers (1..35) --- */

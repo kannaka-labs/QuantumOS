@@ -215,8 +215,11 @@ clang-format -i path/to/changed_file.c
 clang-format --dry-run --Werror path/to/changed_file.c
 ```
 
-CI installs clang-format from ubuntu-latest apt (currently major version
-18); if your local version disagrees with CI, prefer the CI verdict.
+CI pins clang-format to **21.1.8** from the PyPI wheel
+(`pip install clang-format==21.1.8`), because the apt version changes its
+mind about cast spacing and macro braces between releases (18 and 21
+disagreed on five files when ubuntu-latest moved to 26.04, #346). Use the
+same version locally; if a different one disagrees, prefer the CI verdict.
 
 ### C Code Style
 ```c

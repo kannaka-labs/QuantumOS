@@ -10,7 +10,7 @@ on:
 jobs:
   build:
     name: Build and Test
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
 
     strategy:
       matrix:
@@ -44,6 +44,9 @@ jobs:
         make clean
         make BUILD_TYPE=release
 
+    - name: ISA baseline gate (no x86-64-v2/v3 instructions in the kernel or the citizens, #346)
+      run: make ci-isa-baseline BUILD_TYPE=${{ matrix.build_type }}
+
     - name: Run unit tests
       run: |
         make test
@@ -70,7 +73,7 @@ jobs:
 
   security:
     name: Security Scan
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
 
     steps:
     - name: Checkout code
@@ -110,7 +113,7 @@ jobs:
 
   code-quality:
     name: Code Quality
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
 
     steps:
     - name: Checkout code
@@ -119,11 +122,19 @@ jobs:
     - name: Install tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y clang-format cppcheck
+        sudo apt-get install -y cppcheck
+        # clang-format is PINNED (#346): the image's version changes its mind about
+        # cast spacing and macro braces between releases (18 vs 21 disagreed on five
+        # files when ubuntu-latest moved to 26.04), so the tree is formatted for one
+        # exact version, installed from the PyPI wheel regardless of the image.
+        python3 -m venv "$HOME/clang-format-venv"
+        "$HOME/clang-format-venv/bin/pip" install --quiet clang-format==21.1.8
+        echo "$HOME/clang-format-venv/bin" >> "$GITHUB_PATH"
 
     - name: Check code formatting
       run: |
         echo "Checking code formatting with clang-format..."
+        clang-format --version
         FORMAT_ERRORS=0
         for file in $(find . -name "*.c" -o -name "*.h" | grep -v build/); do
           if ! clang-format --dry-run --Werror "$file" 2>/dev/null; then
@@ -159,7 +170,7 @@ jobs:
 
   documentation:
     name: Documentation Check
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
 
     steps:
     - name: Checkout code
@@ -195,7 +206,7 @@ jobs:
 
   documentation-sync:
     name: Documentation Sync Check
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     if: github.event_name == 'pull_request'
 
     steps:
@@ -279,7 +290,7 @@ jobs:
 
   performance:
     name: Performance Test
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
 
     steps:
     - name: Checkout code
@@ -343,7 +354,7 @@ jobs:
 
   code-coverage:
     name: Code Coverage
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
 
     steps:
     - name: Checkout code
@@ -416,7 +427,7 @@ jobs:
 
   quantum-tests:
     name: Quantum Component Tests
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
 
     steps:
     - name: Checkout code
@@ -488,7 +499,7 @@ jobs:
 
   resonant-experiment:
     name: Resonant Scheduler Experiment (SCHED_RESONANT, honest measurement)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     # The dormant ghostOS resonant scheduler (issue #21) wired behind
     # SCHED_RESONANT=1. Default builds never link it; this job keeps the
@@ -508,7 +519,7 @@ jobs:
 
   qseed-handoff:
     name: qseed Handoff + errno-collision gate (SYS_QSEED provenance)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     # Single-sourced `make ci-smoke-qseed` (mirrors the mcp-gate/society-gate
     # convention). Boots with the seed FFFFFFFFFFFFFFFC — deliberately the value
@@ -531,7 +542,7 @@ jobs:
 
   virtio-rng:
     name: virtio-rng entropy device (host randomness, labelled honestly)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     # Single-sourced `make ci-smoke-rng` (#254): boots with -device virtio-rng-pci,
     # with the device plus a qseed= handoff, and without the device. The device must
@@ -551,7 +562,7 @@ jobs:
 
   pmm-differential-256:
     name: PMM dynamic-sizing differential (-m 256M, ADR-0021)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     # ADR-0021 PR-4: boot at 256 MB and prove the PMM sized itself from the LARGER
     # multiboot map (total_frames ~doubles the 128M leg — a 128 MB hardcode can't)
@@ -572,7 +583,7 @@ jobs:
 
   pmm-differential-512:
     name: PMM dynamic-sizing differential (-m 512M, ADR-0021)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     # As pmm-differential-256 but at 512 MB (total_frames ~quadruples the 128M leg),
     # confirming the sizing scales linearly with real RAM and the identity map
@@ -590,7 +601,7 @@ jobs:
 
   scheduler-baseline:
     name: Scheduler perf/stability baseline (ADR-0022 prereq 2)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     # ADR-0022 prerequisite 2: measure the scheduler baseline so a future scheduler-
     # constant change is measured, not blind (ADR-0016). ASSERTS the calibration-
@@ -615,7 +626,7 @@ jobs:
 
   quiet-boot:
     name: Quiet-Boot Test (clean interactive console)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     # Boot with `-append quiet` and prove the interactive console is CLEAN — the
     # periodic timer-tick heartbeat and the demo services' steady-state chatter
@@ -635,7 +646,7 @@ jobs:
 
   firecracker-boot:
     name: Firecracker Boot (PVH, no COM2 — the public console's VM shape)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     # The one gate where COM2 is absent the way Firecracker makes it absent: unhandled
     # port reads return 0, not QEMU's 0xFF. Before com2_init's scratch-register absence
@@ -689,7 +700,7 @@ jobs:
 
   real-hw-boot:
     name: Real-Hardware Boot Path (GRUB ISO + PS/2 keyboard — epic #101)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     # Two gates for the serial-less laptop path: (1) boot the GRUB-built ISO
     # with -cdrom — the real bootloader handoff, not QEMU's -kernel shortcut —
@@ -719,7 +730,7 @@ jobs:
 
   persistence:
     name: Persistence Test (two boots, one disk — epic #71)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     # The storage capstone: boot the SAME ATA disk image twice; boot 1 writes a
     # file to the RAM overlay and syncs it to disk, boot 2 restores it and reads
@@ -743,7 +754,7 @@ jobs:
 
   quantum-gateway:
     name: Quantum Gateway Cross-Oracle (exact engine vs PennyLane — epic #149)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     # Phase 2 of the quantum stack: the host gateway dispatches the SAME opaque
     # circuit wire format the in-OS broker uses to PennyLane lightning.qubit,
     # and this gate asserts the two independent engines — the freestanding exact
@@ -766,7 +777,7 @@ jobs:
 
   abi-golden:
     name: v1 ABI freeze gate (golden diff + teeth-check — ADR-0020)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     # Compiler-measured golden ABI diff: two probe TUs emit the guest+kernel
     # syscall/errno/struct contract into a .abi_ents section under the real build
     # flags; scripts/extract-abi.py reads it back with objcopy and diffs it
@@ -794,7 +805,7 @@ jobs:
 
   mcp-schema:
     name: v1 MCP tool-surface freeze gate (golden diff + teeth-check — ADR-0020)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     # The MCP tool schemas (contract b of ADR-0020) need `mcp` + pydantic, which
     # the stdlib-only integration lane forbids — so this is its own pinned-pip
     # lane (the quantum-gateway shape). requirements-mcp-gate.txt pins the exact
@@ -821,7 +832,7 @@ jobs:
 
   quantum-com2:
     name: COM2 Quantum-Submit (host → broker → qpud over the wire — epic #149 B1)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     # Phase 2 transport: a host agent frames an opaque circuit over the attested
     # COM2 bridge, swarm_svc forwards it to the SYS_QPU broker, qpud runs it, and
@@ -846,7 +857,7 @@ jobs:
 
   networking:
     name: Networking Test (rtl8139 + user-net ARP — epic #73)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     # Boot with an rtl8139 NIC on QEMU's user-mode network and prove the link
     # layer end to end: SLIRP's gateway (10.0.2.2) always answers ARP, so an
@@ -894,7 +905,7 @@ jobs:
 
   egress-grant:
     name: "Egress grant (ADR-0030: a NIC without a grant is offline; allowlist, receipt, budget, ttl)"
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     steps:
     - name: Checkout code
@@ -913,7 +924,7 @@ jobs:
 
   networking-e1000:
     name: Networking Test (e1000 / 82540EM — #252)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     # The same ARP/DHCP/DNS/HTTP gates as the networking job, through the
     # Intel 82540EM driver (-device e1000): an MMIO BAR0 above the boot
@@ -932,7 +943,7 @@ jobs:
 
   society-n:
     name: N-way authenticated society (epic #139 + ADR-0019)
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
     # Three kernels mean-field-couple on a shared mcast L2 AND the host-admitted
     # group session key gates the field wire for N>2. Runs the single-sourced
@@ -987,7 +998,7 @@ jobs:
 
   integration:
     name: Integration Tests
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build]
 
     steps:
@@ -1304,7 +1315,7 @@ jobs:
 
   release:
     name: Release Preparation
-    runs-on: ubuntu-24.04   # pinned, see #346
+    runs-on: ubuntu-26.04   # explicit image, see #346
     needs: [build, security, code-quality, documentation, integration, abi-golden, pmm-differential-256, pmm-differential-512]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
