@@ -143,11 +143,13 @@ def test_the_example_templates_for_the_stale_repos_name_real_commands():
     assert first("hdl") <= {"check", "grow"}                 # kannaka-hdl's CLI verbs
     assert first("apps") <= {"list", "run"}                  # khdl-app <run|list>
     assert first("buzz") <= {"channels", "messages"}         # buzz-cli groups used here
+    assert first("lens") <= {"run", "show"}                  # lens <run|show>
     plan = d["servers"]["apps"]["cli"]["tools"]["plan"]["argv"]
     assert plan[-1] == "--dry-run", "plan must never execute an app"
-    for tool, policy in (("apps.run", "ask"), ("buzz.send", "ask"), ("apps.plan", "allow"), ("hdl.grow", "allow")):
+    for tool, policy in (("apps.run", "ask"), ("buzz.send", "ask"), ("lens.run", "ask"),
+                         ("apps.plan", "allow"), ("hdl.grow", "allow"), ("lens.show", "allow")):
         assert d["policy"][tool] == policy
-    for s in ("hdl", "apps", "buzz"):
+    for s in ("hdl", "apps", "buzz", "lens"):
         for t in d["servers"][s]["cli"]["tools"].values():
             for a in t["argv"]:
                 assert "{" not in a or (a.startswith("{") and a.endswith("}")), f"{s}: placeholder must fill a whole argv slot: {a}"

@@ -452,6 +452,42 @@
         }
       }
     },
+    "lens": {
+      "cli": {
+        "binary": "~/.local/bin/lens",
+        "timeout_s": 600,
+        "tools": {
+          "show": {
+            "description": "Print an existing kannaka-lens project record (what a clip was seen as: shots, motion, colour, sound). JSON out.",
+            "argv": [
+              "show",
+              "--project",
+              "{project}",
+              "--json"
+            ],
+            "params": {
+              "project": {
+                "type": "string",
+                "pattern": "[A-Za-z0-9_][A-Za-z0-9_./-]{0,200}[.]lens"
+              }
+            }
+          },
+          "run": {
+            "description": "Run the perception pipeline over a clip (ffmpeg plus the kannaka eye); writes CLIP.lens next to it and what was seen lands in the HRM.",
+            "argv": [
+              "run",
+              "{clip}"
+            ],
+            "params": {
+              "clip": {
+                "type": "string",
+                "pattern": "[A-Za-z0-9_][A-Za-z0-9_./-]{0,200}[.](mp4|mkv|mov|webm|wav|mp3)"
+              }
+            }
+          }
+        }
+      }
+    },
     "city": {
       "url": "https://kax.ninja-portal.com/api/mcp",
       "auth": {
@@ -536,7 +572,9 @@
     "buzz.channels": "allow",
     "buzz.messages": "allow",
     "buzz.search": "allow",
-    "buzz.send": "ask"
+    "buzz.send": "ask",
+    "lens.show": "allow",
+    "lens.run": "ask"
   },
   "default": "ask"
 }

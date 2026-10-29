@@ -85,7 +85,10 @@ The example config wires up:
 - `buzz`: the Hive's [`buzz` CLI](https://github.com/kannaka-labs/kannaka-buzz) (`cargo install
   --path crates/buzz-cli` in the fork): channels, messages and search are allowed; `send` asks,
   because other members read it. The identity (`BUZZ_PRIVATE_KEY`) comes from the hub process's
-  environment, never from this file.
+  environment, never from this file;
+- `lens`: [kannaka-lens](https://github.com/kannaka-labs/kannaka-lens) `show --json` of a project
+  record is allowed; `run` asks, because it spends minutes of CPU on a clip and writes what it saw
+  into the HRM.
 
 ## MCP servers over HTTP
 
