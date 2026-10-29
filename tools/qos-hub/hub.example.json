@@ -279,6 +279,179 @@
         }
       }
     },
+    "hdl": {
+      "cli": {
+        "binary": "~/.cargo/bin/kannaka-hdl",
+        "cwd": "~/Source/kannaka-hdl",
+        "timeout_s": 60,
+        "tools": {
+          "check": {
+            "description": "Parse and type-check a KannakaHDL program (one of the repository's examples).",
+            "argv": [
+              "check",
+              "{file}"
+            ],
+            "params": {
+              "file": {
+                "type": "string",
+                "pattern": "examples/[a-z0-9-]{1,40}[.]khdl"
+              }
+            }
+          },
+          "grow": {
+            "description": "Grow a program into its Abstract Holographic Plan as JSON, resolving base cases against the local registries; unresolved components are stubbed, never invented.",
+            "argv": [
+              "grow",
+              "{file}",
+              "--emit",
+              "json",
+              "--unresolved",
+              "stub"
+            ],
+            "params": {
+              "file": {
+                "type": "string",
+                "pattern": "examples/[a-z0-9-]{1,40}[.]khdl"
+              }
+            }
+          }
+        }
+      }
+    },
+    "apps": {
+      "cli": {
+        "binary": [
+          "node",
+          "~/Source/kannaka-apps/runtime/khdl-app.mjs"
+        ],
+        "cwd": "~/Source/kannaka-apps/apps",
+        "timeout_s": 300,
+        "tools": {
+          "list": {
+            "description": "The KHDL app store: every installed app with its kind and summary.",
+            "argv": [
+              "list"
+            ]
+          },
+          "plan": {
+            "description": "Resolve an app against the live substrate and show what it WOULD do (--dry-run executes nothing).",
+            "argv": [
+              "run",
+              "{app}",
+              "--dry-run"
+            ],
+            "params": {
+              "app": {
+                "type": "string",
+                "enum": [
+                  "preflight",
+                  "provisioner",
+                  "research-scheduler",
+                  "crystal-worker",
+                  "mind"
+                ]
+              }
+            }
+          },
+          "run": {
+            "description": "Run an app for real: a gate exits by its verdict, a provision app seeds the HRM, a schedule or work app writes orders. One-way operations on live memory.",
+            "argv": [
+              "run",
+              "{app}"
+            ],
+            "params": {
+              "app": {
+                "type": "string",
+                "enum": [
+                  "preflight",
+                  "provisioner",
+                  "research-scheduler",
+                  "crystal-worker",
+                  "mind"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "buzz": {
+      "cli": {
+        "binary": "~/.cargo/bin/buzz",
+        "env": {
+          "BUZZ_RELAY_URL": "http://localhost:3000"
+        },
+        "timeout_s": 60,
+        "tools": {
+          "channels": {
+            "description": "List the Hive's channels (kannaka-buzz, the constellation's Buzz relay). JSON out.",
+            "argv": [
+              "channels",
+              "list"
+            ]
+          },
+          "messages": {
+            "description": "Recent messages of one channel.",
+            "argv": [
+              "messages",
+              "get",
+              "--channel",
+              "{channel}",
+              "--limit",
+              "{limit}"
+            ],
+            "params": {
+              "channel": {
+                "type": "string",
+                "pattern": "[0-9a-fA-F-]{36}"
+              },
+              "limit": {
+                "type": "integer",
+                "min": 1,
+                "max": 100,
+                "default": 20
+              }
+            }
+          },
+          "search": {
+            "description": "Full-text search across the Hive's messages.",
+            "argv": [
+              "messages",
+              "search",
+              "--query",
+              "{query}"
+            ],
+            "params": {
+              "query": {
+                "type": "string",
+                "max_len": 200
+              }
+            }
+          },
+          "send": {
+            "description": "Post a message to a channel as the configured identity. A write other members read.",
+            "argv": [
+              "messages",
+              "send",
+              "--channel",
+              "{channel}",
+              "--content",
+              "{content}"
+            ],
+            "params": {
+              "channel": {
+                "type": "string",
+                "pattern": "[0-9a-fA-F-]{36}"
+              },
+              "content": {
+                "type": "string",
+                "max_len": 2000
+              }
+            }
+          }
+        }
+      }
+    },
     "city": {
       "url": "https://kax.ninja-portal.com/api/mcp",
       "auth": {
@@ -354,7 +527,16 @@
     "scada.asset": "allow",
     "scada.events": "allow",
     "scada.blockchain": "allow",
-    "scada.asset_create": "ask"
+    "scada.asset_create": "ask",
+    "hdl.check": "allow",
+    "hdl.grow": "allow",
+    "apps.list": "allow",
+    "apps.plan": "allow",
+    "apps.run": "ask",
+    "buzz.channels": "allow",
+    "buzz.messages": "allow",
+    "buzz.search": "allow",
+    "buzz.send": "ask"
   },
   "default": "ask"
 }

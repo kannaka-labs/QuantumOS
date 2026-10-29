@@ -76,7 +76,16 @@ The example config wires up:
 - `scada`: 0xscada status, assets and alarms are allowed; `alarm_ack` asks, because it changes
   state at a site;
 - `steward`: `govern` and `trade`, limited to the offline warrant fixtures, never signing or
-  submitting.
+  submitting;
+- `hdl`: [kannaka-hdl](https://github.com/kannaka-labs/kannaka-hdl) `check` and `grow` (JSON plan,
+  unresolved components stubbed) over the repository's `examples/*.khdl`, both reads;
+- `apps`: the [kannaka-apps](https://github.com/kannaka-labs/kannaka-apps) store: `list` and
+  `plan` (`--dry-run`, executes nothing) are allowed; `run` asks, because a provision, schedule or
+  work app is a one-way operation on live memory;
+- `buzz`: the Hive's [`buzz` CLI](https://github.com/kannaka-labs/kannaka-buzz) (`cargo install
+  --path crates/buzz-cli` in the fork): channels, messages and search are allowed; `send` asks,
+  because other members read it. The identity (`BUZZ_PRIVATE_KEY`) comes from the hub process's
+  environment, never from this file.
 
 ## MCP servers over HTTP
 
