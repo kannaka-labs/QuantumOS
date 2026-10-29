@@ -24,7 +24,7 @@ jobs:
   cudaq:
     name: C3 — CUDA-Q cross-oracle (local CPU target, free)
     if: ${{ inputs.backend == 'cudaq' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # pinned, see #346
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-python@v5
@@ -53,7 +53,7 @@ jobs:
   qbraid:
     name: C2 — real QPU via qBraid (credentialed, metered)
     if: ${{ inputs.backend == 'qbraid' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # pinned, see #346
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-python@v5
