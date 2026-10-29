@@ -11,6 +11,7 @@
 
 #include <kernel/net_internal.h>
 #include <kernel/egress.h>
+#include <kernel/scheduler.h> /* scheduler_net_kick / scheduler_boost_if_ready (#333) */
 
 /* ---- ring-3 UDP sockets (epic #80): socket table + rings ----
  *
@@ -81,33 +82,33 @@ static uint32_t udp_tx_dropped;       /* ARP-failure drops */
  * the UDP header, never from the frame length (Ethernet pads runts to
  * 60 bytes; a forged udp->len must not overread the frame into stale
  * buffer memory). Fragments are dropped — no reassembly. */
-void udp_rx_demux(const uint8_t *frame, uint16_t len) {
+int udp_rx_demux(const uint8_t *frame, uint16_t len) {
     const uint32_t base = sizeof(eth_hdr_t) + sizeof(ip_hdr_t) + sizeof(udp_hdr_t); /* 42 */
     if (len < base) {
-        return;
+        return 0;
     }
     const eth_hdr_t *eth = (const eth_hdr_t *)frame;
     if (ntohs(eth->type) != ETH_TYPE_IP) {
-        return;
+        return 0;
     }
     const ip_hdr_t *ip = (const ip_hdr_t *)(frame + sizeof(eth_hdr_t));
     if (ip->ver_ihl != 0x45 || ip->proto != IP_PROTO_UDP) {
-        return;
+        return 0;
     }
     if (ntohs(ip->frag) & 0x3FFF) { /* frag offset or MF set (DF is fine) */
-        return;
+        return 0;
     }
     const udp_hdr_t *udp = (const udp_hdr_t *)((const uint8_t *)ip + sizeof(ip_hdr_t));
     uint16_t udp_len = ntohs(udp->len);
     if (udp_len < sizeof(udp_hdr_t)) {
-        return;
+        return 0;
     }
     if ((uint32_t)(sizeof(eth_hdr_t) + sizeof(ip_hdr_t)) + udp_len > len) {
-        return; /* header claims more bytes than the frame carries */
+        return 0; /* header claims more bytes than the frame carries */
     }
     uint16_t plen = (uint16_t)(udp_len - sizeof(udp_hdr_t));
     if (plen > UDP_PAYLOAD_MAX) {
-        return;
+        return 0;
     }
     uint16_t dport = ntohs(udp->dport);
 
@@ -119,7 +120,7 @@ void udp_rx_demux(const uint8_t *frame, uint16_t len) {
         uint32_t head = s->rx_head;
         if (head - s->rx_tail == UDP_RXQ_DEPTH) {
             s->rx_dropped++;
-            return;
+            return 0;
         }
         udp_dgram_t *d = &s->rxq[head & (UDP_RXQ_DEPTH - 1)];
         d->len = plen;
@@ -132,9 +133,11 @@ void udp_rx_demux(const uint8_t *frame, uint16_t len) {
             d->data[b] = payload[b];
         }
         publish_barrier();
-        s->rx_head = head + 1; /* the single publish store */
-        return;
+        s->rx_head = head + 1;                  /* the single publish store */
+        scheduler_boost_if_ready(s->owner_pid); /* its RECVFROM poller is the next pick (#333) */
+        return 1;
     }
+    return 0;
 }
 
 /* ---- ring-3 UDP sockets (epic #80): syscall-facing ops ----
@@ -253,6 +256,7 @@ long net_udp_sendto(uint32_t pid, long sock, const uint8_t *dip, uint16_t dport,
     }
     publish_barrier();
     udp_tx_head = head + 1; /* the single publish store */
+    scheduler_net_kick();   /* drained at the caller's next yield (#333) */
     return 0;
 }
 
@@ -291,14 +295,20 @@ long net_udp_close(uint32_t pid, long sock) {
         return err;
     }
     s->state = UDP_SLOT_CLOSING; /* the net thread retires it */
+    scheduler_net_kick();
     return 0;
 }
 
 void net_udp_cleanup(uint32_t pid) {
+    int posted = 0;
     for (int i = 0; i < UDP_SOCK_MAX; i++) {
         if (udp_socks[i].state == UDP_SLOT_ACTIVE && udp_socks[i].owner_pid == pid) {
             udp_socks[i].state = UDP_SLOT_CLOSING;
+            posted = 1;
         }
+    }
+    if (posted) {
+        scheduler_net_kick();
     }
 }
 

@@ -74,6 +74,29 @@ the next interrupt (the timer, or the point: the NIC's RX IRQ). A tight
 IF-blind spin there would deadlock, since the RX IRQ could never preempt
 it to fill the queue.
 
+**When it runs matters too (#333).** The thread is a scheduler citizen
+like any other, and the round-robin gives every hlt-looping kernel thread
+its whole 50 ms quantum, so at rest a turn comes round every ~450 ms
+(ADR-0022). Three handoffs are therefore made explicit rather than left
+to the rotation. A syscall that hands the thread work (TCP connect /
+listen / send / close, a RECV that reopens a closed window, UDP sendto /
+close, a resolve post) flags it `io_boost` (`scheduler_net_kick`), so the
+caller's own WOULDBLOCK yield dispatches it next. The NIC IRQ, after the
+driver's drain, flags it and reschedules at once when it is READY
+(`scheduler_net_rx`, the shape of the COM1 console handover — on the INTx
+path and the virtio MSI-X RX vector), so a frame or an ACK no longer sits
+in the software RX queue behind whichever thread holds the quantum. And
+the thread's service loop is bracketed: what each connection's owner can
+observe (state, receive producer, EOF, send consumer) is snapshotted
+before the pass and compared after; owners whose view changed are boosted
+— the send side only once its ring is half free or fully acknowledged, so
+a per-ACK ping-pong cannot burn the boost budget — as are UDP socket
+owners on delivery and the resolver on an answer. If the pass woke anyone
+the thread yields (`scheduler_yield`, through the SYS_YIELD gate) instead
+of sleeping out its quantum; otherwise it `hlt`s as before. The tick, the
+quantum, the pick order and `SCHED_BOOST_MAX_CONSEC` are untouched;
+`SCHED_IO_BOOST 0` stubs it all out.
+
 ## The dynamic IRQ
 
 Unlike the timer/keyboard/COM1 (fixed IRQs 0/1/4), the NIC's line is
@@ -335,6 +358,29 @@ records the findings). The load-bearing pieces the attack forced:
   duplicates or drops fails on content. `ci-smoke-tcp-put` (and the same
   step inside the virtio and tap gates) holds a 256 KiB upload to
   `TCP_PUT_MS`. Measured numbers are in #331.
+- **Handoffs the scheduler can see (#333).** With both rings windowed, every
+  remaining stall was a scheduler turn: the program whose ring had just
+  filled or drained waited for its slot in the rotation, a frame that
+  arrived while another process ran waited in the driver's software queue
+  for the net thread's slot, and a SEND or CLOSE made the thread run no
+  sooner. The three handoffs are now explicit (the ADR-0022 `io_boost`
+  mechanism, described under *When it runs matters*): syscalls kick the net
+  thread, the NIC IRQ hands over to it at once, and the thread boosts the
+  owner of every connection it changed and yields. The rtl8139 and e1000
+  drivers also get the 64-slot RX software queue virtio-net got in #329:
+  with the burst now unthrottled by scheduler turns, their 16 slots dropped
+  one frame of every 64 KiB window and the in-order-only stack then waited
+  out SLIRP's ~1 s RTO (packet capture at the QEMU netdev: 1061 ms gap,
+  18 retransmissions; virtio-net, 64 slots, had none). Measured on debain2
+  with the gates' own instrument: the 64 KiB fetch 2250 ms → **30 ms** over
+  rtl8139, e1000 and virtio-net (the runner's pre-#333 figure was 900 ms);
+  the 256 KiB upload 3190 ms → **1130 ms** by the guest clock, of which
+  1000 ms is the TIME_WAIT an active close waits out before `TCP_CLOSE`
+  returns 0, and 1409 → **106 ms** on the wire by the sink's clock. The
+  floors move to `HTTP_BIG_MS` 500 and `TCP_PUT_MS` 2000, both of which the
+  previous kernel fails. The idle kernel threads still hold their quanta
+  (this routes around them), the RTO is still fixed, and a forced plain pick
+  after two consecutive boosts can still land on a 50 ms holder.
 - **A terminal ERROR + net-thread-only retire.** A syscall never resets a
   net-thread-owned field; ERROR is sticky until an abort retires the TCB
   to a pristine CLOSED (the UDP three-state lesson), and the ephemeral

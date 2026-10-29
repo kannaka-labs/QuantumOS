@@ -52,6 +52,7 @@
 #include <kernel/virtio.h>
 #include <kernel/pci_msix.h>
 #include <kernel/interrupts.h>
+#include <kernel/scheduler.h> /* scheduler_net_rx — the MSI-X RX handover (#333) */
 #include <kernel/memory.h>
 #include <kernel/boot.h>
 
@@ -377,13 +378,16 @@ static void msix_config_handler(cpu_state_t *state) {
 }
 
 static void msix_rx_handler(cpu_state_t *state) {
-    (void)state;
     if (!msix_rx_seen) {
         msix_rx_seen = 1;
         boot_log("NET: virtio-net first MSI-X rx interrupt");
     }
     rx_drain();
     pci_msix_eoi();
+    /* EOI first (the frame swap below returns through iretq, not here), then
+     * hand the CPU to the net thread if it is waiting its turn (#333) — the
+     * INTx path does the same in irq_handler. */
+    scheduler_net_rx(state);
 }
 
 static void msix_tx_handler(cpu_state_t *state) {

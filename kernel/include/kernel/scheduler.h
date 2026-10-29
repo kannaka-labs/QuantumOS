@@ -91,6 +91,28 @@ void scheduler_console_reader_note(uint32_t pid, uint32_t generation, uint32_t g
 void scheduler_console_reader_clear(uint32_t pid);
 void scheduler_console_rx(cpu_state_t *state);
 
+/* The net thread as a boost target (#333). scheduler_net_thread_set registers
+ * the kernel thread's pid at creation. scheduler_net_kick flags it io_boost if
+ * READY — called at every syscall-side publish store that hands it work (TCP
+ * connect/listen/send/close, a RECV that reopens a closed window, UDP
+ * sendto/close, a resolve post) — so the next reschedule, typically the
+ * caller's own WOULDBLOCK yield, goes to the stack instead of to the rest of
+ * the rotation. scheduler_net_rx, run from the NIC IRQ after the driver's
+ * drain, flags the thread and reschedules at once when it is READY (the
+ * scheduler_console_rx shape): a frame no longer waits out whichever
+ * hlt-looping thread holds the quantum. No-ops when SCHED_IO_BOOST is 0. */
+void scheduler_net_thread_set(uint32_t pid);
+void scheduler_net_kick(void);
+void scheduler_net_rx(cpu_state_t *state);
+
+/* Voluntary yield from a KERNEL thread running with interrupts enabled (never
+ * from IRQ context or a cli'd syscall): enters the SYS_YIELD path through the
+ * int 0x80 gate, so the frame swap is the one every other reschedule uses, in
+ * every scheduler arm. The net thread calls it after a service pass that woke
+ * a waiter, handing the CPU to that (boosted) process instead of sleeping out
+ * the rest of its quantum (#333). */
+void scheduler_yield(void);
+
 /* ADR-0022 prereq-2 fairness/tail snapshot over the runnable ring-3 citizens.
  * Writes max reschedule gap (max now - last_scheduled), the run-count spread
  * (max - min sched_picks), and the runnable count. Read-only; `now` is the

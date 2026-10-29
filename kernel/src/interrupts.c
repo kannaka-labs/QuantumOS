@@ -367,6 +367,8 @@ void irq_handler(cpu_state_t *state) {
          * compile-time case. Route it when it matches the bound device. */
         if (netdev_present() && irq == netdev_irq_line()) {
             netdev_irq();
+            /* ...and hand the CPU to the net thread if it is waiting its turn (#333) */
+            scheduler_net_rx(state);
         } else {
             boot_log("Unhandled IRQ: ");
             early_console_write_hex(irq);

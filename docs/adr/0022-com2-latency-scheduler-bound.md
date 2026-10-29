@@ -3,6 +3,25 @@
 Date: 2026-07-11
 Status: Accepted (2026-07-15; the latency fix SHIPPED — the I/O-priority boost, see the final update)
 
+> **Update (2026-10-28) — the same cadence bound on the network path (#333).**
+> After #329/#331 removed the per-segment stalls, every handoff between the net thread and the
+> ring-3 program on a connection still went through the full rotation: a program whose receive
+> ring had just filled, or whose send ring had just drained, waited its turn behind the
+> hlt-looping kernel threads, a frame that arrived while another process ran sat in the driver's
+> software RX queue until the net thread's turn, and a SEND/CONNECT/CLOSE/RESOLVE made the thread
+> run no sooner. Fixed with this ADR's mechanism, nothing new in the scheduler: (a) every
+> syscall-side publish store that hands the net thread work flags it `io_boost`
+> (`scheduler_net_kick`), so the caller's own WOULDBLOCK yield dispatches it; (b) the NIC IRQ,
+> after the driver's drain, flags it and reschedules at once when it is READY
+> (`scheduler_net_rx` — the `scheduler_console_rx` shape, on INTx and the virtio MSI-X RX
+> vector); (c) the thread brackets each service pass, boosts the owner of every connection whose
+> observable view changed (send side only at a half-free or fully acknowledged ring, so a per-ACK
+> ping-pong cannot spend the `SCHED_BOOST_MAX_CONSEC` budget), UDP socket owners on delivery and
+> the resolver on an answer, and then YIELDS through the SYS_YIELD gate (`scheduler_yield`)
+> instead of sleeping out its quantum — `hlt` as before when nobody was woken. Yields and IRQ
+> handovers are not preemptions, so the `ci-smoke-sched` band is unaffected; `SCHED_IO_BOOST 0`
+> stubs it all out. Numbers in `docs/NETWORKING.md` and #333.
+
 > **Update (2026-10-22) — the same cadence bound on the COM1 console, fixed by preemption.**
 > On the public Firecracker console (tools/qos-console) every keystroke echoed ~350 ms late
 > (p50 349.6 ms, spikes every 0.40 s): qsh polls `SYS_CONS_READ` and yields, and each of the

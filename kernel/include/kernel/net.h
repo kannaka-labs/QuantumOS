@@ -70,8 +70,9 @@ int net_nic_present(void);
 int net_dns_guard_selftest(void);
 
 /* Post a hostname to resolve (from SYS_RESOLVE). 0 accepted, -1 if the
- * network isn't ready or a request is already in flight. */
-int net_request_resolve(const char *host);
+ * network isn't ready or a request is already in flight. `pid` is the poller
+ * the net thread boosts when the answer lands (#333). */
+int net_request_resolve(const char *host, uint32_t pid);
 
 /* Poll the resolve outcome (from SYS_RESOLVE). 1 done (out_ip filled),
  * 0 pending, -1 failed. */

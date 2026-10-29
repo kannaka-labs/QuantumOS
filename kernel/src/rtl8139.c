@@ -113,7 +113,14 @@ static inline void irq_restore(uint64_t f) {
 }
 
 /* ---- received-frame queue (IRQ producer, net layer consumer) ---- */
-#define RXQ_SLOTS 16
+/* 64 frames since #333 (was 16): the IRQ drains a whole burst into this queue
+ * before the net thread pops it, so the queue must hold the largest burst the
+ * advertised window allows (~45 frames for 64 KiB) or the tail is dropped.
+ * With in-order-only receive a single dropped frame costs the peer's whole
+ * RTO (SLIRP: ~1 s) — the 64 KiB fetch over rtl8139 measured 1110 ms against
+ * 60 ms over virtio-net (64 slots since #329) for exactly this reason. Logged
+ * once if it ever happens again; the gates assert the line is absent. */
+#define RXQ_SLOTS 64
 typedef struct {
     uint8_t data[RTL_FRAME_MAX];
     uint16_t len;
@@ -122,6 +129,7 @@ static rxq_entry_t rxq[RXQ_SLOTS];
 static volatile uint32_t rxq_head; /* producer (IRQ) */
 static volatile uint32_t rxq_tail; /* consumer */
 static volatile uint32_t rxq_dropped;
+static volatile int rxq_full_seen; /* queue-full drop logged once (#333) */
 
 /* Push a frame into the queue (called from the IRQ handler, IF=0). */
 static void rxq_push(const uint8_t *data, uint16_t len) {
@@ -131,6 +139,10 @@ static void rxq_push(const uint8_t *data, uint16_t len) {
     uint32_t next = (rxq_head + 1) % RXQ_SLOTS;
     if (next == rxq_tail) {
         rxq_dropped++;
+        if (!rxq_full_seen) {
+            rxq_full_seen = 1;
+            boot_log("NET: rtl8139 RX software queue full: frame dropped");
+        }
         return; /* full — drop newest */
     }
     for (uint16_t i = 0; i < len; i++) {

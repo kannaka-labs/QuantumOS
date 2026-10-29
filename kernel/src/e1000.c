@@ -181,7 +181,11 @@ static void *alloc_aligned(uint32_t size, uint32_t align) {
 }
 
 /* ---- received-frame queue (IRQ producer, net layer consumer) ---- */
-#define RXQ_SLOTS 16
+/* 64 frames since #333 (was 16), as in the virtio-net (#329) and rtl8139
+ * drivers: the queue must hold the largest burst the advertised window allows
+ * (~45 frames for 64 KiB), or the tail is dropped and the in-order-only stack
+ * waits out the peer's RTO. Logged once; the gates assert the line is absent. */
+#define RXQ_SLOTS 64
 typedef struct {
     uint8_t data[NET_FRAME_MAX];
     uint16_t len;
@@ -190,6 +194,7 @@ static rxq_entry_t rxq[RXQ_SLOTS];
 static volatile uint32_t rxq_head; /* producer (IRQ) */
 static volatile uint32_t rxq_tail; /* consumer */
 static volatile uint32_t rxq_dropped;
+static volatile int rxq_full_seen; /* queue-full drop logged once (#333) */
 
 /* Push a frame into the queue (interrupts are off: IRQ, or receive()'s
  * polling fallback). */
@@ -200,6 +205,10 @@ static void rxq_push(const uint8_t *data, uint16_t len) {
     uint32_t next = (rxq_head + 1) % RXQ_SLOTS;
     if (next == rxq_tail) {
         rxq_dropped++;
+        if (!rxq_full_seen) {
+            rxq_full_seen = 1;
+            boot_log("NET: e1000 RX software queue full: frame dropped");
+        }
         return; /* full - drop newest, never overwrite */
     }
     for (uint16_t i = 0; i < len; i++) {

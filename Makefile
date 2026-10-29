@@ -1866,9 +1866,14 @@ ci-smoke-net-virtio-nofeat: kernel
 HTTP_BIG_BYTES ?= 65536
 # #329 throughput floor, by the GUEST's clock (qsh prints `... in N ms`, ticks
 # at 100 Hz): the old 8 KiB-ring stack took >= 4000 ms for this fetch, paced by
-# scheduler round trips per window, not by CPU — so the bound is stable under a
-# slow TCG runner. The fixed stack measures ~800 ms on debain2.
-HTTP_BIG_MS ?= 2500
+# scheduler round trips per window; after #329 it measured ~800 ms on debain2 /
+# 900 ms on the GitHub runner — still two scheduler turns (the request after
+# connect, the close after EOF) plus, over rtl8139, one SLIRP RTO for a frame
+# the 16-slot RX software queue dropped. #333 (net-thread handoffs + 64-slot
+# queues on rtl8139/e1000) brings it to 30 ms on debain2 across rtl8139, e1000
+# and virtio-net (3 runs each, identical). Now CPU-paced, so the floor leaves
+# >10x for a slow TCG runner while the pre-#333 900 ms still fails it.
+HTTP_BIG_MS ?= 500
 ci-smoke-http-big: kernel
 	@echo "=== QuantumOS TCP Client Smoke Test ($(HTTP_BIG_BYTES)-byte fetch, $(NET_NIC)) ==="
 	@set -e; \
@@ -1894,9 +1899,10 @@ ci-smoke-http-big: kernel
 		grep -E "qsh: http|NET:" /tmp/qemu-httpbig.log 2>/dev/null || true; exit 1; \
 	 fi; \
 	 echo "SUCCESS: $$n bytes received for a $(HTTP_BIG_BYTES)-byte body over $(NET_NIC)"
-	@# #329: the transfer must beat HTTP_BIG_MS, and the virtio-net driver must
-	@# not have dropped a frame for lack of software-queue room (each drop is a
-	@# peer RTO — the retransmissions the old 16-slot queue hid behind "it passed").
+	@# #329: the transfer must beat HTTP_BIG_MS, and the NIC driver (virtio-net,
+	@# and since #333 rtl8139 / e1000 too) must not have dropped a frame for lack
+	@# of software-queue room (each drop is a peer RTO — the retransmissions the
+	@# old 16-slot queues hid behind "it passed").
 	@ms=$$(grep -oE "bytes received in [0-9]+ ms" /tmp/qemu-httpbig.log 2>/dev/null | grep -oE "[0-9]+ ms" | grep -oE "[0-9]+" | tail -1); \
 	 if [ -z "$$ms" ]; then echo "ERROR: fetch line carries no transfer time (qsh: ... in N ms)"; exit 1; fi; \
 	 if [ "$$ms" -gt $(HTTP_BIG_MS) ]; then \
@@ -1912,12 +1918,16 @@ ci-smoke-http-big: kernel
 # that reorders, duplicates or drops fails on content) and prints the time until
 # every byte is ACKNOWLEDGED (the close completes), by the guest's clock. The
 # stop-and-wait sender this replaced took 443 ms per 1460-byte segment (64 KiB in
-# 19.95 s; 112 KB of this upload in 30 s). The windowed one measures 2.9-3.6 s
-# here across rtl8139 / virtio / tap (debain2, 10 runs each, sd < 50 ms), paced
-# by scheduler turns per 64 KiB ring-full rather than by CPU — so the floor is
-# stable on a slow TCG runner and 6 s leaves a 2x margin.
+# 19.95 s; 112 KB of this upload in 30 s). The windowed one (#331) measured
+# 2.9-3.6 s across rtl8139 / virtio / tap (debain2 and the GitHub runner within
+# 40 ms of each other), paced by scheduler turns per 64 KiB ring-full. #333
+# (net-thread handoffs) measures 1120-1140 ms on debain2 (10 runs, rtl8139), of
+# which 1000 ms is the TIME_WAIT the active closer waits out before TCP_CLOSE
+# returns 0 and ~110 ms the bytes on the wire (the sink's clock: 1409 -> 106 ms).
+# 2000 ms leaves ~900 ms for a slow TCG runner's share of the wire time while the
+# pre-#333 2.8-3.2 s still fails.
 TCP_PUT_BYTES ?= 262144
-TCP_PUT_MS ?= 6000
+TCP_PUT_MS ?= 2000
 ci-smoke-tcp-put: kernel
 	@echo "=== QuantumOS TCP Send Smoke Test ($(TCP_PUT_BYTES)-byte upload, $(NET_NIC)) ==="
 	@set -e; \

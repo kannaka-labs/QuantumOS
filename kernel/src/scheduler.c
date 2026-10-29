@@ -21,6 +21,7 @@
 #include <kernel/com2_uart.h> /* com2_rx_pending + DEVICE_ID_COM2 (ADR-0022 RX boost) */
 #include <kernel/console.h>   /* early_console_write for the CPUKILL boot line */
 #include <kernel/virtio_vsock.h>
+#include <kernel/syscall.h> /* SYS_YIELD + SYSCALL_VECTOR for scheduler_yield (#333) */
 #ifdef SCHED_LOTTERY
 #include <kernel/quantum.h>
 #endif
@@ -65,6 +66,10 @@ static uint32_t com2_holder_gen = 0;
 static uint32_t cons_reader_pid = 0;
 static uint32_t cons_reader_gen = 0;
 static uint8_t cons_reader_waiting = 0;
+/* The net kernel thread (#333): the target of scheduler_net_kick (syscalls that
+ * hand it work) and scheduler_net_rx (the NIC IRQ). Created once at boot and
+ * never destroyed, so a bare pid is sound here — no generation needed. */
+static uint32_t net_thread_pid = 0;
 #endif
 
 /* PID of the idle process (created second in process_init) */
@@ -235,6 +240,38 @@ void scheduler_console_rx(cpu_state_t *state) {
     }
     p->io_boost = 1;
     cons_reader_waiting = 0; /* one handover per wait; the next empty read re-arms */
+    scheduler_reschedule(state);
+}
+
+void scheduler_net_thread_set(uint32_t pid) {
+    net_thread_pid = pid;
+}
+
+void scheduler_net_kick(void) {
+    if (net_thread_pid != 0) {
+        scheduler_boost_if_ready(net_thread_pid);
+    }
+}
+
+/* NIC RX handover (#333), run from the NIC IRQ after the driver drained its
+ * ring into the software RX queue (IRQ context, IF=0). Before this a frame
+ * sat in that queue until the net thread's turn came round — behind every
+ * hlt-looping kernel thread's full quantum, ~450 ms at rest — and so did the
+ * ACKs that open the send window and the data that fills the receive ring.
+ * When the thread is READY it is flagged and dispatched at once, the same
+ * frame swap the tick uses (EOI follows in the caller). When it is the
+ * interrupted process itself (parked in its own hlt mid-pass) nothing
+ * happens: it resumes and drains. */
+void scheduler_net_rx(cpu_state_t *state) {
+    if (net_thread_pid == 0) {
+        return;
+    }
+    process_t *p = process_get_by_pid(net_thread_pid);
+    process_t *cur = process_get_current();
+    if (!p || p == cur || p->state != PROCESS_STATE_READY || !p->context_valid) {
+        return;
+    }
+    p->io_boost = 1;
     scheduler_reschedule(state);
 }
 
@@ -453,7 +490,27 @@ void scheduler_console_reader_clear(uint32_t pid) {
 void scheduler_console_rx(cpu_state_t *state) {
     (void)state;
 }
+void scheduler_net_thread_set(uint32_t pid) {
+    (void)pid;
+}
+void scheduler_net_kick(void) {
+}
+void scheduler_net_rx(cpu_state_t *state) {
+    (void)state;
+}
 #endif
+
+#if SYSCALL_VECTOR != 0x80
+#error "scheduler_yield encodes the syscall gate as int 0x80"
+#endif
+void scheduler_yield(void) {
+    /* The handler saves and restores every register; only rax is an in/out
+     * (SYS_YIELD in, the syscall's 0 result out). Same-privilege gate entry:
+     * no stack switch, the frame lands on this thread's own stack exactly as
+     * a timer tick's would, and the iretq resumes whoever pick_next chose. */
+    uint64_t rax = SYS_YIELD;
+    __asm__ volatile("int $0x80" : "+a"(rax) : : "memory");
+}
 
 /* ADR-0022 prereq-2 fairness/tail snapshot over the runnable ring-3 citizens
  * (state READY or RUNNING, excluding the kernel and idle processes):

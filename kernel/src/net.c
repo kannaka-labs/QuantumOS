@@ -19,7 +19,8 @@
 #include <kernel/netdev.h>
 #include <kernel/boot.h>
 #include <kernel/net_internal.h>
-#include <kernel/quantum.h> /* quantum_kernel_rand — unpredictable DNS txid/sport */
+#include <kernel/quantum.h>   /* quantum_kernel_rand — unpredictable DNS txid/sport */
+#include <kernel/scheduler.h> /* scheduler_yield / net kick / owner boosts (#333) */
 
 /* QEMU user-net (SLIRP): gateway 10.0.2.2, DHCP hands out 10.0.2.15.
  * IP_ZERO/IP_BCAST are also read by the transport TUs, so they have
@@ -168,13 +169,20 @@ static uint8_t dhcp_server_id[4];
  * file may call netdev_receive directly except this function. */
 static void arp_maybe_reply(const uint8_t *frame, uint16_t len);
 
+/* Set when a frame pumped through net_rx landed in a ring-3 UDP socket (the
+ * owner was boosted); the service loop clears it per pass and yields on it
+ * (#333). TCP deliveries are observed by the tcp_pass bracket instead. */
+static int net_rx_woke;
+
 static uint16_t net_rx(uint8_t *buf, uint16_t max) {
     uint16_t n = netdev_receive(buf, max);
     if (n > 0) {
         /* Answer peer ARP requests before demux — on a two-guest socket
          * L2 there is no SLIRP to do it for us (epic #97). */
         arp_maybe_reply(buf, n);
-        udp_rx_demux(buf, n);
+        if (udp_rx_demux(buf, n)) {
+            net_rx_woke = 1;
+        }
         tcp_rx_demux(buf, n);
     }
     return n;
@@ -988,6 +996,7 @@ const uint8_t *net_next_hop(const uint8_t *dip) {
 static volatile int resolve_state;
 static char resolve_host[RESOLVE_HOST_MAX];
 static uint8_t resolve_ip[4];
+static uint32_t resolve_pid; /* the poller to boost when the answer lands (#333) */
 
 /* Per-query DNS transaction id + ephemeral source port, drawn from the
  * qseed-mixed kernel PRNG. Source-port + txid randomization is the barrier a
@@ -1011,7 +1020,7 @@ int net_nic_present(void) {
 
 /* Post a resolve request (from SYS_RESOLVE). Returns 0 accepted, -1 if
  * the network isn't ready or a request is already in flight. */
-int net_request_resolve(const char *host) {
+int net_request_resolve(const char *host, uint32_t pid) {
     if (!net_ready()) {
         return -1;
     }
@@ -1024,7 +1033,9 @@ int net_request_resolve(const char *host) {
         i++;
     }
     resolve_host[i] = '\0';
+    resolve_pid = pid;
     resolve_state = RESOLVE_PENDING; /* written last — the handshake */
+    scheduler_net_kick();            /* the lookup starts at the caller's next yield (#333) */
     return 0;
 }
 
@@ -1046,18 +1057,34 @@ int net_poll_resolve(uint8_t *out_ip) {
 }
 
 /* Net thread body after the self-test: service ring-3 requests forever.
- * Wakes on every timer tick (hlt). Order per wake: retire CLOSING socket
- * slots (safe here — by construction not mid-copy), pump the RX queue
- * (net_rx demuxes to bound UDP sockets AND the TCP connection; frames for
- * nobody are dropped), drain queued SENDTOs, drive the TCP state machine
- * (connect/retransmit/close/TIME_WAIT), then service a pending resolve. */
+ * Order per pass: retire CLOSING socket slots (safe here — by construction
+ * not mid-copy), pump the RX queue (net_rx demuxes to bound UDP sockets AND
+ * the TCP connections; frames for nobody are dropped), drain queued SENDTOs,
+ * drive the TCP state machine (connect/retransmit/close/TIME_WAIT), then
+ * service a pending resolve.
+ *
+ * Between passes (#333): if the pass changed something a ring-3 program is
+ * polling for — bytes landed in its receive ring, its send ring drained, its
+ * connection changed state, its lookup finished — that program was boosted
+ * and the thread YIELDS, so the boosted program is the very next pick. If
+ * not, it sleeps in hlt until the next interrupt: the tick (timers), or the
+ * NIC (which also reschedules straight to this thread when it is not the one
+ * running — scheduler_net_rx). Before this the thread slept out every
+ * remaining tick of its 50 ms quantum with a reader or writer ready and
+ * waiting, and then that program waited for its own turn behind the other
+ * hlt-looping kernel threads: ~450 ms per 64 KiB ring-full, in either
+ * direction. */
 void net_service_loop(void) {
     uint8_t frame[NET_FRAME_MAX];
     for (;;) {
+        int woke = 0;
         egress_apply_pending(); /* a host may replace the grant over the console (ADR-0030) */
         udp_retire_closing();
+        tcp_pass_begin();
+        net_rx_woke = 0;
         while (net_rx(frame, sizeof(frame)) > 0) {
         }
+        woke |= net_rx_woke;
         udp_tx_drain();
         tcp_service();
         if (resolve_state == RESOLVE_PENDING) {
@@ -1071,8 +1098,15 @@ void net_service_loop(void) {
             } else {
                 resolve_state = RESOLVE_FAILED;
             }
+            scheduler_boost_if_ready(resolve_pid);
+            woke = 1;
         }
-        __asm__ volatile("hlt");
+        woke |= tcp_pass_end();
+        if (woke) {
+            scheduler_yield();
+        } else {
+            __asm__ volatile("hlt");
+        }
     }
 }
 

@@ -869,7 +869,7 @@ static uint64_t sys_resolve(uint32_t pid, uint64_t host_ptr, uint64_t out_ptr) {
     /* Pending or idle: (re)post the request. net_request_resolve returns
      * busy while one is already in flight or the lease isn't up yet, so
      * re-posting the same host each poll is harmless. */
-    net_request_resolve(host);
+    net_request_resolve(host, pid);
     return RESOLVE_WOULDBLOCK;
 }
 
