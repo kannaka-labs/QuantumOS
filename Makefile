@@ -173,6 +173,38 @@ $(USER_BUILD)/%_elf.o: $(USER_BUILD)/%.elf
 	cd $(USER_BUILD) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
 		$*.elf $*_elf.o
 
+# --- Rust no_std citizens (#263 slice 1, ADR-0032) ---------------------------
+# Plain rustc, no cargo: each user/rust/<name>.rs is compiled for the
+# x86_64-unknown-none target (soft-float, no SSE, no red zone — the C
+# citizens' USER_CFLAGS in Rust's terms) into a static archive, then linked by
+# the SAME gcc command and user.ld as a C citizen. The result is an ordinary
+# ET_EXEC at USER_VBASE that the kernel's ELF loader cannot tell from hello.elf.
+# Needs `rustup target add x86_64-unknown-none` (make install-deps does it).
+RUSTC ?= rustc
+RUST_TARGET = x86_64-unknown-none
+RUST_DIR = $(USER_DIR)/rust
+RUST_PROGS = rhello
+RUST_QOS_FLAGS = --edition 2021 --target $(RUST_TARGET) --crate-type staticlib \
+                 -C opt-level=2 -C panic=abort -C debuginfo=0
+
+$(USER_BUILD)/lib%.a: $(RUST_DIR)/%.rs $(RUST_DIR)/qsys.rs
+	@mkdir -p $(USER_BUILD)
+	@if ! $(RUSTC) $(RUST_QOS_FLAGS) -o $@ $<; then \
+		echo ""; \
+		echo "ERROR: building $< failed. The Rust citizens need a stable Rust toolchain with"; \
+		echo "       the bare-metal target: curl https://sh.rustup.rs -sSf | sh -s -- -y"; \
+		echo "       then: rustup target add $(RUST_TARGET)   (or: make install-deps)"; \
+		exit 1; \
+	fi
+
+# --gc-sections matters: the archive carries all of core, and the panic paths
+# behind every slice index reach core::fmt. Without it the linked image was
+# 179 KB of text (measured); with it, 9.6 KB — the same size as hello.elf.
+# --strip-debug drops core's prebuilt DWARF (500 KB) that user.ld would keep.
+$(RUST_PROGS:%=$(USER_BUILD)/%.elf): $(USER_BUILD)/%.elf: $(USER_BUILD)/lib%.a $(USER_DIR)/user.ld
+	$(CC) $(USER_CFLAGS) -Wl,--gc-sections -Wl,--strip-debug -Wl,--build-id=none \
+		-T $(USER_DIR)/user.ld -o $@ $<
+
 # --- Embedded initrd (epic #62 phase 2) --------------------------------------
 # A deterministic ustar archive of rootfs/, wrapped like the user ELFs so the
 # kernel carries it (symbols _binary_initrd_tar_{start,end}). The GNU tar
@@ -185,7 +217,7 @@ $(USER_BUILD)/%_elf.o: $(USER_BUILD)/%.elf
 ROOTFS_DIR = rootfs
 ROOTFS_FILES = $(shell find $(ROOTFS_DIR) -type f 2>/dev/null)
 ROOTFS_STAGE = $(BUILD_DIR)/rootfs-stage
-INITRD_BIN_PROGS = hello args libqtest consciousnessd qtop qprobe life agentsub
+INITRD_BIN_PROGS = hello args libqtest consciousnessd qtop qprobe life agentsub $(RUST_PROGS)
 
 $(BUILD_DIR)/initrd.tar: $(ROOTFS_FILES) $(INITRD_BIN_PROGS:%=$(USER_BUILD)/%.elf)
 	@mkdir -p $(BUILD_DIR)
@@ -479,7 +511,7 @@ ci-smoke: kernel
 	@# stale lower-slot ghostd cap wins first-match and routes to the dead pid;
 	@# only unlink (Part 1) + the Pass-2 re-mint (Part 2) make the last answer
 	@# appear. Gated on the post-'GHOSTD: FIELD REBORN' slice below.
-	@( printf 'help\nps\nfree\nuptime\ndate\nghost\nqrand\nls\ncat /docs/hello.txt\nrun /bin/hello\nrun /bin/args alpha quantumos\nrun /bin/libqtest\nrun /bin/consciousnessd\nrun /bin/qtop\nrun /bin/life\nghost\nimprint the cat sat on the mat\nimprint pure quantum wave dynamics\nimprint hello little world\nrecall the cxt sxt on thx mxt\nfieldtest\nwrite /data/note ramfs-works\nls /data\nrm /data/note\nsync\nexit\n'; sleep 15; printf 'ghost\n'; sleep 4; printf 'ghost exit\n'; sleep 7; printf 'ghost\n'; sleep 6 ) | \
+	@( printf 'help\nps\nfree\nuptime\ndate\nghost\nqrand\nls\ncat /docs/hello.txt\nrun /bin/hello\nrun /bin/args alpha quantumos\nrun /bin/libqtest\nrun /bin/rhello\nrun /bin/consciousnessd\nrun /bin/qtop\nrun /bin/life\nghost\nimprint the cat sat on the mat\nimprint pure quantum wave dynamics\nimprint hello little world\nrecall the cxt sxt on thx mxt\nfieldtest\nwrite /data/note ramfs-works\nls /data\nrm /data/note\nsync\nexit\n'; sleep 15; printf 'ghost\n'; sleep 4; printf 'ghost exit\n'; sleep 7; printf 'ghost\n'; sleep 6 ) | \
 		timeout 34s qemu-system-x86_64 -kernel $(BUILD_DIR)/kernel.elf32 \
 		-append agentdemo \
 		-serial stdio -m 128M -display none -no-reboot 2>&1 | tee /tmp/qemu-boot.log || true
@@ -899,6 +931,28 @@ ci-smoke: kernel
 		echo ""; echo "=== Smoke Test FAILED ==="; exit 1; \
 	fi
 	@echo "SUCCESS: libq printf -> SYS_WRITE path exercised end-to-end"
+	@# first RUST citizen (#263 slice 1, ADR-0032): 'run /bin/rhello' is a
+	@# no_std program on x86_64-unknown-none, linked with user.ld like any C
+	@# citizen. Three lines, three proofs: it runs at all (toolchain + ELF
+	@# loader); SYS_AUDIT copies kernel bytes into a Rust stack buffer (ABI,
+	@# kernel->user); SYS_RECALL with a #[repr(C)] twin struct is refused with
+	@# exactly -4 (ABI user->kernel AND the capability gate, which must hold for
+	@# Rust callers as it does for C). Exit code 7 proves it ended on purpose.
+	@for gate in "RHELLO: rust no_std citizen on QuantumOS pid=" \
+	             "RHELLO: SYS_AUDIT stats copied " \
+	             "RHELLO: SYS_RECALL capless -> -4 (EPERM)" \
+	             "exited (code 7)"; do \
+		if ! grep -q -- "$$gate" /tmp/qemu-boot.log 2>/dev/null; then \
+			echo "ERROR: Rust citizen gate missing: $$gate"; \
+			echo "Boot log:"; cat /tmp/qemu-boot.log 2>/dev/null || true; \
+			echo ""; echo "=== Smoke Test FAILED ==="; exit 1; \
+		fi; \
+	done
+	@if grep -q "RHELLO: FAIL\|RHELLO: PANIC" /tmp/qemu-boot.log 2>/dev/null; then \
+		echo "ERROR: the Rust citizen reported a failure:"; grep "RHELLO:" /tmp/qemu-boot.log; \
+		echo ""; echo "=== Smoke Test FAILED ==="; exit 1; \
+	fi
+	@echo "SUCCESS: Rust no_std citizen ran, crossed the ABI both ways, and was capability-gated (RHELLO)"
 	@# first native app citizen: 'run /bin/consciousnessd' runs a fixed-point
 	@# Kuramoto field on libq; the order parameter must actually synchronise
 	@# (r climb past 0.8) for the CONSCIOUSNESS EMERGED marker to print.
@@ -2962,6 +3016,12 @@ install-deps:
 	sudo apt-get install -y build-essential gdb-multiarch qemu-system-x86 grub-pc-bin xorriso mtools nasm || true
 	@echo "Attempting to install cross-compiler (may not be available)..."
 	sudo apt-get install -y gcc-x86-64-elf 2>/dev/null || echo "Cross-compiler not available, using system gcc"
+	@# The Rust citizens (user/rust/, #263): stable rustc + the bare-metal target.
+	@if ! command -v rustup >/dev/null 2>&1; then \
+		echo "Installing rustup (stable, minimal profile) into \$$HOME/.cargo..."; \
+		curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable; \
+	fi
+	. $$HOME/.cargo/env 2>/dev/null; rustup target add $(RUST_TARGET)
 
 # Help
 help:
