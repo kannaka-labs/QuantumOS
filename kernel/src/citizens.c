@@ -193,7 +193,8 @@ void user_rkannaka_init(void) {
     if (service_register(&rkannaka_def, &sid) == SVC_SUCCESS &&
         service_start("rkannaka", NULL) == SVC_SUCCESS) {
         service_monitor(sid, true);
-        boot_log("kannaka-memory: rkannaka (ring 3, Rust) replaying its session via the kernel field");
+        boot_log("kannaka-memory: rkannaka (ring 3, Rust) replaying its session via the kernel "
+                 "field");
     } else {
         boot_log("Warning: rkannaka service failed to start");
     }
