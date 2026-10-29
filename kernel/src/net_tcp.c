@@ -15,6 +15,7 @@
 #include <kernel/netdev.h>
 #include <kernel/egress.h>
 #include <kernel/interrupts.h> /* timer_get_ticks (TCP timers) */
+#include <kernel/scheduler.h>  /* scheduler_net_kick / scheduler_boost_if_ready (#333) */
 
 /* ============================================================================
  * ring-3 TCP (epic #82 client, epic #98 server)
@@ -155,6 +156,70 @@ static tcp_conn_t tcb; /* the one active-open (client) connection */
  * the per-connection honesty of the original design is unchanged. */
 #define TCP_MAX_LISTENERS 4
 static tcp_conn_t tcb_srv[TCP_MAX_LISTENERS];
+
+/* What a connection's ring-3 owner can observe from its syscalls (#333): the
+ * state (connect / accept / close / status polls), the receive producer
+ * (RECV), EOF, and the send consumer (SEND's free space). The net thread
+ * snapshots these before a service pass (tcp_pass_begin) and afterwards
+ * boosts the owner of every connection whose view changed (tcp_pass_end), so
+ * the program polling that connection is the next pick at the thread's yield
+ * instead of waiting out the round-robin rotation (~450 ms at rest, every
+ * hlt-looping kernel thread keeping its whole quantum). The owner is taken
+ * from the snapshot: a close that completes zeroes owner_pid, and it is the
+ * old owner polling for CLOSED who must run. Send-side wakes are held back
+ * until the ring is half free or fully acknowledged — an owner woken per ACK
+ * would refill one segment at a time and burn the boost budget
+ * (SCHED_BOOST_MAX_CONSEC) on a net/owner ping-pong. */
+typedef struct {
+    int state;
+    uint32_t owner_pid;
+    uint32_t rx_head, tx_tail;
+    int fin_received;
+} tcp_view_t;
+
+static tcp_view_t view_cli;
+static tcp_view_t view_srv[TCP_MAX_LISTENERS];
+
+static void tcp_view_take(const tcp_conn_t *c, tcp_view_t *v) {
+    v->state = c->state;
+    v->owner_pid = c->owner_pid;
+    v->rx_head = c->rx_head;
+    v->tx_tail = c->tx_tail;
+    v->fin_received = c->fin_received;
+}
+
+/* 1 if the connection's owner (as of the snapshot) was boosted. */
+static int tcp_view_wake(const tcp_conn_t *c, const tcp_view_t *before) {
+    if (before->owner_pid == 0) {
+        return 0;
+    }
+    int changed = c->state != before->state || c->rx_head != before->rx_head ||
+                  c->fin_received != before->fin_received;
+    if (!changed && c->tx_tail != before->tx_tail) {
+        uint32_t free = TCP_TX_BUF - (c->tx_head - c->tx_tail);
+        changed = (free >= TCP_TX_BUF / 2) || (c->tx_tail == c->tx_head);
+    }
+    if (!changed) {
+        return 0;
+    }
+    scheduler_boost_if_ready(before->owner_pid);
+    return 1;
+}
+
+void tcp_pass_begin(void) {
+    tcp_view_take(&tcb, &view_cli);
+    for (int i = 0; i < TCP_MAX_LISTENERS; i++) {
+        tcp_view_take(&tcb_srv[i], &view_srv[i]);
+    }
+}
+
+int tcp_pass_end(void) {
+    int woke = tcp_view_wake(&tcb, &view_cli);
+    for (int i = 0; i < TCP_MAX_LISTENERS; i++) {
+        woke |= tcp_view_wake(&tcb_srv[i], &view_srv[i]);
+    }
+    return woke;
+}
 
 /* The slot `pid` owns, or NULL. A pristine CLOSED slot with no pending
  * arm is owned by nobody, whatever owner_pid still reads. */
@@ -951,7 +1016,8 @@ long net_tcp_connect(uint32_t pid, const uint8_t *ip, uint16_t port) {
         tcb.lport = tcp_ephemeral();
         tcb.owner_pid = pid;
         publish_barrier();
-        tcb.connect_req = 1; /* the publish store */
+        tcb.connect_req = 1;  /* the publish store */
+        scheduler_net_kick(); /* the SYN goes at the caller's next yield (#333) */
         return NET_TCP_WOULDBLOCK;
     }
     if (tcb.owner_pid == pid) {
@@ -1002,6 +1068,7 @@ long net_tcp_listen(uint32_t pid, uint16_t port) {
         c->lreq_port = port;
         publish_barrier();
         c->listen_req = 1; /* the publish store */
+        scheduler_net_kick();
         return NET_TCP_WOULDBLOCK;
     }
 
@@ -1084,6 +1151,7 @@ long net_tcp_send(uint32_t pid, const uint8_t *buf, uint16_t len) {
     }
     publish_barrier();
     c->tx_head = head + len; /* the publish store: the net thread sends from here */
+    scheduler_net_kick();    /* transmit at the caller's next yield (#333) */
     return len;
 }
 
@@ -1115,6 +1183,14 @@ long net_tcp_recv(uint32_t pid, uint8_t *buf, uint16_t maxlen) {
     }
     publish_barrier();
     c->rx_tail = tail + n;
+    /* Only a drain that reopens a CLOSED window needs the net thread (its
+     * proactive update in tcp_service_one); every other RECV kicks nothing,
+     * or a reader mid-drain would hand its slice to a thread with no work.
+     * last_adv_wnd is the net thread's — a stale read here costs at most one
+     * spare boost or one update a tick late. */
+    if (c->last_adv_wnd < TCP_MSS) {
+        scheduler_net_kick();
+    }
     return (long)n;
 }
 
@@ -1129,9 +1205,11 @@ long net_tcp_close(uint32_t pid) {
     if (c->state == TCPS_ERROR || c->state == TCPS_LISTEN || c->state == TCPS_SYN_RCVD ||
         (c->state == TCPS_CLOSED && (c->listen_req || c->connect_req))) {
         c->abort_req = 1; /* no graceful close exists for these — retire */
+        scheduler_net_kick();
         return 0;
     }
     c->close_req = 1;
+    scheduler_net_kick();      /* the FIN goes at the caller's next yield (#333) */
     return NET_TCP_WOULDBLOCK; /* poll until CLOSED */
 }
 
@@ -1156,13 +1234,19 @@ void net_tcp_cleanup(uint32_t pid) {
      * pending connect_req would be serviced AFTER the owner died, opening a
      * connection owned by a dead/recycled pid (the leak the server side already
      * guards with listen_req). */
+    int posted = 0;
     if ((tcb.state != TCPS_CLOSED || tcb.connect_req) && tcb.owner_pid == pid) {
         tcb.abort_req = 1; /* the net thread RSTs (if past SYN) and retires */
+        posted = 1;
     }
     for (int i = 0; i < TCP_MAX_LISTENERS; i++) {
         tcp_conn_t *c = &tcb_srv[i];
         if ((c->state != TCPS_CLOSED || c->listen_req) && c->owner_pid == pid) {
             c->abort_req = 1; /* covers LISTEN/SYN_RCVD and a pending arm */
+            posted = 1;
         }
+    }
+    if (posted) {
+        scheduler_net_kick();
     }
 }

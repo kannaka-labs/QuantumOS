@@ -597,6 +597,33 @@ static void cmd_net2(const char *peer) {
             }
         }
     }
+    /* Answer once more before leaving (#333). The loop above stops at the
+     * first probe heard, so if every probe WE sent before the peer's stack
+     * was up was dropped at ARP (bounded resolve, no peer to answer), the
+     * peer would now hear nothing from us for the rest of its own window and
+     * report "peer down" — a race on boot skew that both guests must lose
+     * exactly once for the gate to fail. Hearing the peer proves its stack is
+     * up, so one more probe now is the one that cannot be dropped at ARP. */
+    if (got > 0) {
+        udp_req_t s;
+        for (unsigned i = 0; i < sizeof(s); i++) {
+            ((unsigned char *)&s)[i] = 0;
+        }
+        s.sock = sock;
+        for (int i = 0; i < 4; i++) {
+            s.ip[i] = pip[i];
+        }
+        s.port = NET2_PORT;
+        s.buf = probe;
+        s.len = sizeof(probe);
+        for (int tries = 0; tries < 50 && udp_(UDP_SENDTO, &s) == UDP_WOULDBLOCK; tries++) {
+            yield(); /* txq full while the drain runs — a bounded retry */
+        }
+        for (int spin = 0; spin < 20; spin++) {
+            heartbeat();
+            yield(); /* let the net thread drain the probe before the socket closes */
+        }
+    }
     req.sock = sock;
     udp_(UDP_CLOSE, &req);
     if (got < 0) {

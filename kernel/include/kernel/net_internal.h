@@ -96,12 +96,17 @@ extern const uint8_t IP_BCAST[4];
 void ip_fill(ip_hdr_t *ip, const uint8_t *dst, uint8_t proto, uint16_t payload_len, uint16_t ident);
 const uint8_t *net_next_hop(const uint8_t *dip);
 int resolve_mac(const uint8_t *ip, uint8_t *out_mac);
-/* net_udp.c — driven by net.c's rx path and service loop. */
-void udp_rx_demux(const uint8_t *frame, uint16_t len);
+/* net_udp.c — driven by net.c's rx path and service loop. udp_rx_demux
+ * returns 1 when a bound socket took the datagram (its owner was boosted). */
+int udp_rx_demux(const uint8_t *frame, uint16_t len);
 void udp_retire_closing(void);
 void udp_tx_drain(void);
-/* net_tcp.c — driven by net.c's rx path and service loop. */
+/* net_tcp.c — driven by net.c's rx path and service loop. The pass bracket
+ * (#333): tcp_pass_begin snapshots what each connection's owner can observe,
+ * tcp_pass_end boosts the owners whose view changed and returns 1 if any did. */
 void tcp_rx_demux(const uint8_t *frame, uint16_t len);
 void tcp_service(void);
+void tcp_pass_begin(void);
+int tcp_pass_end(void);
 
 #endif /* NET_INTERNAL_H */

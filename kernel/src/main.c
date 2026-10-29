@@ -565,8 +565,11 @@ static void scheduler_subsystem_init(void) {
         boot_log("Warning: failed to create kernel thread beta");
     }
     if (netdev_present()) {
-        if (kernel_thread_create("net", net_thread, PRIORITY_NORMAL, NULL) != STATUS_SUCCESS) {
+        uint32_t net_pid = 0;
+        if (kernel_thread_create("net", net_thread, PRIORITY_NORMAL, &net_pid) != STATUS_SUCCESS) {
             boot_log("Warning: failed to create kernel thread net");
+        } else {
+            scheduler_net_thread_set(net_pid); /* boost target for syscalls + the NIC IRQ (#333) */
         }
     }
 
