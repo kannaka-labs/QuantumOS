@@ -1,0 +1,14 @@
+[package]
+name = "rfieldd"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "rfieldd: a Rust service that allocates and holds a field capability (#340 slices 2 and 3)"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+qsys = { path = "../qsys" }

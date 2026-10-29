@@ -95,7 +95,15 @@ ASSEMBLY_SOURCES = $(wildcard $(KERNEL_DIR)/src/*.S)
 USER_DIR = user
 USER_BUILD = $(BUILD_DIR)/user
 USER_PROGS = init echo client hbsvc ghostd ghost_test paradoxd paradox_test swarm_svc qsh quantumd kannakad fieldsyncd httpd modbusd quota_test delegation_test subagentd cpu_hog qsv qpud qpu_test agentd
-USER_ELF_OBJS = $(USER_PROGS:%=$(USER_BUILD)/%_elf.o)
+# The Rust citizens (built by the Rust block further down). Listed HERE because
+# the kernel link rule's prerequisites ($(OBJECTS) via USER_ELF_OBJS) are
+# expanded when that rule is read, which is before the Rust block.
+#   RUST_PROGS     ride the initrd as /bin/<name> (spawned by the shell);
+#   RUST_SERVICES  are embedded in the kernel and started by citizens.c with
+#                  a declarative grant, like every C service.
+RUST_PROGS = rhello
+RUST_SERVICES = rfieldd
+USER_ELF_OBJS = $(USER_PROGS:%=$(USER_BUILD)/%_elf.o) $(RUST_SERVICES:%=$(USER_BUILD)/%_elf.o)
 
 # libq: the freestanding ring-3 runtime, built as a static archive and linked
 # into every user program (the linker pulls only the members a program refers
@@ -173,37 +181,47 @@ $(USER_BUILD)/%_elf.o: $(USER_BUILD)/%.elf
 	cd $(USER_BUILD) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
 		$*.elf $*_elf.o
 
-# --- Rust no_std citizens (#263 slice 1, ADR-0032) ---------------------------
-# Plain rustc, no cargo: each user/rust/<name>.rs is compiled for the
-# x86_64-unknown-none target (soft-float, no SSE, no red zone — the C
-# citizens' USER_CFLAGS in Rust's terms) into a static archive, then linked by
-# the SAME gcc command and user.ld as a C citizen. The result is an ordinary
-# ET_EXEC at USER_VBASE that the kernel's ELF loader cannot tell from hello.elf.
+# --- Rust no_std citizens (ADR-0032; #263 slice 1, #340 slices 2-3) ----------
+# One cargo workspace, user/rust: the qsys crate (the usys.h twin, with a
+# GlobalAlloc over libq's arena) and one staticlib crate per citizen, built for
+# the x86_64-unknown-none target (soft-float, no SSE, no red zone — the C
+# citizens' USER_CFLAGS in Rust's terms; profile in user/rust/Cargo.toml). Each
+# archive is then linked by the SAME gcc command and user.ld as a C citizen,
+# with libq.a in a group so a citizen that declares the allocator pulls heap.o
+# and one that does not pulls nothing. The result is an ordinary ET_EXEC at
+# USER_VBASE that the kernel's ELF loader cannot tell from hello.elf.
+# --offline + the committed Cargo.lock: no dependency is ever downloaded.
 # Needs `rustup target add x86_64-unknown-none` (make install-deps does it).
-RUSTC ?= rustc
+# RUST_PROGS and RUST_SERVICES are set next to USER_PROGS, above.
+CARGO ?= cargo
 RUST_TARGET = x86_64-unknown-none
 RUST_DIR = $(USER_DIR)/rust
-RUST_PROGS = rhello
-RUST_QOS_FLAGS = --edition 2021 --target $(RUST_TARGET) --crate-type staticlib \
-                 -C opt-level=2 -C panic=abort -C debuginfo=0
+RUST_CARGO_DIR = $(USER_BUILD)/cargo
+RUST_LIB_DIR = $(RUST_CARGO_DIR)/$(RUST_TARGET)/release
+RUST_SRCS = $(RUST_DIR)/Cargo.toml $(RUST_DIR)/Cargo.lock \
+            $(wildcard $(RUST_DIR)/*/Cargo.toml) $(wildcard $(RUST_DIR)/*/src/*.rs)
+RUST_STAMP = $(RUST_CARGO_DIR)/.built
 
-$(USER_BUILD)/lib%.a: $(RUST_DIR)/%.rs $(RUST_DIR)/qsys.rs
-	@mkdir -p $(USER_BUILD)
-	@if ! $(RUSTC) $(RUST_QOS_FLAGS) -o $@ $<; then \
+$(RUST_STAMP): $(RUST_SRCS)
+	@mkdir -p $(RUST_CARGO_DIR)
+	@if ! (cd $(RUST_DIR) && $(CARGO) build --release --offline --target $(RUST_TARGET) \
+	        --target-dir $(abspath $(RUST_CARGO_DIR))); then \
 		echo ""; \
-		echo "ERROR: building $< failed. The Rust citizens need a stable Rust toolchain with"; \
-		echo "       the bare-metal target: curl https://sh.rustup.rs -sSf | sh -s -- -y"; \
+		echo "ERROR: building the Rust citizens ($(RUST_DIR)) failed. They need a stable Rust"; \
+		echo "       toolchain with the bare-metal target: curl https://sh.rustup.rs -sSf | sh -s -- -y"; \
 		echo "       then: rustup target add $(RUST_TARGET)   (or: make install-deps)"; \
 		exit 1; \
 	fi
+	@touch $@
 
 # --gc-sections matters: the archive carries all of core, and the panic paths
 # behind every slice index reach core::fmt. Without it the linked image was
 # 179 KB of text (measured); with it, 9.6 KB — the same size as hello.elf.
 # --strip-debug drops core's prebuilt DWARF (500 KB) that user.ld would keep.
-$(RUST_PROGS:%=$(USER_BUILD)/%.elf): $(USER_BUILD)/%.elf: $(USER_BUILD)/lib%.a $(USER_DIR)/user.ld
+$(RUST_PROGS:%=$(USER_BUILD)/%.elf) $(RUST_SERVICES:%=$(USER_BUILD)/%.elf): $(USER_BUILD)/%.elf: $(RUST_STAMP) $(USER_DIR)/user.ld $(LIBQ_A)
 	$(CC) $(USER_CFLAGS) -Wl,--gc-sections -Wl,--strip-debug -Wl,--build-id=none \
-		-T $(USER_DIR)/user.ld -o $@ $<
+		-T $(USER_DIR)/user.ld -o $@ \
+		-Wl,--start-group $(RUST_LIB_DIR)/lib$*.a $(LIBQ_A) -Wl,--end-group
 
 # --- Embedded initrd (epic #62 phase 2) --------------------------------------
 # A deterministic ustar archive of rootfs/, wrapped like the user ELFs so the
@@ -953,6 +971,29 @@ ci-smoke: kernel
 		echo ""; echo "=== Smoke Test FAILED ==="; exit 1; \
 	fi
 	@echo "SUCCESS: Rust no_std citizen ran, crossed the ABI both ways, and was capability-gated (RHELLO)"
+	@# Rust SERVICE with a heap and a capability (#340 slices 2-3): rfieldd is
+	@# embedded like kannakad and started with CAP_RESOURCE_FIELD over region 7.
+	@# A Vec grows/shrinks/regrows through the GlobalAlloc over libq's arena;
+	@# three imprints land; a byte-corrupted probe recalls the EXACT stored
+	@# text; SYS_FIELD_INFO counts the three; and a recall against region 1 is
+	@# refused with exactly EPERM (the grant names ONE region, for Rust as for C).
+	@for gate in "RFIELD: alloc ok: vec grown to 1000 (sum=3496500)" \
+	             "RFIELD: imprinted 3/3 into region 7" \
+	             "RFIELD: winner=\"a rust citizen remembers the field\" slot=" \
+	             "RFIELD: field_info live=3 capacity=8" \
+	             "RFIELD: cross-region denied (EPERM)" \
+	             "rfieldd: FIELD VERIFIED"; do \
+		if ! grep -q -- "$$gate" /tmp/qemu-boot.log 2>/dev/null; then \
+			echo "ERROR: Rust service gate missing: $$gate"; \
+			echo "Boot log:"; cat /tmp/qemu-boot.log 2>/dev/null || true; \
+			echo ""; echo "=== Smoke Test FAILED ==="; exit 1; \
+		fi; \
+	done
+	@if grep -q "RFIELD: FAIL\|RFIELD: PANIC\|rfieldd: FIELD FAILED" /tmp/qemu-boot.log 2>/dev/null; then \
+		echo "ERROR: the Rust service reported a failure:"; grep "RFIELD\|rfieldd" /tmp/qemu-boot.log; \
+		echo ""; echo "=== Smoke Test FAILED ==="; exit 1; \
+	fi
+	@echo "SUCCESS: Rust service allocated over the libq arena and used its field capability (RFIELD)"
 	@# first native app citizen: 'run /bin/consciousnessd' runs a fixed-point
 	@# Kuramoto field on libq; the order parameter must actually synchronise
 	@# (r climb past 0.8) for the CONSCIOUSNESS EMERGED marker to print.

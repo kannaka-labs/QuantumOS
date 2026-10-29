@@ -1,0 +1,14 @@
+[package]
+name = "rhello"
+version = "0.2.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "/bin/rhello: the first Rust no_std citizen of QuantumOS (#263 slice 1)"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+qsys = { path = "../qsys" }
