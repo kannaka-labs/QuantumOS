@@ -26,7 +26,7 @@ jobs:
         sudo apt-get update
         # Install cross-compiler toolchain (Ubuntu 24.04 compatible)
         sudo apt-get install -y build-essential bison flex libgmp3-dev libmpc-dev libmpfr-dev texinfo
-        sudo apt-get install -y gdb-multiarch qemu-system-x86 grub-pc-bin xorriso nasm
+        sudo apt-get install -y gdb-multiarch qemu-system-x86 grub-pc-bin grub-efi-amd64-bin xorriso nasm
         # Use system gcc with -m64 flag for x86_64 target, or install cross-compiler from source
         # For now, use the standard gcc with appropriate flags
         which gcc && gcc --version
@@ -690,9 +690,11 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential qemu-system-x86 nasm grub-pc-bin xorriso mtools
+        sudo apt-get install -y build-essential qemu-system-x86 nasm grub-pc-bin grub-efi-amd64-bin xorriso mtools ovmf
     - name: Boot the GRUB ISO to the shell (console image, VGA text)
       run: make ci-smoke-iso
+    - name: Boot the same ISO under UEFI firmware (OVMF) to the shell on a framebuffer console (#264)
+      run: make ci-smoke-iso-uefi
     - name: Type into qsh via PS/2 scancodes
       run: make ci-smoke-kbd
     - name: Boot with no COM1 UART at all (the serial-less laptop shape)
@@ -1295,7 +1297,7 @@ jobs:
         sudo apt-get update
         # mtools: required by grub-mkrescue on ubuntu-latest — without it the
         # ISO build fails (kernel.iso is now a hard error, not a silent skip)
-        sudo apt-get install -y build-essential qemu-system-x86 grub-pc-bin xorriso mtools nasm
+        sudo apt-get install -y build-essential qemu-system-x86 grub-pc-bin grub-efi-amd64-bin xorriso mtools nasm
 
     - name: Build release
       run: |

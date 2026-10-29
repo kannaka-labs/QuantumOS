@@ -98,8 +98,10 @@ void *memset(void *ptr, int value, size_t num);
 void *memcpy(void *dest, const void *src, size_t num);
 size_t strlen(const char *str);
 
-// Stack configuration
-#define BOOT_STACK_SIZE 8192
-extern char boot_stack[BOOT_STACK_SIZE];
+// Boot/idle stack (kernel/src/boot.S owns the size; 64 KB, page tables above
+// it). [boot_stack, boot_stack_top) — the bottom 4 KB is a guard zone.
+extern char boot_stack[];
+extern char boot_stack_top[];
+#define BOOT_STACK_GUARD 4096
 
 #endif // BOOT_H

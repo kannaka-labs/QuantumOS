@@ -8,7 +8,8 @@ Getting from a clean checkout to a booting kernel. For the architecture see
 - **GCC** — the system compiler is auto-detected; an `x86_64-elf-*` cross-compiler is used if
   present but is **not** required (Ubuntu 24.04 builds with system gcc).
 - **QEMU** (`qemu-system-x86`) for booting and the CI gates.
-- **GNU make**, `nasm`. For the GRUB ISO: `grub-pc-bin`, `xorriso`, `mtools`.
+- **GNU make**, `nasm`. For the GRUB ISO: `grub-pc-bin`, `grub-efi-amd64-bin` (the UEFI half of
+  the hybrid image), `xorriso`, `mtools`; `ovmf` to test the UEFI boot in QEMU.
 - Windows: use WSL2 (Ubuntu). The kernel builds and boots inside WSL.
 
 ```bash
@@ -33,14 +34,17 @@ The version string in the boot banner comes from the repo-root `VERSION` file (i
 ## Boot it on real hardware
 
 ```bash
-make build/x86_64/kernel.iso    # GRUB ISO (BIOS/CSM; needs grub-pc-bin xorriso mtools)
-make ci-smoke-iso               # sanity-check the exact image via the real GRUB handoff
+make build/x86_64/kernel.iso    # hybrid BIOS+UEFI GRUB ISO (needs grub-pc-bin grub-efi-amd64-bin xorriso mtools)
+make ci-smoke-iso               # sanity-check the exact image via the real GRUB handoff (SeaBIOS)
+make ci-smoke-iso-uefi          # the same image under UEFI firmware (OVMF; needs the `ovmf` package)
 ```
 
-Write the ISO to a USB stick (`dd` on Linux, Rufus "DD Image" mode on Windows) and boot with
-Legacy/CSM enabled. The default **console** entry drops to an interactive `qsh` on the machine's
-own screen and keyboard. Limits: BIOS boot only (no UEFI yet), PS/2 keyboard, RAM above 128 MB
-currently ignored.
+Write the ISO to a USB stick (`dd` on Linux, Rufus "DD Image" mode on Windows) and boot it —
+Legacy/CSM or UEFI-only, both work (ADR-0031). The default **console** entry drops to an
+interactive `qsh` on the machine's own screen and keyboard. Limits: the keyboard must be an
+i8042 device (built-in laptop keyboards are; a USB keyboard needs the firmware's PS/2 legacy
+emulation, which UEFI-only firmware often lacks — no USB HID driver yet), and RAM beyond the
+firmware's memory map is not used.
 
 ## First boot
 

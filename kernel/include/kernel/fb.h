@@ -22,6 +22,24 @@ bool fb_init_from_multiboot(uint32_t mb_info_addr);
 /* Is the linear framebuffer active (vs. VGA text fallback)? */
 bool fb_available(void);
 
+/* #264: true when a framebuffer is active but THIS image never asked for a
+ * video mode (the console image, boot.S MB1_TEXT_ONLY). That only happens
+ * when the loader had no text mode to leave us in — UEFI firmware exposes a
+ * GOP framebuffer and nothing at 0xB8000 — so the screen console must render
+ * on the framebuffer. The video-requesting image keeps the live field view. */
+bool fb_text_console_mode(void);
+
+/* Framebuffer cell backend for the screen console (vga.c owns the line
+ * discipline; these are the cell store it draws into). Cells are an 8x8
+ * glyph with doubled rows (8x16, the text-mode aspect), scaled up once more
+ * on wide panels; geometry is capped so the shadow store stays bounded.
+ * fg/bg are VGA palette indices. fb_cons_cursor redraws the previous cursor
+ * cell from the shadow and underlines the new one. */
+int fb_cons_cols(void);
+int fb_cons_rows(void);
+void fb_cons_cell(int cx, int cy, char ch, uint8_t fg, uint8_t bg);
+void fb_cons_cursor(int cx, int cy);
+
 /* Packed 0x00RRGGBB colour */
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
 

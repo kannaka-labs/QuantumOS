@@ -70,21 +70,21 @@ SECTIONS
     /* Symbol for end of kernel */
     __end = .;
     
-    /* Stack section */
-    .stack (NOLOAD) :
-    {
-        . = . + 8192;  /* 8KB stack */
-        __stack_top = .;
-    } > ram
-    
-    /* Heap section */
-    .heap (NOLOAD) :
-    {
-        __heap_start = .;
-        . = . + 64M;   /* 64MB heap */
-        __heap_end = .;
-    } > ram
-    
+    /* Stack and heap: pure address-space reservations in the `ram` region,
+     * defined as symbols only. They used to be (NOLOAD) output sections,
+     * but ld still emits a PT_LOAD for an allocated NOLOAD section (filesz 0,
+     * memsz 64 MB), and a Multiboot loader must then reserve that exact
+     * physical range before it can hand over. GRUB on BIOS finds the range
+     * free; GRUB on UEFI asks the firmware for it page by page, and with
+     * firmware allocations scattered through 17-81 MB the request fails:
+     * "error: out of memory" at the menu, kernel never entered (#264).
+     * The kernel never needed the loader's help here — kheap_init writes
+     * its own block header and pmm_init reserves the backing frames — so
+     * the segment carried no content, only a demand on the loader. */
+    __stack_top = ORIGIN(ram) + 8192;  /* 8KB stack */
+    __heap_start = __stack_top;
+    __heap_end = __heap_start + 64M;   /* 64MB heap */
+
     /* Discard sections we don't need */
     /DISCARD/ :
     {

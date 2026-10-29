@@ -35,6 +35,68 @@
 #define QOS_VERSION "v0.0-dev"
 #endif
 
+// Bounded string/decimal appenders for one-line boot_log reports (no printf
+// in the kernel). Both leave room for the terminator; the caller writes it.
+static size_t append_str(char *buf, size_t o, size_t max, const char *s) {
+    while (*s && o + 1 < max) {
+        buf[o++] = *s++;
+    }
+    return o;
+}
+static size_t append_dec(char *buf, size_t o, size_t max, uint32_t v) {
+    char tmp[11];
+    int n = 0;
+    do {
+        tmp[n++] = (char)('0' + v % 10);
+        v /= 10;
+    } while (v && n < 10);
+    while (n > 0 && o + 1 < max) {
+        buf[o++] = tmp[--n];
+    }
+    return o;
+}
+
+// Boot-stack high-water + identity-map integrity check (#264). The boot stack
+// is BSS (zero at _start), so the lowest non-zero qword marks how deep init
+// went; the bottom BOOT_STACK_GUARD bytes must be untouched. boot_pd is the
+// low-1 GB identity map every address space shares: each entry must still be
+// (i * 2 MB) | P|RW|PS. A 16 KB stack overflowed into exactly these tables on
+// every boot, unseen until a UEFI framebuffer mapped through the zeroed word.
+extern uint64_t boot_pd[];
+static void boot_stack_and_tables_check(void) {
+    /* uintptr_t arithmetic throughout: the two linker symbols are distinct C
+     * objects, so comparing them as pointers is UB (the memory.c convention). */
+    uintptr_t lo = (uintptr_t)boot_stack;
+    uintptr_t hi = (uintptr_t)boot_stack_top;
+    uintptr_t p = lo;
+    while (p < hi && *(const uint64_t *)p == 0) {
+        p += sizeof(uint64_t);
+    }
+    uint32_t used = (uint32_t)(hi - p);
+    uint32_t size = (uint32_t)(hi - lo);
+    char line[80];
+    size_t o = append_str(line, 0, sizeof line, "STACK: boot stack high-water ");
+    o = append_dec(line, o, sizeof line, used);
+    o = append_str(line, o, sizeof line, " of ");
+    o = append_dec(line, o, sizeof line, size);
+    o = append_str(line, o, sizeof line, " bytes");
+    line[o] = '\0';
+    boot_log(line);
+    if (p < lo + BOOT_STACK_GUARD) {
+        boot_panic("STACK: boot stack OVERFLOW — guard zone touched (memory above is corrupt)");
+    }
+    for (uint64_t i = 0; i < 512; i++) {
+        /* bits 5/6 are Accessed/Dirty: the CPU sets them on use, so mask them */
+        if ((boot_pd[i] & ~0x60ULL) != ((i * 0x200000ULL) | 0x83ULL)) {
+            boot_log("PGTBL: boot_pd entry differs from the identity map — index / value:");
+            early_console_write_hex(i);
+            early_console_write_hex(boot_pd[i]);
+            boot_panic("PGTBL: low identity map corrupted (boot_pd entry rewritten)");
+        }
+    }
+    boot_log("PGTBL: low identity map intact (512 x 2 MB, P|RW|PS)");
+}
+
 // Boot splash dispatch: framebuffer when available, else VGA text
 static void splash_begin(void) {
     if (fb_available())
@@ -123,7 +185,9 @@ void kernel_main(uint32_t magic, uint32_t info_addr) {
     // path — CI and the qBraid watch window — provides none and stays
     // in text mode.
     if (fb_init_from_multiboot(info_addr)) {
-        boot_log("Linear framebuffer active — graphical boot splash");
+        boot_log(fb_text_console_mode()
+                     ? "Linear framebuffer active — console image, firmware has no text mode (#264)"
+                     : "Linear framebuffer active — graphical boot splash");
     } else {
         boot_log("No framebuffer — VGA text boot splash");
     }
@@ -250,6 +314,7 @@ static void kernel_init(void) {
     boot_log("Timer started, interrupts enabled");
 
     boot_log("Kernel initialization complete");
+    boot_stack_and_tables_check();
     splash_ready();
 
     // Text-mode boots hand the display from the splash to the scrolling
@@ -259,6 +324,24 @@ static void kernel_init(void) {
     if (!fb_available()) {
         vga_console_enable();
         boot_log("CONS: screen console active (VGA text 80x25)");
+    } else if (fb_text_console_mode()) {
+        /* #264: the console image got a framebuffer it never asked for — the
+         * firmware had no text mode to give (UEFI/GOP). 0xB8000 is plain RAM
+         * there, so the screen console renders on the framebuffer instead. */
+        vga_console_enable();
+        char line[96];
+        size_t o = 0;
+        o = append_str(line, o, sizeof line, "CONS: screen console active (framebuffer ");
+        o = append_dec(line, o, sizeof line, (uint32_t)fb_width());
+        o = append_str(line, o, sizeof line, "x");
+        o = append_dec(line, o, sizeof line, (uint32_t)fb_height());
+        o = append_str(line, o, sizeof line, ", ");
+        o = append_dec(line, o, sizeof line, (uint32_t)fb_cons_cols());
+        o = append_str(line, o, sizeof line, "x");
+        o = append_dec(line, o, sizeof line, (uint32_t)fb_cons_rows());
+        o = append_str(line, o, sizeof line, " cells)");
+        line[o] = '\0';
+        boot_log(line);
     }
 
     boot_log("QuantumOS ready");
@@ -280,7 +363,8 @@ static void kernel_init(void) {
         interrupt_disable_all();
         process_reap();
         int field_n = 0;
-        bool have_field = fb_available() && field_snapshot_take(field_buf, &field_n);
+        bool have_field =
+            fb_available() && !fb_text_console_mode() && field_snapshot_take(field_buf, &field_n);
         interrupt_enable_all();
         if (have_field) {
             fb_render_field(field_buf, field_n);

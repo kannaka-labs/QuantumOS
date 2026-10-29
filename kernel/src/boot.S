@@ -7,7 +7,17 @@
 # long mode, enables SSE (the resonance subsystem is compiled with -msse),
 # and calls kernel_main(magic, info_addr).
 
-#define BOOT_STACK_SIZE 16384
+/* Boot/idle stack for kernel_main and everything kernel_init calls. It was
+ * 16 KB, and the init chain (core_services_init -> service_selftest ->
+ * service_list, with a 32-entry service_info_t array as a local) runs about
+ * 23 KB deep: the overflow landed in the page tables that used to sit just
+ * below it, silently zeroing fb_map_pd[0] and boot_pd[187..] on every boot.
+ * Invisible on BIOS/-kernel boots (VGA text never uses fb_map_pd; a 128 MB
+ * machine never touches boot_pd entries above 374 MB); fatal under UEFI,
+ * whose framebuffer at 2 GB maps through fb_map_pd[0] (#264). 64 KB now, the
+ * tables live ABOVE the stack (see .bss below), and main.c reports the
+ * high-water mark and checks the identity map at the end of init. */
+#define BOOT_STACK_SIZE 65536
 
 #define MB1_MAGIC 0x1BADB002
 #ifdef MB1_TEXT_ONLY
@@ -30,6 +40,12 @@
  * back to VGA text if no usable framebuffer is provided. */
 .section .multiboot_header, "a"
 .align 4
+/* Exported so the kernel can read back what THIS image asked for (#264):
+ * a framebuffer arriving although bit 2 was never set means the firmware
+ * had no text mode to give (UEFI/GOP), and the screen console must render
+ * on the framebuffer instead of the VGA text buffer. */
+.global mb1_header
+mb1_header:
     .long MB1_MAGIC
     .long MB1_FLAGS
     .long -(MB1_MAGIC + MB1_FLAGS)
@@ -384,6 +400,15 @@ gdt64_ptr:
 # ============================================================================
 .section .bss
 .align 4096
+/* The stack comes FIRST (lowest address): a stack grows down, so an
+ * overflow runs into whatever precedes it, and that must never be a page
+ * table again (#264). The bottom 4 KB is a guard zone main.c checks. */
+.global boot_stack
+.global boot_stack_top
+boot_stack:
+    .space BOOT_STACK_SIZE
+boot_stack_top:
+.align 4096
 .global boot_pml4
 .global boot_pdpt
 .global boot_pd
@@ -398,10 +423,6 @@ boot_pd:
  * (set up at runtime by fb_init when a linear framebuffer is present) */
 fb_map_pd:
     .space 4096
-.align 16
-boot_stack:
-    .space BOOT_STACK_SIZE
-boot_stack_top:
 
 # Non-executable stack marker
 .section .note.GNU-stack, "", @progbits

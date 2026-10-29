@@ -229,6 +229,13 @@ void vga_boot_ready(void) {
 
 static int cons_active;
 static int cons_x, cons_y;
+/* Cell grid and backend (#264): 80x25 at 0xB8000 on a text-mode boot, or
+ * the framebuffer cell store (fb.c) when the loader handed the console image
+ * a GOP framebuffer because the firmware had no text mode — UEFI. The line
+ * discipline below is shared; only cons_cell/cons_clear_row and the cursor
+ * know which display they are on. */
+static int cons_cols = VGA_WIDTH, cons_rows = VGA_HEIGHT;
+static int cons_on_fb;
 
 /* ---- minimal ANSI SGR colour for the screen console ----
  * The serial console passes escape bytes straight through, so a real
@@ -290,10 +297,20 @@ static void crtc_word(uint8_t idx_hi, uint8_t idx_lo, uint16_t value) {
 }
 
 static void cons_cell(int x, int y, char ch) {
+    if (cons_on_fb) {
+        fb_cons_cell(x, y, ch, cons_fg, cons_bg);
+        return;
+    }
     VGA_MEM[y * VGA_WIDTH + x] = cell(ch, (vga_color_t)cons_fg, (vga_color_t)cons_bg);
 }
 
 static void cons_clear_row(int y) {
+    if (cons_on_fb) {
+        for (int i = 0; i < cons_cols; i++) {
+            fb_cons_cell(i, y, ' ', VGA_LIGHT_GREY, VGA_BLACK);
+        }
+        return;
+    }
     int row = y * VGA_WIDTH;
     for (int i = 0; i < VGA_WIDTH; i++) {
         VGA_MEM[row + i] = cell(' ', VGA_LIGHT_GREY, VGA_BLACK);
@@ -304,16 +321,25 @@ static void cons_clear_row(int y) {
  * entered row is cleared, and so is the one below it — a moving blank
  * separator that marks where the newest line sits. */
 static void cons_next_row(void) {
-    cons_y = (cons_y + 1) % VGA_HEIGHT;
+    cons_y = (cons_y + 1) % cons_rows;
     cons_clear_row(cons_y);
-    cons_clear_row((cons_y + 1) % VGA_HEIGHT);
+    cons_clear_row((cons_y + 1) % cons_rows);
 }
 
 void vga_console_enable(void) {
-    vga_clear(VGA_BLACK);
+    cons_on_fb = fb_text_console_mode() ? 1 : 0;
+    if (cons_on_fb) {
+        cons_cols = fb_cons_cols();
+        cons_rows = fb_cons_rows();
+        fb_clear(0);
+    } else {
+        cons_cols = VGA_WIDTH;
+        cons_rows = VGA_HEIGHT;
+        vga_clear(VGA_BLACK);
+        cursor_show();
+    }
     cons_x = 0;
     cons_y = 0;
-    cursor_show();
     cons_active = 1;
     vga_console_sync();
 }
@@ -380,7 +406,7 @@ void vga_console_putc(char c) {
         do {
             cons_cell(cons_x, cons_y, ' ');
             cons_x++;
-        } while ((cons_x & 3) && cons_x < VGA_WIDTH);
+        } while ((cons_x & 3) && cons_x < cons_cols);
         break;
     default:
         if ((uint8_t)c < 32 || (uint8_t)c > 126) {
@@ -390,7 +416,7 @@ void vga_console_putc(char c) {
         cons_x++;
         break;
     }
-    if (cons_x >= VGA_WIDTH) {
+    if (cons_x >= cons_cols) {
         cons_x = 0;
         cons_next_row();
     }
@@ -401,9 +427,14 @@ void vga_console_putc(char c) {
 }
 
 void vga_console_sync(void) {
-    if (cons_active) {
-        crtc_word(0x0E, 0x0F, (uint16_t)(cons_y * VGA_WIDTH + cons_x));
+    if (!cons_active) {
+        return;
     }
+    if (cons_on_fb) {
+        fb_cons_cursor(cons_x, cons_y); /* one cell repainted, no port I/O */
+        return;
+    }
+    crtc_word(0x0E, 0x0F, (uint16_t)(cons_y * VGA_WIDTH + cons_x));
 }
 
 /* Whole-string write under an IRQ guard: boot_log tees from both thread
@@ -424,20 +455,26 @@ void vga_console_puts(const char *s) {
 }
 
 static void panic_row(int y, const char *s) {
+    int on_fb = fb_text_console_mode();
+    int width = on_fb ? fb_cons_cols() : VGA_WIDTH;
     int len = str_len(s);
-    int start = (VGA_WIDTH - len) / 2;
-    for (int x = 0; x < VGA_WIDTH; x++) {
+    int start = (width - len) / 2;
+    for (int x = 0; x < width; x++) {
         char ch = ' ';
         if (x >= start && x - start < len && start >= 0) {
             ch = s[x - start];
         }
-        VGA_MEM[y * VGA_WIDTH + x] = cell(ch, VGA_WHITE, VGA_RED);
+        if (on_fb) {
+            fb_cons_cell(x, y, ch, VGA_WHITE, VGA_RED);
+        } else {
+            VGA_MEM[y * VGA_WIDTH + x] = cell(ch, VGA_WHITE, VGA_RED);
+        }
     }
 }
 
 void vga_panic_banner(const char *msg) {
-    if (fb_available()) {
-        return; /* graphics mode: 0xB8000 is not the display */
+    if (fb_available() && !fb_text_console_mode()) {
+        return; /* graphics mode (live field view): 0xB8000 is not the display */
     }
     panic_row(0, "*** KERNEL PANIC ***");
     panic_row(1, msg ? msg : "(no message)");

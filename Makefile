@@ -118,7 +118,7 @@ OBJECTS = $(KERNEL_SOURCES:$(KERNEL_DIR)/src/%.c=$(BUILD_DIR)/%.o) \
 -include $(OBJECTS:.o=.d)
 
 # Targets
-.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-sched-load ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress ci-smoke-egress-escape ci-smoke-net-e1000 ci-smoke-net-virtio-nofeat ci-smoke-http-big ci-smoke-net-virtio-tap ci-smoke-tcp-put
+.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-sched-load ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-iso-uefi ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress ci-smoke-egress-escape ci-smoke-net-e1000 ci-smoke-net-virtio-nofeat ci-smoke-http-big ci-smoke-net-virtio-tap ci-smoke-tcp-put
 
 all: kernel
 
@@ -264,6 +264,18 @@ $(BUILD_DIR)/resonance/%.o: $(KERNEL_DIR)/src/resonance/%.c
 # usable interactive machine, verbose is the debugging entry. The
 # graphical entry boots the video-requesting image: 1024x768 splash +
 # live field view, text on COM1.
+#
+# UEFI (#264): the console entries ALSO load GRUB's video drivers and set
+# gfxpayload. On BIOS GRUB that changes nothing — a header with no video
+# request keeps GRUB in VGA text (verified under SeaBIOS: the kernel still
+# reports "No framebuffer"). On UEFI there is no text mode at all: without
+# these lines GRUB hands over with no framebuffer info and the kernel writes
+# a console into 0xB8000, which is plain RAM on such a machine — a blind
+# boot. With them GRUB passes the GOP framebuffer, the kernel sees a
+# framebuffer its header never asked for, and renders the screen console on
+# it (fb_text_console_mode, kernel/src/fb.c). The image must be hybrid for
+# any of this to start: grub-mkrescue only adds the EFI El Torito entry when
+# grub-efi-amd64-bin is installed, so the rule checks and warns below.
 $(BUILD_DIR)/kernel.iso: $(BUILD_DIR)/kernel.elf32 $(BUILD_DIR)/kernel-console.elf32
 	@mkdir -p $(BUILD_DIR)/iso/boot/grub
 	@cp $(BUILD_DIR)/kernel.elf32 $(BUILD_DIR)/iso/boot/kernel.elf
@@ -271,6 +283,8 @@ $(BUILD_DIR)/kernel.iso: $(BUILD_DIR)/kernel.elf32 $(BUILD_DIR)/kernel-console.e
 	@echo "set timeout=3" > $(BUILD_DIR)/iso/boot/grub/grub.cfg
 	@echo "set default=0" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
 	@echo "menuentry \"QuantumOS (console)\" {" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo "    insmod all_video" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo "    set gfxpayload=1024x768x32" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
 	@echo "    multiboot /boot/kernel-console.elf quiet" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
 	@echo "    boot" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
 	@echo "}" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
@@ -278,10 +292,14 @@ $(BUILD_DIR)/kernel.iso: $(BUILD_DIR)/kernel.elf32 $(BUILD_DIR)/kernel-console.e
 	@# end-to-end demo (QPU + field + spawn + delegate) at boot. `agentdemo` is
 	@# decoupled from `quiet` precisely so this entry stays clean.
 	@echo "menuentry \"QuantumOS (agent-native demo)\" {" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo "    insmod all_video" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo "    set gfxpayload=1024x768x32" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
 	@echo "    multiboot /boot/kernel-console.elf quiet agentdemo" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
 	@echo "    boot" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
 	@echo "}" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
 	@echo "menuentry \"QuantumOS (console, verbose kernel log)\" {" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo "    insmod all_video" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo "    set gfxpayload=1024x768x32" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
 	@echo "    multiboot /boot/kernel-console.elf" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
 	@echo "    boot" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
 	@echo "}" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
@@ -293,7 +311,11 @@ $(BUILD_DIR)/kernel.iso: $(BUILD_DIR)/kernel.elf32 $(BUILD_DIR)/kernel-console.e
 	@echo "}" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
 	@grub-mkrescue -o $@ $(BUILD_DIR)/iso 2>/dev/null || \
 	 grub2-mkrescue -o $@ $(BUILD_DIR)/iso 2>/dev/null || \
-	 (echo "ERROR: grub-mkrescue failed or missing (need grub-pc-bin xorriso mtools)"; exit 1)
+	 (echo "ERROR: grub-mkrescue failed or missing (need grub-pc-bin grub-efi-amd64-bin xorriso mtools)"; exit 1)
+	@if command -v xorriso >/dev/null 2>&1 && \
+	   ! xorriso -indev $@ -report_el_torito plain 2>/dev/null | grep -q 'UEFI'; then \
+		echo "WARNING: $@ is BIOS-only — no EFI boot image. Install grub-efi-amd64-bin and rebuild for a hybrid BIOS+UEFI ISO (#264)"; \
+	fi
 
 # Run in QEMU
 run: $(BUILD_DIR)/kernel.elf32
@@ -2839,6 +2861,20 @@ ci-smoke-iso: $(BUILD_DIR)/kernel.iso
 	fi
 	@echo "  [PASS] quiet contract: at most one timer-tick line"
 	@echo "SUCCESS: GRUB/ISO boot reached the shell + citizen gate on a QUIET console"
+
+# UEFI boot path (#264): the SAME ISO under OVMF (edk2 UEFI firmware, the
+# -cdrom device, no CSM). The firmware has no VGA text mode, so this proves
+# the EFI El Torito entry exists (grub-efi-amd64-bin at build time), GRUB's
+# multiboot loader can place the kernel (the 64 MB stack/heap PT_LOAD that
+# made it fail with "out of memory"), and the kernel renders its screen
+# console on the GOP framebuffer — the same shell + citizen gates as
+# ci-smoke-iso, plus the framebuffer-console lines and the absence of the
+# VGA-text line. Needs the `ovmf` package. Commands are typed only once the
+# shell has announced itself (the firmware and GRUB menu would otherwise
+# eat bytes piped from t=0).
+ci-smoke-iso-uefi: $(BUILD_DIR)/kernel.iso
+	@echo "=== QuantumOS UEFI/OVMF boot test (#264, console image on a GOP framebuffer) ==="
+	python3 scripts/test_qos_iso_uefi.py $(BUILD_DIR)/kernel.iso
 
 # PS/2 keyboard path (epic #101): drive qsh entirely through emulated
 # keyboard scancodes injected via the QEMU monitor — serial carries NO

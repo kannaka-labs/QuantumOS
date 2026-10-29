@@ -50,6 +50,7 @@ SMP; defer UEFI, a libagent extraction, and a block filesystem — are recorded 
 | [0028](0028-sashiko-review-service.md) | Accepted | Sashiko review as a service the person pays for with their own model key |
 | [0029](0029-vsock-shell-channel.md) | Accepted | A virtio-vsock channel for the shell, with COM1 kept as the log and the fallback |
 | [0030](0030-egress-grant.md) | Accepted | Networking is an egress grant (default off, allowlist, budgets, receipt), not a side effect of a NIC |
+| [0031](0031-uefi-boot-framebuffer-console.md) | Accepted | UEFI boot: Multiboot1 kept, hybrid ISO, the screen console rendered on the GOP framebuffer; the boot-stack overflow that zeroed page tables on every boot |
 
 ## Sequencing of the next phases
 
@@ -61,8 +62,7 @@ SMP; defer UEFI, a libagent extraction, and a block filesystem — are recorded 
 4. **ADR-0021** — honest memory to 1 GB, standalone; also closes two verified latent
    defects (the PMM/kheap reservation gap and the Multiboot2-magic trap).
 
-Deferred (panel verdicts, no ADR yet): UEFI boot (revisit at a real CSM-less target),
-a `libagent` extraction (needs a second orchestrator consumer + actor-bearing audit
+Deferred (panel verdicts, no ADR yet): a `libagent` extraction (needs a second orchestrator consumer + actor-bearing audit
 records), and a block/log filesystem (no agent-native consumer needs partial writes).
 
 ## Format
