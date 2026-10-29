@@ -20,7 +20,7 @@ permissions:
 jobs:
   version-check:
     name: Tag matches VERSION
-    runs-on: ubuntu-24.04   # pinned: ubuntu-latest became 26.04 on 2026-10-29 and the kernel built there resets at PMM init (see the migration issue)
+    runs-on: ubuntu-24.04   # pinned, see #346
     steps:
       - uses: actions/checkout@v4
       - name: Verify tag == v$(VERSION) (tag builds only)
@@ -37,7 +37,7 @@ jobs:
 
   build-kernel:
     name: Kernel + ISO (boot-verified)
-    runs-on: ubuntu-24.04   # pinned: ubuntu-latest became 26.04 on 2026-10-29 and the kernel built there resets at PMM init (see the migration issue)
+    runs-on: ubuntu-24.04   # pinned, see #346
     needs: version-check
     steps:
       - uses: actions/checkout@v4
@@ -73,7 +73,7 @@ jobs:
 
   build-package:
     name: Python host-tools package
-    runs-on: ubuntu-24.04   # pinned: ubuntu-latest became 26.04 on 2026-10-29 and the kernel built there resets at PMM init (see the migration issue)
+    runs-on: ubuntu-24.04   # pinned, see #346
     needs: version-check
     steps:
       - uses: actions/checkout@v4
@@ -93,7 +93,7 @@ jobs:
 
   build-web:
     name: Self-contained browser demo bundle
-    runs-on: ubuntu-24.04   # pinned: ubuntu-latest became 26.04 on 2026-10-29 and the kernel built there resets at PMM init (see the migration issue)
+    runs-on: ubuntu-24.04   # pinned, see #346
     needs: version-check
     steps:
       - uses: actions/checkout@v4
@@ -116,7 +116,7 @@ jobs:
 
   publish:
     name: GitHub Release
-    runs-on: ubuntu-24.04   # pinned: ubuntu-latest became 26.04 on 2026-10-29 and the kernel built there resets at PMM init (see the migration issue)
+    runs-on: ubuntu-24.04   # pinned, see #346
     needs: [build-kernel, build-package, build-web]
     if: github.event_name == 'push'
     steps:
@@ -138,7 +138,7 @@ jobs:
 
   pypi:
     name: PyPI (optional — needs PYPI_API_TOKEN secret)
-    runs-on: ubuntu-24.04   # pinned: ubuntu-latest became 26.04 on 2026-10-29 and the kernel built there resets at PMM init (see the migration issue)
+    runs-on: ubuntu-24.04   # pinned, see #346
     needs: publish
     if: github.event_name == 'push'
     steps:
