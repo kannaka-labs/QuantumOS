@@ -418,6 +418,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full per-arc history and [docs/adr/](do
 - [x] The hub: one policy-gated MCP endpoint for the ecosystem's MCP servers and CLIs — ADR-0027
 - [x] `pip install quantumos-host-tools` ships `qos-broker`, `qos-broker-mcp` and `qos-hub`
 - [x] v0.6.1: Sashiko review with your own model key (`qos-review`, ADR-0028), qBraid Lab compute in the broker, and the fixes from testing the installed package end to end (`QOS_KERNEL`, Windows venvs, per-call timeouts)
+- [x] v0.6.2: networking is an egress grant (ADR-0030), e1000 + virtio-net offloads, windowed TCP with explicit net-thread handoffs (64 KiB fetch 900 → 10 ms), the shell over vsock (ADR-0029), UEFI-only machines boot on a hybrid ISO (ADR-0031), and the first Rust `no_std` citizen (ADR-0032)
 
 ### 🔭 **Next** (planned — see [docs/adr/](docs/adr/))
 - [ ] N=5 field societies (lift the two lockstep peer ceilings + the host bridge arrays)

@@ -9,6 +9,92 @@ Full per-PR provenance: `git log` and the PR list on GitHub.
 
 *(nothing yet)*
 
+## [0.6.2] — 2026-10-29 — networking as an egress grant, UEFI boot, a faster shell and TCP, the first Rust citizen
+
+The v1 contracts (syscall ABI, the MCP tool surface, the society wire protocol) are unchanged and
+pass their freeze gates. One error code is added, `SYS_EEGRESS` (-7), for a network call the
+egress grant refuses. Everything else is additive.
+
+### Networking is an egress grant (ADR-0030; #324, #326, #327)
+
+- **A NIC is not networking.** A NIC without `egress=` on the boot line binds and does nothing.
+  The grant names a TTL, a byte budget, an allowlist of `host:port/proto` entries and the ports
+  the guest may listen on (`egress=ttl=600;bytes=4194304;allow=10.0.2.2:53/udp,...;listen=8080`).
+  A call outside the grant is refused with `SYS_EEGRESS`; every use and every refusal is a receipt
+  row (`AUDIT_EGRESS`) in the authority ledger, and `qsh egress` shows the grant and what is left.
+- **A host can grant after boot** over the console escape `ESC ] egress ; <key> ; <spec> BEL`,
+  gated by `egress_key=<16 hex>` on the boot line, which ring 3 cannot read (#327). The net thread
+  waits offline for a grant instead of giving up.
+- Every network gate in CI and the host bridge carry an explicit grant.
+
+### NIC drivers
+
+- Intel e1000 (82540EM), the NIC QEMU attaches by default (#325).
+- virtio-net: checksum offload, merged receive buffers, MSI-X interrupts (#328). Measured on QEMU:
+  no throughput change, because the TCP stack was the bottleneck, which the next section fixes.
+- DNS uses the name servers DHCP hands out; a Firecracker network self-test (#323).
+
+### TCP and the scheduler, measured
+
+- **Receive (#330):** the 8 KiB receive ring was the window, and each refill cost a scheduler round
+  trip. A 128 KiB ring, silly-window avoidance and a deeper virtio-net receive queue take a 64 KiB
+  fetch from 4.5 s to 1.3 s.
+- **Send (#332):** a 64 KiB send ring, the peer's window, slow start, fast retransmit and
+  zero-window probes replace stop-and-wait. A 64 KiB upload goes from 20 s to 1.8 s guest clock
+  (29 ms on the wire). New: `qsh tcpput`, `scripts/tcp_sink.py`.
+- **Net-thread handoffs (#334):** syscalls kick the net thread, the NIC interrupt hands over, and the
+  thread wakes its waiters and yields instead of holding its quantum. On the CI runner a 64 KiB
+  fetch goes from 900 ms to 10 ms, a 256 KiB upload from 3.15 s to 1.06 s.
+- **Scheduler (#336):** a boosted pick no longer re-anchors the round-robin rotation (under keystroke
+  or NIC load the tail of the process table starved without bound), one plain tick is given up while a
+  boost waits, and a new process is stamped at creation. A load-mode fairness gate runs in CI.
+
+### The shell over virtio-vsock (ADR-0029; #319, #320, #321, #322)
+
+- The public console launcher's `--vsock` carries the shell over a virtio-vsock channel; COM1 stays
+  the kernel log and the fallback. `help` to prompt on the public console: 1.4 s to 88 ms (p50).
+
+### UEFI-only machines boot (ADR-0031, #337)
+
+- **The ISO is hybrid again.** `v0.6.1`'s ISO carried no EFI boot image because the release pipeline
+  lacked `grub-efi-amd64-bin`; this release's ISO boots from BIOS and from UEFI (gated under OVMF
+  by `make ci-smoke-iso-uefi`).
+- GRUB on UEFI said "out of memory": the linker script emitted a 64 MB load segment for the NOLOAD
+  stack and heap. They are linker symbols now.
+- **A boot-stack overflow fixed.** The 16 KB boot stack overflowed by about 7.5 KB during init on
+  every boot, zeroing page tables below it. BIOS and `-kernel` boots never touched the zeroed entries;
+  the UEFI framebuffer did. The stack is 64 KB, placed below the tables, with a high-water line
+  (`STACK:`) and an identity-map check (`PGTBL:`) at the end of init.
+- The screen console renders on the firmware's framebuffer when there is no text mode (128x48 cells
+  at 1024x768); BIOS boots keep VGA text.
+
+### The first Rust citizen (ADR-0032, #339)
+
+- `/bin/rhello`: a `no_std` Rust program built with plain `rustc` for `x86_64-unknown-none` and linked
+  with the C citizens' link line, gated in CI (it runs, the kernel copies into a Rust buffer, the field
+  capability refuses it with exactly -4, it exits 7). `user/rust/qsys.rs` twins `usys.h` with its
+  struct sizes pinned at compile time.
+- **Building needs Rust now:** stable `rustc` with the bare-metal target
+  (`rustup target add x86_64-unknown-none`; `make install-deps` does it).
+
+### Entropy and hardware probes
+
+- virtio-rng, labelled as host randomness, not a QPU (#317).
+- COM2 is confirmed with the 8250 loopback test and logged "absent" when probed out (#267, #309).
+
+### Docs
+
+- `docs/HARDWARE.md`, the real-hardware compatibility table, and a hardware-report issue form (#338).
+
+### Host tools package (`quantumos-host-tools` 0.6.2)
+
+- `qos_bridge` waits for the audit on an idle bound under a 90 s cap, not a fixed 12 s (#315); N-way
+  key checks anchor at the end of the FSKEY line (#310); the scheduler probe samples every 2 s in
+  idle mode (#311).
+- The v1 MCP golden is re-pinned to mcp 1.30.0 (#314, after the dependency bump in #243).
+- The qBraid gateway backend is tested with the SDK mocked, in CI (#318); a Firecracker boot gate
+  runs the public console's VM shape in CI (#313); `scripts/` gains a console output benchmark (#316).
+
 ## [0.6.1] — 2026-10-25 — fixes from testing the installed package, Sashiko review, qBraid Lab compute
 
 Before more outreach, the installed 0.6.0 package was tested end to end, the way an agent uses it. `quantumos-host-tools` came from PyPI into clean environments on Windows and Linux, and the hub was driven over MCP in front of Kannaka (MCP and CLI), kannaka-quantum, Kannaktopus, the 0xSCADA CLI and steward. `qos-mcp` booted the release kernel under QEMU/KVM. The test found the bugs fixed below, and the fixes were re-verified the same way. The v1 contracts (syscall ABI, the MCP tool surface, the society wire protocol) are unchanged.

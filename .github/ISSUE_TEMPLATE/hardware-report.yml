@@ -39,7 +39,7 @@ body:
     attributes:
       label: QuantumOS version
       description: The release tag of the ISO, or the commit you built it from.
-      placeholder: "v0.6.1, or main at e543f1f"
+      placeholder: "v0.6.2, or main at 253f582"
     validations:
       required: true
 
