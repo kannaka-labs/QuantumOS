@@ -453,13 +453,19 @@ pub mod heap {
 /// NUL-terminated through SYS_WRITE. No allocator, no core::fmt (which would
 /// pull in the formatting machinery ADR-0032 measured at 170 KB).
 pub struct Line {
-    buf: [u8; 160],
+    buf: [u8; LINE_MAX],
     len: usize,
 }
 
+/// The kernel's `sys_write` copies at most 128 bytes of a line
+/// (`kernel/src/syscall.c`), so a longer line would be cut there; a `Line`
+/// cuts at the same length, and a 64-byte pattern plus ~60 bytes of framing
+/// fits. Two patterns do not: print them on two lines.
+pub const LINE_MAX: usize = 128;
+
 impl Line {
     pub const fn new() -> Self {
-        Line { buf: [0; 160], len: 0 }
+        Line { buf: [0; LINE_MAX], len: 0 }
     }
 
     pub fn bytes(&mut self, s: &[u8]) -> &mut Self {

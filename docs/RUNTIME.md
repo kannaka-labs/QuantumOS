@@ -366,6 +366,13 @@ single-basin binary attractor that relaxes onto one pattern, the kernel
 field kannakad speaks to is the ranked, importance-weighted cousin. A
 ci-smoke gate asserts all three behaviours (`RESONANCE VERIFIED`).
 
+`user/rust/rkannaka` is its Rust sibling and the first Kannaka *tool* inside
+the guest (#340, ADR-0032): the same kind of service, declared with
+`field_region = 7`, allocating over libq's arena, that replays
+`/etc/kannaka.session` from the initrd — kannaka-memory's verbs (`imprint`
+with importance, `recall` with top-k, `expect`, `info`) as data a person can
+edit on the RAM overlay and CI replays as a gate (`SESSION VERIFIED`).
+
 `user/agentd.c` (the orchestrator) + its capless sub-agent `user/agentsub.c` are
 the **agent-native society demo** — one ring-3 citizen exercising the whole
 agentic stack in a single story, each step with a verifiable outcome (agentd

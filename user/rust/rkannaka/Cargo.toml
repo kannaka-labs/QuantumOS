@@ -1,9 +1,9 @@
 [package]
-name = "rfieldd"
+name = "rkannaka"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-2.0-only"
-description = "rfieldd: a Rust service that allocates and holds a field capability (#340 slices 2 and 3)"
+description = "rkannaka: the Rust kannaka client of the kernel field, a service that replays /etc/kannaka.session (#340)"
 publish = false
 
 [lib]

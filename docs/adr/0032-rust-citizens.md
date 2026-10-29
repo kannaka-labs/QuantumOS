@@ -1,7 +1,8 @@
 # 32. Rust citizens: the path for running the Kannaka tools inside QuantumOS
 
 Date: 2026-10-29
-Status: Accepted (slice 1 shipped in #339; slices 2 and 3 shipped in the #340 PR)
+Status: Accepted (slice 1 shipped in #339; slices 2 and 3 in #343; the first Kannaka tool slice in
+the second #340 PR)
 
 ## Context
 
@@ -73,10 +74,11 @@ interpreter's memory and a second ABI on top. If a tool ever needs it, it is a l
   The compiler's own `memcpy`/`memset` (from `compiler_builtins`) are weak symbols, so they
   coexist with libq's without a duplicate-definition error (measured: `W memcpy`, `W memset`,
   `T malloc`, `T free` in the linked service).
-- **A Rust service with authority.** `rfieldd` is embedded in the kernel like `kannakad` and
+- **A Rust service with authority.** `rfieldd` was embedded in the kernel like `kannakad` and
   registered by `citizens.c` with `grant_field = 1, field_region = 7` (the one region no C
   citizen names), re-minted and scrubbed at every start, monitored, heartbeating after its demo.
-  Nothing in the kernel treats it as anything but another ELF service.
+  Nothing in the kernel treats it as anything but another ELF service. (The next slice's
+  `rkannaka` took over the region and these proofs; `rfieldd` itself is gone.)
 - **The gate replaces "-4 is the proof" with a successful recall**, as the follow-up issue asked:
   a `Vec` grown to 1,000 entries, shrunk to 10, regrown, dropped and allocated again; three
   imprints into region 7; a byte-corrupted probe recalling the *exact* stored text
@@ -90,6 +92,46 @@ interpreter's memory and a second ABI on top. If a tool ever needs it, it is a l
 | text / data / bss | 14,144 / 376 / 65,568 bytes (the bss is libq's arena) |
 | SSE / x87 instructions | 0 |
 | `/bin/rhello` text, cargo-built | 8,069 bytes (rustc-built in #339: 9,653) |
+
+### The first Kannaka tool, as shipped (#340, the last section of the issue)
+
+**What "kannaka-memory inside QuantumOS" means here.** Not a port of the host store: the kernel
+field *is* the memory (ADR-0006: 64-byte patterns, Q15 energy, 8 slots per region, ranked recall
+by resonance, retrieval reinforcement). The tool is kannaka-memory's *verbs* over it, in Rust,
+inside the guest: `rkannaka` (`user/rust/rkannaka`), a service with the region-7 grant that
+reads `/etc/kannaka.session` from the initrd (or the RAM overlay, which shadows it, so a session
+can be replaced without a rebuild) and replays it at boot:
+
+| verb | does | prints |
+|---|---|---|
+| `imprint <importance 0..1000> <text>` | importance → Q15 energy as the C kannakad maps it; SYS_IMPRINT | `RKAN: imprint slot=S energy=E "text"` |
+| `recall <k> <probe>` | SYS_RECALL, `k` rankings | `RKAN: recall k=K "probe" n=N` then `RKAN:   winner="text" slot=S score=Q` and the lower ranks |
+| `expect <text>` | the last winner must be exactly this | `RKAN: expect ok "text"` or `RKAN: FAIL expect: …` |
+| `info` | SYS_FIELD_INFO | `RKAN: info live=L capacity=C` and one line per live slot (energy, effective energy, retrievals, preview) |
+
+The verdict is `rkannaka: SESSION VERIFIED (I imprints, R recalls, E expects ok)`; any `RKAN: FAIL`,
+`RKAN: PANIC` or `SESSION FAILED` fails `make ci-smoke` and the Integration job. The shipped session
+imprints three memories at importances 900/600/750, recalls a 4-byte-corrupted probe with k=3 and a
+2-byte-corrupted one with k=1, expects the exact stored text both times, and lists the region.
+The allocator proof and the cross-region refusal from the previous slice run first, every boot.
+
+**The >64-byte decision.** Patterns are 64 bytes and the tool truncates longer text, printing
+`RKAN: truncated to 64 bytes: "…"` so the loss is visible. Chunking in ring 3 was rejected: with 8
+slots per region, a 65-byte memory would spend a quarter of the region, and recall by resonance
+ranks chunks, not records. Longer patterns or more slots are a kernel field change
+(`FIELD_PAT_MAX` / `FIELD_SLOTS` feed `FIELD_BLOB_BYTES`, the on-disk blob of ADR-0007) and need
+their own ADR when a tool needs them; none of the Kannaka tools in #263 does yet.
+
+**A kernel fact met on the way.** `sys_write` copies at most 128 bytes of a line
+(`kernel/src/syscall.c`), so a line carrying two 64-byte patterns is cut by the kernel. `qsys::Line`
+now caps at the same 128 and the tool prints a recall as two lines.
+
+| rkannaka, measured on debain2 | result |
+|---|---|
+| text / data / bss | 20,264 / 480 / 65,568 bytes |
+| SSE / x87 instructions | 0 |
+| session replay | 3 imprints, 2 recalls (scores 28,6xx and 24,5xx Q15), 2 expects ok, `info live=3` |
+| reinforcement, visible in `info` | slot 0 energy 29,490 → 29,694 after its one retrieval |
 
 ### Toolchain facts, measured on debain2 (rustc 1.99.1, gcc, binutils ld)
 
@@ -140,6 +182,8 @@ that want the floor lower use `opt-level=z` or write their hot loops index-free.
 - cargo with `--offline` and a committed lockfile that names only the workspace's own crates keeps
   the build deterministic and the dependency surface at `core` + `alloc` + `compiler_builtins`;
   adding an external crate is a visible decision (a lockfile diff) and never a download in CI.
+- A kannaka session is data on the initrd, not code: CI replays the same file a person can edit
+  on the RAM overlay, and the `expect` verb makes the session its own gate.
 
 **Negative and residual.**
 - A second toolchain. `make` now needs stable `rustc` with the bare-metal target; the Makefile
@@ -163,11 +207,19 @@ that want the floor lower use `opt-level=z` or write their hot loops index-free.
   Integration session and SHELL_GATES).
 - Gate lines: `RHELLO: rust no_std citizen on QuantumOS pid=`, `RHELLO: SYS_AUDIT stats copied `,
   `RHELLO: SYS_RECALL capless -> -4 (EPERM)`, `exited (code 7)`.
-- PR for #340 slices 2 and 3: `user/rust/Cargo.toml`, `Cargo.lock`, `qsys/`, `rhello/`,
+- PR #343 (#340 slices 2 and 3): `user/rust/Cargo.toml`, `Cargo.lock`, `qsys/`, `rhello/`,
   `rfieldd/`; `Makefile` (the cargo stamp rule, `RUST_SERVICES`, the `RFIELD` gate block);
   `kernel/src/citizens.c` (`user_rfieldd_init`, region 7); `.github/workflows/ci.yml`
-  (SHELL_GATES). Gate lines: `RFIELD: alloc ok: vec grown to 1000 (sum=3496500)`,
+  (SHELL_GATES). Gate lines then: `RFIELD: alloc ok: vec grown to 1000 (sum=3496500)`,
   `RFIELD: imprinted 3/3 into region 7`, `RFIELD: winner="a rust citizen remembers the field"
   slot=`, `RFIELD: field_info live=3 capacity=8`, `RFIELD: cross-region denied (EPERM)`,
   `rfieldd: FIELD VERIFIED`.
+- The second #340 PR (the first Kannaka tool): `user/rust/rkannaka/` replaces `rfieldd/`,
+  `rootfs/etc/kannaka.session`, `citizens.c` (`user_rkannaka_init`, region 7), the `RKAN` gate
+  block and SHELL_GATES. Gate lines: `RKAN: alloc ok: vec grown to 1000 (sum=3496500)`,
+  `RKAN: cross-region denied (EPERM)`, `RKAN: imprint slot=0 energy=29490 "the swarm remembers
+  what the field was told"`, `RKAN: recall k=3 "the swarm remembers what the fjeld was tald" n=3`,
+  `RKAN:   winner="the swarm remembers what the field was told" slot=0 score=`, the two
+  `RKAN: expect ok` lines, `RKAN: info live=3 capacity=8`, `rkannaka: SESSION VERIFIED (3
+  imprints, 2 recalls, 2 expects ok)`.
 - Measurements above: debain2, 2026-10-29, QEMU 10.0.11 TCG, `-m 128M`.

@@ -6,7 +6,7 @@
 # error rather than a download.
 [workspace]
 resolver = "2"
-members = ["qsys", "rhello", "rfieldd"]
+members = ["qsys", "rhello", "rkannaka"]
 
 # The C citizens' flags in Rust's terms: no unwinding (the kernel has no
 # unwinder and the panic handler prints and exits), no debug info in the

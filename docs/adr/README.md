@@ -51,7 +51,7 @@ SMP; defer UEFI, a libagent extraction, and a block filesystem — are recorded 
 | [0029](0029-vsock-shell-channel.md) | Accepted | A virtio-vsock channel for the shell, with COM1 kept as the log and the fallback |
 | [0030](0030-egress-grant.md) | Accepted | Networking is an egress grant (default off, allowlist, budgets, receipt), not a side effect of a NIC |
 | [0031](0031-uefi-boot-framebuffer-console.md) | Accepted | UEFI boot: Multiboot1 kept, hybrid ISO, the screen console rendered on the GOP framebuffer; the boot-stack overflow that zeroed page tables on every boot |
-| [0032](0032-rust-citizens.md) | Accepted | Rust `no_std` citizens are the path for running the Kannaka tools inside QuantumOS: a cargo workspace + the C link line, same ABI and capability gate; `/bin/rhello` (no heap, no authority) and the `rfieldd` service (libq-arena allocator, a field grant) as the CI proofs |
+| [0032](0032-rust-citizens.md) | Accepted | Rust `no_std` citizens are the path for running the Kannaka tools inside QuantumOS: a cargo workspace + the C link line, same ABI and capability gate; `/bin/rhello` (no heap, no authority) and the `rkannaka` service (libq-arena allocator, a field grant, kannaka's verbs replayed from `/etc/kannaka.session`) as the CI proofs |
 
 ## Sequencing of the next phases
 

@@ -1,0 +1,17 @@
+# A kannaka session, replayed at boot by rkannaka (the Rust kannaka client of
+# the kernel field, #340, ADR-0032) and gated by `make ci-smoke`.
+#
+#   imprint <importance 0..1000> <text>   store text with importance (-> Q15 energy)
+#   recall <k> <probe>                     rank the k best resonances for the probe
+#   expect <text>                          the last recall's winner must be exactly this
+#   info                                   list what the region holds
+#
+# Patterns are 64 bytes (FIELD_PAT_MAX); longer text is truncated and said so.
+imprint 900 the swarm remembers what the field was told
+imprint 600 a probe with errors still finds its memory
+imprint 750 importance is energy in q15
+recall 3 the swarm remembers what the fjeld was tald
+expect the swarm remembers what the field was told
+recall 1 importance is enargy in q15
+expect importance is energy in q15
+info
