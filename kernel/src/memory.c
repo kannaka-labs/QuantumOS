@@ -315,7 +315,7 @@ int pmm_alloc_selftest(void) {
             pmm_free_frame(wrapped);
         }
         for (uint32_t k = total - 4; k < total; k++) {
-            pmm.frame_bitmap[k / 8] &= (uint8_t) ~(1u << (k % 8)); /* release top */
+            pmm.frame_bitmap[k / 8] &= (uint8_t)~(1u << (k % 8)); /* release top */
         }
         pmm_alloc_hint = 0;
         if (!ok || pmm_get_free_frames() != base) {
