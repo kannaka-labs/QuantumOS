@@ -1352,7 +1352,7 @@ class QosVM:
         text = self._collect(["sched"], deadline_s, "sched")
         m = re.search(
             r"^SCHED: switches=(\d+) preempt=(\d+) ticks=(\d+) maxgap=(\d+) spread=(\d+) runnable=(\d+)"
-            r"(?: boost=(\d+))?",
+            r"(?: boost=(\d+))?(?: gappid=(\d+))?",
             text, re.M)
         if not m:
             raise QosError("sched: SCHED line not found in qsh output")
@@ -1360,7 +1360,9 @@ class QosVM:
                 "maxgap": int(m.group(4)), "spread": int(m.group(5)), "runnable": int(m.group(6)),
                 # ADR-0022 I/O boost: HONORED boost picks (trailing, optional so a
                 # pre-boost kernel still parses). 0 when absent.
-                "boost": int(m.group(7)) if m.group(7) else 0}
+                "boost": int(m.group(7)) if m.group(7) else 0,
+                # #335: the pid carrying maxgap (trailing, optional). 0 when absent.
+                "gappid": int(m.group(8)) if m.group(8) else 0}
 
     def qrand(self, deadline_s=8.0):
         """Draw 64 bits of quantum-seeded entropy via the qsh `qrand` command

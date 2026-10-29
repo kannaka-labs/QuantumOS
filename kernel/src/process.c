@@ -160,7 +160,12 @@ static status_t init_process_pcb(process_t *process, const process_create_params
     process->creation_time = 0; /* TODO: Get system time */
     process->runtime_total = 0;
     process->runtime_last = 0;
-    process->last_scheduled = 0;
+    /* Stamped at creation, not 0 (#335): the fairness scan reads a READY process's
+     * reschedule gap as now - last_scheduled, so a freshly created, not-yet-picked
+     * process read as starved for the whole uptime — ci-smoke-sched LOAD mode caught
+     * flaky-demo's watchdog restart at ~800 ticks and reported an 800-tick "gap". From
+     * here the gap of a new process is its real wait since it became runnable. */
+    process->last_scheduled = timer_get_ticks();
 
     /* Quantum awareness */
     process->quantum.is_quantum_aware = params->is_quantum_aware;

@@ -75,6 +75,19 @@ static uint32_t net_thread_pid = 0;
 /* PID of the idle process (created second in process_init) */
 #define IDLE_PROCESS_ID (KERNEL_PROCESS_ID + 1)
 
+/* Round-robin rotation cursor (#335): the pid the last PLAIN pick landed on.
+ * The plain scan starts after it — not after the current process. Before
+ * this the scan started after whoever was running, so every boosted pick
+ * (a console keystroke handover, a COM2 byte, a NIC frame) re-anchored the
+ * rotation at the boosted process: with boosts arriving faster than one
+ * rotation (~450 ms of hlt-holders at rest) the citizens late in the
+ * rotation after the boost target were never reached — a `sched` probe
+ * typed every 0.25 s starved alpha, beta and the net thread for the whole
+ * 20 s it ran, and half the boot roster never came up. A boosted pick is now
+ * an insertion: the rotation resumes where it left off. Advanced only at the
+ * dispatch commit (pick_next stays pure — it is also used as a predicate). */
+static uint32_t rr_cursor = 0;
+
 /**
  * Round-robin pick: scan the table starting after the current PID for a
  * READY process with a runnable context. The idle process is only
@@ -145,8 +158,11 @@ static process_t *pick_next(uint32_t from_pid) {
     }
 #endif
 
+    /* Plain pick: resume the rotation after the cursor, not after from_pid
+     * (#335, see rr_cursor). from_pid only seeds the boost scan above. */
+    (void)from_pid;
     for (uint32_t off = 1; off <= MAX_PROCESSES; off++) {
-        uint32_t pid = (from_pid + off) % MAX_PROCESSES;
+        uint32_t pid = (rr_cursor + off) % MAX_PROCESSES;
         process_t *p = process_get_by_pid(pid);
         if (!p || p->state != PROCESS_STATE_READY) {
             continue;
@@ -165,21 +181,26 @@ static process_t *pick_next(uint32_t from_pid) {
 #endif
 }
 
+/* Dispatch COMMIT bookkeeping, shared by scheduler_reschedule and
+ * scheduler_kill_current: a plain pick advances the rotation cursor; a boosted
+ * pick does not (it is an insertion). With SCHED_IO_BOOST the boost flag is
+ * shed on EVERY committed switch (a process dispatched by any path must not
+ * carry a stale boost into a later, unrelated pick) and the boost budget /
+ * counter are accounted only when the boost scan made this pick. */
+static void pick_commit(process_t *next) {
 #if SCHED_IO_BOOST
-/* Consume a boost at the dispatch COMMIT: unconditionally shed the flag on
- * every committed switch (a process dispatched by ANY path must not carry a
- * stale boost into a later, unrelated pick), and account the boost budget /
- * counter only when the boost scan actually made this pick. */
-static void boost_commit(process_t *next) {
     next->io_boost = 0;
     if (pick_was_boost) {
         boost_count++;
         consec_boost++;
-    } else {
-        consec_boost = 0;
+        return;
     }
+    consec_boost = 0;
+#endif
+    rr_cursor = next->pid;
 }
 
+#if SCHED_IO_BOOST
 void scheduler_boost_if_ready(uint32_t pid) {
     process_t *p = process_get_by_pid(pid);
     if (p && p->state == PROCESS_STATE_READY) {
@@ -279,6 +300,20 @@ void scheduler_net_rx(cpu_state_t *state) {
  * rest: one io_inb of LSR (com2_rx_pending; a sticky latch makes COM2-less
  * boots free after the first read). The heavier validation below runs only
  * when bytes are actually pending. */
+/* Is any READY, runnable, non-idle process flagged io_boost? Read-only scan
+ * for scheduler_tick (#335): a pending boost that pick_next would honor at the
+ * next reschedule. The current process is RUNNING and so never counts. */
+static int boost_pending(void) {
+    for (uint32_t pid = 0; pid < MAX_PROCESSES; pid++) {
+        process_t *p = process_get_by_pid(pid);
+        if (p && p->io_boost && p->state == PROCESS_STATE_READY && p->context_valid &&
+            pid != IDLE_PROCESS_ID) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void com2_rx_boost_check(void) {
     if (com2_holder_pid == 0 || !com2_rx_pending()) {
         return;
@@ -356,6 +391,20 @@ void scheduler_tick(cpu_state_t *state) {
         }
     }
     if (++quantum_counter < SCHED_QUANTUM_TICKS) {
+#if SCHED_IO_BOOST
+        /* Boosted waiter behind a plain slice (#335): the forced plain pick after
+         * SCHED_BOOST_MAX_CONSEC boosts lands wherever the rotation cursor points
+         * — half the time on an hlt-looping kernel thread, which then keeps the
+         * CPU for its whole quantum while the process whose I/O just arrived
+         * waits. Hand over at the next tick instead: the holder's turn is one
+         * tick, not five. This is not a quantum expiry (preempt_count stays
+         * the expiry-only metric), and with no boost pending it costs one scan
+         * of the table per tick. Measured: the two 50 ms gaps per HTTP fetch
+         * this introduced vanish; the forced plain pick stays (fairness). */
+        if (boost_pending()) {
+            scheduler_reschedule(state);
+        }
+#endif
         return;
     }
     /* The quantum expired: this is a genuine timer preemption (the process ran a
@@ -391,9 +440,7 @@ void scheduler_reschedule(cpu_state_t *state) {
     /* Bookkeeping: current_process pointer, statistics */
     process_switch_to(next);
     process_set_state(next->pid, PROCESS_STATE_RUNNING);
-#if SCHED_IO_BOOST
-    boost_commit(next); /* consume the flag exactly when the switch commits */
-#endif
+    pick_commit(next); /* cursor + boost accounting exactly when the switch commits */
 
     /* Restore the next context onto the interrupt frame; the iretq at
      * the end of irq_common resumes it. Switch to the next process's
@@ -442,9 +489,7 @@ void scheduler_kill_current(cpu_state_t *state) {
     /* Do not save the dead process's context */
     process_switch_to(next);
     process_set_state(next->pid, PROCESS_STATE_RUNNING);
-#if SCHED_IO_BOOST
-    boost_commit(next); /* same commit-point consume as scheduler_reschedule */
-#endif
+    pick_commit(next); /* same commit point as scheduler_reschedule */
     vmspace_switch(next->cr3 ? next->cr3 : vmspace_kernel_cr3());
     *state = next->context;
     switch_count++;
@@ -520,9 +565,10 @@ void scheduler_yield(void) {
  * `now` is passed in (read once by the caller via timer_get_ticks) so the gap is
  * coherent with the tick count reported on the same line. Read-only: it inspects
  * process state and counters and changes no scheduling decision. */
-void scheduler_get_fairness(uint64_t now, uint64_t *max_gap, uint64_t *spread,
-                            uint32_t *runnable_n) {
+void scheduler_get_fairness(uint64_t now, uint64_t *max_gap, uint64_t *spread, uint32_t *runnable_n,
+                            uint32_t *gap_pid) {
     uint64_t gap = 0;
+    uint32_t gpid = 0;
     uint64_t min_picks = (uint64_t)-1;
     uint64_t max_picks = 0;
     uint32_t n = 0;
@@ -541,6 +587,7 @@ void scheduler_get_fairness(uint64_t now, uint64_t *max_gap, uint64_t *spread,
         uint64_t g = now - p->last_scheduled; /* now is monotonic >= last_scheduled */
         if (g > gap) {
             gap = g;
+            gpid = pid;
         }
         if (p->sched_picks < min_picks) {
             min_picks = p->sched_picks;
@@ -557,6 +604,9 @@ void scheduler_get_fairness(uint64_t now, uint64_t *max_gap, uint64_t *spread,
     }
     if (runnable_n) {
         *runnable_n = n;
+    }
+    if (gap_pid) {
+        *gap_pid = gpid;
     }
 }
 

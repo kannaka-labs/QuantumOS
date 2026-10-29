@@ -3,6 +3,38 @@
 Date: 2026-07-11
 Status: Accepted (2026-07-15; the latency fix SHIPPED — the I/O-priority boost, see the final update)
 
+> **Update (2026-10-29) — the starvation referee was never consulted, misread when it was, and
+> the guard it referees had a hole (#335).** `ci-smoke-sched` LOAD mode — the only gate that arms
+> the max-reschedule-gap ceiling refereeing `SCHED_BOOST_MAX_CONSEC` — was not in CI. Run by hand
+> on main it failed 6/6 with maxgap 777–874 ticks. A new `gappid=` field on the SCHED line named
+> the victim: pid 5, `flaky-demo`, the demo service the watchdog restarts at ~8 s. A freshly
+> created process carried `last_scheduled = 0`, so the fairness scan read its gap as the whole
+> uptime whenever the 0.5 s sampler caught it READY and not yet picked (a sub-rotation window, so
+> chance decided; two earlier load runs read 46). `process_create` now stamps `last_scheduled`
+> with the creation tick. That made the gate green 10/10 — and then a `sched` probe typed every
+> 0.25 s from boot showed the real fault the referee had been built for: `alpha`, then `beta`,
+> never picked for the probe's whole 20 s (gap 2001 ticks, growing tick for tick), half the boot
+> roster never spawned. The plain round-robin scan started after the *current* pid, so every
+> boosted pick — a keystroke handover, a COM2 byte, a NIC frame — re-anchored the rotation at the
+> boost target; with boosts arriving faster than one rotation (~450 ms of hlt-holding kernel
+> threads) the tail of the rotation was never reached, the K=2 cap notwithstanding (the cap only
+> guarantees a plain pick, not *which* one). The net thread sits in that tail. Fixed with a
+> rotation cursor that only plain picks advance (`rr_cursor`): a boost is now an insertion and the
+> rotation resumes where it left off. Resuming the honest rotation exposed the cost the lucky
+> table order had been hiding: the forced plain pick after `SCHED_BOOST_MAX_CONSEC` boosts now
+> landed on an hlt-looping kernel thread about half the time, and that thread kept the CPU for its
+> whole 50 ms quantum while the process whose I/O had just arrived waited — packet captures showed
+> exactly two 50 ms gaps per HTTP fetch, at the request and at the FIN (fetch 30 → 170 ms, upload
+> wire 117 → 249 ms; on main the plain pick after `qsh` happened to hit a run of quick ring-3
+> yielders). So the plain slice is bounded while a boost is pending: `scheduler_tick` hands over
+> at the next tick if any READY process is flagged (one table scan per tick; not counted as a
+> quantum expiry). The boost's bound is now tick-detect + one tick, not one quantum remainder.
+> The gate's PING cadence moves from 0.5 s to 0.25 s — faster than a rotation, which is what lets
+> the ceiling see the re-anchoring at all — it prints `maxgap_pid=` and fails if its load did not
+> engage, and `ci-smoke-sched-load` is a Makefile target and a CI step. Revert-confirm: the
+> stamp-only kernel under the 0.25 s gate reddens with the starved pid named; main's kernel
+> reddens on either count.
+
 > **Update (2026-10-28) — the same cadence bound on the network path (#333).**
 > After #329/#331 removed the per-segment stalls, every handoff between the net thread and the
 > ring-3 program on a connection still went through the full rotation: a program whose receive

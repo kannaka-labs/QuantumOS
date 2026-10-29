@@ -596,8 +596,8 @@ static uint64_t sys_sysinfo(uint32_t pid, uint64_t op, uint64_t user_ptr, uint64
          * maxgap/spread/runnable are the fairness/tail snapshot. All read-only. */
         uint64_t now = timer_get_ticks();
         uint64_t max_gap = 0, spread = 0;
-        uint32_t runnable = 0;
-        scheduler_get_fairness(now, &max_gap, &spread, &runnable);
+        uint32_t runnable = 0, gap_pid = 0;
+        scheduler_get_fairness(now, &max_gap, &spread, &runnable, &gap_pid);
         size_t o = 0;
         o = fmt_str(tmp, o, sizeof(tmp), "SCHED: switches=");
         o = fmt_dec(tmp, o, sizeof(tmp), scheduler_get_switches());
@@ -616,6 +616,10 @@ static uint64_t sys_sysinfo(uint32_t pid, uint64_t op, uint64_t user_ptr, uint64
          * the latency gate asserts a positive delta across its ping batch. */
         o = fmt_str(tmp, o, sizeof(tmp), " boost=");
         o = fmt_dec(tmp, o, sizeof(tmp), scheduler_get_boosts());
+        /* gappid= APPENDED LAST (#335): the pid carrying maxgap, so a
+         * starvation reading names its victim instead of just its size. */
+        o = fmt_str(tmp, o, sizeof(tmp), " gappid=");
+        o = fmt_dec(tmp, o, sizeof(tmp), gap_pid);
         o = fmt_str(tmp, o, sizeof(tmp), "\r\n");
         produced = o;
     } else {

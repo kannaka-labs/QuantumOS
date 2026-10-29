@@ -598,6 +598,10 @@ jobs:
         sudo apt-get install -y build-essential qemu-system-x86 nasm python3
     - name: Boot and assert the scheduler baseline (preemption-rate band + liveness)
       run: make ci-smoke-sched
+    # #335: the LOAD mode arms the max-reschedule-gap ceiling — the only referee of
+    # the ADR-0022 I/O-boost starvation guard — and was never run by CI before.
+    - name: Boot and assert the scheduler baseline under paced PING load (maxgap ceiling)
+      run: make ci-smoke-sched-load
 
   quiet-boot:
     name: Quiet-Boot Test (clean interactive console)

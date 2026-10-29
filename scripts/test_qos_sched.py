@@ -62,10 +62,21 @@ PREEMPT_PER_1000T_CEIL = 600.0
 # reads ~198 sampled every 5 s). At 2 s the probe's handovers are a few per ~200
 # ticks.
 IDLE_SAMPLE_INTERVAL_S = 2.0
+# Load-mode PING cadence: faster than one rotation (see the loop comment, #335).
+LOAD_PING_INTERVAL_S = 0.25
 # Max reschedule-gap ceiling in guest ticks, asserted in LOAD mode only (the
 # starvation referee for the ADR-0022 I/O boost; idle-mode gaps are dominated
 # by one-shot citizens finishing, so LOAD is where a monopoly would show).
 # Baseline ~100-110 ticks; K=2 boost-cap bound ~220; 600 = ~3x margin.
+# #335: the first CI-adjacent LOAD runs read 777-874 and named pid 5 (flaky-demo):
+# a freshly created process carried last_scheduled=0, so its "gap" was the whole
+# uptime at the moment the 0.5 s sampler caught it READY-but-unpicked after its
+# watchdog restart (the kernel now stamps last_scheduled at creation). Probing
+# the fixed kernel at 0.25 s then found the real thing: the plain round-robin
+# pick re-anchored at every boosted process, so boosts faster than a rotation
+# starved its tail without bound (alpha/beta/net: gap 2001 ticks in 20 s). The
+# kernel now resumes the rotation from a cursor only plain picks advance, and
+# this gate's PING cadence is 0.25 s so the ceiling can see that failure mode.
 MAXGAP_TICKS_CEIL = 600
 
 # State-gated warmup by GUEST TICKS: the transient boot self-tests (echo, watched-svc,
@@ -81,6 +92,18 @@ LOAD = os.environ.get("QOS_SCHED_LOAD", "") == "1"
 def _fail(msg):
     print(f"FAIL: {msg}")
     sys.exit(1)
+
+
+def _roster_name(vm, pid):
+    """Best-effort name of `pid` from the live process table (#335). "?" if the
+    pid is gone or the roster could not be read; never raises."""
+    try:
+        for p in vm.sysinfo(deadline_s=12.0)["processes"]:
+            if p["pid"] == pid:
+                return p["name"]
+    except QosError:
+        pass
+    return "?"
 
 
 def main():
@@ -121,23 +144,34 @@ def main():
     s0 = settled
     last = s0
     max_gap = s0["maxgap"]
+    max_gap_pid = s0.get("gappid", 0)
     max_spread = s0["spread"]
     min_runnable = s0["runnable"]
+    pings_ok = 0
+    pings_tried = 0
+    gap_name = None  # named in-loop on a ceiling breach, else at the report
     wall_deadline = time.time() + 90.0  # absolute safety bound on wall time
     while (last["ticks"] - s0["ticks"]) < WINDOW_TICKS and time.time() < wall_deadline:
         if LOAD:
-            # Fixed 0.5s cadence (ADR-0022 I/O boost): un-paced back-to-back
+            # Fixed cadence (ADR-0022 I/O boost): un-paced back-to-back
             # pings would make the load profile a function of the reply
             # latency itself — the boost cut ping latency ~5x, which would
             # silently multiply the load behind the same "load baseline"
             # label and shift the calibration table the maxgap ceiling below
             # is armed against. Pacing makes the profile boost-invariant.
+            # The cadence must be FASTER than one rotation (#335): at 0.5 s a
+            # rotation of the ~9 hlt-holding kernel threads (~450 ms) just
+            # completed between boosts, so a pick path that re-anchored the
+            # rotation at every boosted pick stayed green; at 0.25 s it starves
+            # the tail of the rotation and the ceiling catches it.
             t_ping = time.time()
+            pings_tried += 1
             try:
                 vm.ping(deadline_s=10.0)
+                pings_ok += 1
             except QosError:
                 pass  # a transient ping hiccup is not a scheduler fault; keep sampling
-            remain = 0.5 - (time.time() - t_ping)
+            remain = LOAD_PING_INTERVAL_S - (time.time() - t_ping)
             if remain > 0:
                 time.sleep(remain)
         else:
@@ -146,7 +180,15 @@ def main():
             last = vm.sched(deadline_s=12.0)
         except QosError:
             continue
-        max_gap = max(max_gap, last["maxgap"])
+        if last["maxgap"] > max_gap:
+            max_gap = last["maxgap"]
+            max_gap_pid = last.get("gappid", 0)
+            if LOAD and max_gap > MAXGAP_TICKS_CEIL:
+                # Name the victim NOW (#335): the first reading of this gate named a
+                # pid that had exited by the end of the window (flaky-demo's restart),
+                # so a lookup deferred to the report read "?". Failure path only — the
+                # extra `ps` round trip must not perturb a healthy window's cadence.
+                gap_name = _roster_name(vm, max_gap_pid)
         max_spread = max(max_spread, last["spread"])
         min_runnable = min(min_runnable, last["runnable"])
 
@@ -161,12 +203,26 @@ def main():
     p_preempt = 1000.0 * d_preempt / d_ticks
     p_switch = 1000.0 * d_switch / d_ticks
 
+    # Name the pid carrying the max gap (#335): a starvation reading that only
+    # says "811 ticks" cannot be attributed. Already named in-loop on a breach.
+    if gap_name is None:
+        gap_name = _roster_name(vm, max_gap_pid)
+
     # THE recorded baseline line — machine-parseable, aggregated across the 10-run
     # q=5/q=80 idle/load calibration table that SELECTS the PR-2 gated scalar.
+    # maxgap_pid= and pings= are appended last (#335) so prefix parsers keep working.
     print(f"SCHEDBASE: load={1 if LOAD else 0} dticks={d_ticks} dswitch={d_switch} "
           f"dpreempt={d_preempt} preempt_per_1000t={p_preempt:.2f} "
           f"switch_per_1000t={p_switch:.2f} maxgap={max_gap} spread={max_spread} "
-          f"runnable_min={min_runnable}")
+          f"runnable_min={min_runnable} maxgap_pid={max_gap_pid}({gap_name}) "
+          f"pings={pings_ok}/{pings_tried}")
+
+    # NON-VACUOUS LOAD (#335): a load-mode run whose pings mostly failed measured an
+    # idle scheduler under a "load=1" label (two such runs read a switch rate
+    # indistinguishable from idle). The load must actually have been applied.
+    if LOAD and (pings_tried == 0 or pings_ok * 2 < pings_tried):
+        _fail(f"load driver did not engage: {pings_ok}/{pings_tried} PINGs answered "
+              "— the load-mode baseline would be vacuous")
 
     # NON-VACUOUS LIVENESS FLOOR: the scheduler must be multiplexing a real roster.
     # Reddens on a dead scheduler (no switches), a single-runnable degenerate, or a
@@ -202,8 +258,9 @@ def main():
     # ~3x margin. Revert-confirm: removing the SCHED_BOOST_MAX_CONSEC guard
     # under LOAD drives the gap toward the whole 3000-tick window.
     if LOAD and max_gap > MAXGAP_TICKS_CEIL:
-        _fail(f"max reschedule gap {max_gap} ticks exceeds {MAXGAP_TICKS_CEIL} — a citizen "
-              f"is being starved (I/O-boost monopoly? see ADR-0022 SCHED_BOOST_MAX_CONSEC)")
+        _fail(f"max reschedule gap {max_gap} ticks exceeds {MAXGAP_TICKS_CEIL} — pid "
+              f"{max_gap_pid} ({gap_name}) is being starved (I/O-boost monopoly? see "
+              f"ADR-0022 SCHED_BOOST_MAX_CONSEC)")
     print(f"OK: scheduler live ({d_switch} switches, {min_runnable} runnable over "
           f"{d_ticks} ticks); preemption rate {p_preempt:.1f}/1000t within "
           f"[{PREEMPT_PER_1000T_FLOOR:.0f}, {PREEMPT_PER_1000T_CEIL:.0f}].")
