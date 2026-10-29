@@ -38,7 +38,17 @@
  * stays within a small multiple of today's envelope (refereed by the armed
  * maxgap ceiling in ci-smoke-sched); a 1-boost PING hop rides through
  * untouched and STATUS hops absorb at most a couple of plain slices, well
- * inside the armed 0.6 s bound. */
+ * inside the armed 0.6 s bound.
+ *
+ * The forced plain pick resumes the ROTATION, not the table position after
+ * the boosted process (#335, rr_cursor in scheduler.c): until then every
+ * boosted pick re-anchored the round-robin at the boost target, and boosts
+ * faster than one rotation — a console typed at 4 keys/s was enough —
+ * starved the tail of the rotation without bound, this cap notwithstanding.
+ * And the forced plain slice is bounded to ONE TICK while a boost is pending
+ * (scheduler_tick): resuming the honest rotation meant the plain pick landed
+ * on an hlt-looping kernel thread half the time, and a 50 ms quantum there
+ * put two 50 ms gaps into every HTTP fetch. */
 #define SCHED_BOOST_MAX_CONSEC 2
 
 /* Attach the scheduler to the timer tick. Call after process_init(). */
@@ -115,10 +125,11 @@ void scheduler_yield(void);
 
 /* ADR-0022 prereq-2 fairness/tail snapshot over the runnable ring-3 citizens.
  * Writes max reschedule gap (max now - last_scheduled), the run-count spread
- * (max - min sched_picks), and the runnable count. Read-only; `now` is the
+ * (max - min sched_picks), the runnable count, and the pid carrying the max gap
+ * (#335: so a starvation reading names its victim). Read-only; `now` is the
  * caller's single timer_get_ticks() read (kept coherent with its tick report). */
-void scheduler_get_fairness(uint64_t now, uint64_t *max_gap, uint64_t *spread,
-                            uint32_t *runnable_n);
+void scheduler_get_fairness(uint64_t now, uint64_t *max_gap, uint64_t *spread, uint32_t *runnable_n,
+                            uint32_t *gap_pid);
 
 /* Timer callback (exposed for diagnostics/testing) */
 void scheduler_tick(cpu_state_t *state);

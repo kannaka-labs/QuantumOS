@@ -118,7 +118,7 @@ OBJECTS = $(KERNEL_SOURCES:$(KERNEL_DIR)/src/%.c=$(BUILD_DIR)/%.o) \
 -include $(OBJECTS:.o=.d)
 
 # Targets
-.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress ci-smoke-egress-escape ci-smoke-net-e1000 ci-smoke-net-virtio-nofeat ci-smoke-http-big ci-smoke-net-virtio-tap ci-smoke-tcp-put
+.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-sched-load ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress ci-smoke-egress-escape ci-smoke-net-e1000 ci-smoke-net-virtio-nofeat ci-smoke-http-big ci-smoke-net-virtio-tap ci-smoke-tcp-put
 
 all: kernel
 
@@ -2681,6 +2681,16 @@ ci-smoke-latency: kernel
 ci-smoke-sched: kernel
 	@echo "=== QuantumOS scheduler baseline recorder (ADR-0022 prereq 2) ==="
 	QOS_KERNEL=$(BUILD_DIR)/kernel.elf32 python3 scripts/test_qos_sched.py
+
+# LOAD mode of the same gate (#335): paced COM2 PING load during sampling, which
+# arms the max-reschedule-gap ceiling (600 ticks) — the only referee ADR-0022's
+# I/O-boost starvation guard (SCHED_BOOST_MAX_CONSEC) has. CI never ran it until
+# #335; the first run found the metric itself wrong (a freshly created process
+# read as starved for the whole uptime), not the scheduler. Also fails if the
+# PING load did not engage, so the load baseline cannot be vacuous.
+ci-smoke-sched-load: kernel
+	@echo "=== QuantumOS scheduler baseline under load (ADR-0022, #335) ==="
+	QOS_SCHED_LOAD=1 QOS_KERNEL=$(BUILD_DIR)/kernel.elf32 python3 scripts/test_qos_sched.py
 
 # Authenticated FSYN (ADR-0019 increment B-frame-auth): boots two 2-VM societies
 # and proves the per-frame HMAC gates coupling — same key couples, different
