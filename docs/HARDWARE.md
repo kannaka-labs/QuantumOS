@@ -71,9 +71,9 @@ QuantumOS is deliberately small. On a real machine, expect:
   machines (no CSM option) boot on `main` since #337 and get the same
   console on the firmware's framebuffer
   ([ADR-0031](adr/0031-uefi-boot-framebuffer-console.md)). The `v0.6.2`
-  release ISO is the first with an EFI boot image; `v0.6.1`'s carries none,
-  so on such a machine it is not even offered as a boot device. Secure Boot
-  must be off.
+  release ISO is the first that boots on such a machine; `v0.6.1`'s is
+  offered as a boot device, but GRUB stops at `error: out of memory` before
+  the kernel runs (measured under OVMF). Secure Boot must be off.
 - **Keyboard:** i8042 (PS/2), scancode set 1. A laptop's built-in keyboard
   is normally one. An external USB keyboard works only through the
   firmware's PS/2 legacy emulation, which Legacy/CSM mode usually

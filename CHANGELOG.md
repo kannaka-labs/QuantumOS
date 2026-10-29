@@ -56,9 +56,10 @@ egress grant refuses. Everything else is additive.
 
 ### UEFI-only machines boot (ADR-0031, #337)
 
-- **The ISO is hybrid again.** `v0.6.1`'s ISO carried no EFI boot image because the release pipeline
-  lacked `grub-efi-amd64-bin`; this release's ISO boots from BIOS and from UEFI (gated under OVMF
-  by `make ci-smoke-iso-uefi`).
+- **The ISO boots on UEFI.** `v0.6.1`'s ISO is offered as a UEFI boot device, but GRUB stops at
+  `error: out of memory` before the kernel runs (the next item; measured under OVMF). This release's
+  ISO boots to the shell from BIOS and from UEFI (gated under OVMF by `make ci-smoke-iso-uefi`). The
+  release pipeline now installs `grub-efi-amd64-bin` itself instead of relying on the runner image.
 - GRUB on UEFI said "out of memory": the linker script emitted a 64 MB load segment for the NOLOAD
   stack and heap. They are linker symbols now.
 - **A boot-stack overflow fixed.** The 16 KB boot stack overflowed by about 7.5 KB during init on

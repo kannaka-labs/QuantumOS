@@ -19,7 +19,10 @@ fault:
 1. **The ISO had no EFI boot image at all.** `grub-mkrescue` adds the EFI El Torito entry
    only when `grub-efi-amd64-bin` is installed; the build host and CI installed
    `grub-pc-bin` alone. OVMF reported the DVD boot option "Not Found" and dropped to its
-   shell. The "hybrid ISO" the issue assumed had never been built.
+   shell. The "hybrid ISO" the issue assumed had never been built on a host without that
+   package. (The GitHub runner image carries it anyway, so the `v0.6.1` release ISO built
+   there does have an EFI entry: measured under OVMF on 2026-10-29, it is offered as a boot
+   device and stops at fault 2. The release workflow now installs the package explicitly.)
 2. **GRUB could not place the kernel.** With the EFI modules present, GRUB started and
    showed the menu, then `multiboot /boot/kernel-console.elf` failed with
    `error: out of memory`. GRUB's own trace (`set debug=relocator,multiboot_loader`)
