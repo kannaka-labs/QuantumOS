@@ -285,14 +285,40 @@ the console layer may ever spin on a status bit the hardware can float.
   QEMU monitor (`scripts/check_vga_text.py`) and asserts a ring-3
   `[user pid=` line is actually ON the screen. Serial gates can't see
   the display; this one reads what the operator reads.
+- `make ci-smoke-iso-uefi` — the same ISO under OVMF (edk2 UEFI
+  firmware, no CSM; `scripts/test_qos_iso_uefi.py`). UEFI has no VGA
+  text mode, so the console image gets the GOP framebuffer instead and
+  the kernel, seeing a framebuffer its header never asked for, renders
+  the screen console on it: `CONS: screen console active (framebuffer
+  1024x768, 128x48 cells)`. Same shell + citizen gates, plus the
+  boot-stack high-water and identity-map lines, and the absence of GRUB's
+  `out of memory`, the VGA-text line and any page fault. ADR-0031 has the
+  three faults this gate stands on.
+
+**UEFI (ADR-0031).** The console entries add `insmod all_video` and
+`set gfxpayload=1024x768x32`: on BIOS GRUB that changes nothing (the
+header's missing video request still wins, VGA text), on UEFI it is the
+only way GRUB passes framebuffer info at all. `vga.c` keeps the whole line
+discipline (wrap console, SGR, pen); `cons_cell`/`cons_clear_row`/the
+cursor dispatch to `fb_cons_cell`/`fb_cons_cursor` (`fb.c`) when
+`fb_text_console_mode()` is true. Cells are the 8x8 glyph with doubled
+rows (8x16; 2x on panels 1600 px and wider), the full printable-ASCII
+font (`scripts/check_fb_font.py` enforces coverage), grid capped at
+160x64. The panic banner takes the same route, so an early failure is
+visible on a UEFI screen too.
 
 ## Known limits / follow-ups
 
-- The graphical (framebuffer) boot has no text console yet — its shell
-  output stays on COM1; the screen console is text-mode boots only.
-- USB keyboards rely on the BIOS's PS/2 legacy emulation (CSM boots);
-  there is no native USB HID driver. The ISO is BIOS-boot only — no
-  UEFI layer yet.
+- The graphical (framebuffer) boot has no text console — its shell
+  output stays on COM1 on both firmwares; the on-screen console belongs
+  to the console image (VGA text on BIOS, framebuffer cells on UEFI).
+- Keyboard on UEFI-only machines: the built-in laptop keyboard is
+  normally an i8042 device and works; an external USB keyboard needs the
+  firmware's PS/2 legacy emulation, which UEFI-only firmware with CSM
+  off often does not provide. There is no native USB HID driver (a
+  separate, larger issue); fall back to COM1 where the board has one.
+  QEMU/OVMF emulates an i8042, so the CI gate does not prove this on
+  real hardware — reports go to #265.
 - The multiboot memory map is not read; the PMM assumes 128 MB
   (`memory.c` hardcodes it), so RAM beyond that is ignored on real
   machines.

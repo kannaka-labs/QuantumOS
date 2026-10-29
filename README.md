@@ -36,7 +36,7 @@ QuantumOS boots on x86-64 under QEMU (`make run`), and every claim below is gate
 - **Programs run off the filesystem** — `run /bin/hello` from the shell loads an ELF from the initrd into a fresh address space (`SYS_SPAWN`, capability-gated — only the shell may start programs), passes it an argument vector, and reports its exit code (`SYS_WAITPID`): the full boot → shell → exec → exit loop, CI-gated ([docs/PROGRAM_EXECUTION.md](docs/PROGRAM_EXECUTION.md))
 - **Persistent storage** — a polled ATA disk driver, a writable RAM filesystem overlay (`write`/`rm` from the shell, capability-gated), and `sync`, which serializes the overlay to disk as a ustar archive behind a checksummed superblock. Files written and synced in one boot are restored at the next — CI proves it by booting the *same* disk image twice and reading back in boot 2 what boot 1 wrote ([docs/PERSISTENT_STORAGE.md](docs/PERSISTENT_STORAGE.md))
 - **Networking** — a full IPv4 stack built from the NIC up: PCI enumeration, an RTL8139 driver (interrupt-driven receive, DMA ring), Ethernet/ARP, IPv4 + UDP, a DHCP client, ICMP, and a DNS resolver, then ring-3 access three ways: `SYS_RESOLVE` (kernel-side hostname lookup), **`SYS_UDP` — real UDP sockets**, and **`SYS_TCP` — a real TCP client**, so **the shell fetches a web page**. CI boots with a NIC on QEMU's user-mode network and proves the whole path end to end — ARP, the `10.0.2.15` DHCP lease, an ICMP ping, `nslookup`/`udping example.com`, and then `http`: a full three-way handshake, bidirectional data, and FIN teardown, proven **hermetically** against a loopback HTTP server (SLIRP forwards the guest's connection to the runner's `127.0.0.1`, no external network) plus a live `http example.com`. TCP is an honest, bounded slice — static TCBs (one client, four listeners), a windowed sender with slow start and fast retransmit, in-order receive — and the boundaries are documented ([docs/NETWORKING.md](docs/NETWORKING.md))
-- **A real-bootloader boot path** — `make iso` builds a GRUB ISO (BIOS/CSM, USB-flashable) with two entries: the default **console** image lands on an on-screen VGA text console — the kernel log, `qsh`, and even panic banners render on the machine's own display, so a laptop with no serial port gets a fully interactive shell on its own keyboard and screen — and a **graphical wave field** entry keeps the 1024x768 live-field boot. CI boots the ISO with `-cdrom` (the real GRUB handoff, not QEMU's `-kernel` shortcut) to the shell + a citizen gate, and separately drives `qsh` purely via injected PS/2 scancodes with no serial input at all ([docs/CONSOLE_SHELL.md](docs/CONSOLE_SHELL.md))
+- **A real-bootloader boot path** — `make iso` builds a hybrid BIOS+UEFI GRUB ISO (USB-flashable) with two images: the default **console** image lands on an on-screen text console — the kernel log, `qsh`, and even panic banners render on the machine's own display, so a laptop with no serial port gets a fully interactive shell on its own keyboard and screen — in VGA text on BIOS/CSM, or drawn on the firmware's GOP framebuffer on UEFI-only machines ([ADR-0031](docs/adr/0031-uefi-boot-framebuffer-console.md)); a **graphical wave field** entry keeps the 1024x768 live-field boot. CI boots the ISO with `-cdrom` under SeaBIOS *and* under OVMF (the real GRUB handoff on both firmwares, not QEMU's `-kernel` shortcut) to the shell + a citizen gate, and separately drives `qsh` purely via injected PS/2 scancodes with no serial input at all ([docs/CONSOLE_SHELL.md](docs/CONSOLE_SHELL.md))
 - **Associative memory as a syscall** — `SYS_IMPRINT`/`SYS_RECALL` (epic #95): capability-scoped kernel field regions a process can store byte patterns into and recall associatively against — ranked Q15 wave-resonance scoring, one bounded integer pass, no floats in the kernel. From the shell: `imprint the cat sat on the mat`, then `recall the cxt sxt on thx mxt` recovers the exact stored text. CI proves the noisy-probe recall, the capless-caller EPERM (by attack), cross-region isolation, and that a degenerate probe can't fault the kernel ([docs/RUNTIME.md](docs/RUNTIME.md))
 - **…and those memories survive reboot** (epic #96): `sync` serializes the field to a checksummed section of the QDSK disk volume; the next boot restores it before services start, and the shell inherits its region exactly once, audibly. CI proves it in three boots: imprint+sync, then recall-from-corrupted-probe in a boot that never typed the pattern, then a deliberately corrupted blob that must cold-start honestly while the filesystem still restores ([docs/PERSISTENT_STORAGE.md](docs/PERSISTENT_STORAGE.md))
 - **Two kernels, one field** (epic #97): two QuantumOS instances couple their `ghostd` oscillator fields over UDP — distributed Kuramoto phase synchronization between running kernels. To get there, QuantumOS gained a static-IP path and an **ARP responder** (SLIRP always answered for the guest; two guests on a raw L2 must do it themselves). A `fieldsyncd` service exchanges 256-phase snapshots each second; the cross-node order parameter R_x climbs from divergent (each node seeded from its own quantum entropy) to locked. CI boots **two guests on one wire** and asserts both fields start uncorrelated and synchronize — while each node's own associative recall keeps passing ([docs/NETWORKING.md](docs/NETWORKING.md))
@@ -117,23 +117,32 @@ make debug
 ### Boot it on real hardware (USB)
 
 ```bash
-# Build the bootable ISO (BIOS/CSM; needs grub-pc-bin xorriso mtools)
+# Build the bootable hybrid BIOS+UEFI ISO
+# (needs grub-pc-bin grub-efi-amd64-bin xorriso mtools)
 make build/x86_64/kernel.iso
 
-# Sanity-check the exact image in QEMU via the real GRUB handoff
-make ci-smoke-iso
+# Sanity-check the exact image in QEMU via the real GRUB handoff:
+make ci-smoke-iso        # BIOS (SeaBIOS)
+make ci-smoke-iso-uefi   # UEFI (OVMF; needs the `ovmf` package)
 ```
 
 Write `build/x86_64/kernel.iso` to a USB stick — `dd if=... of=/dev/sdX bs=4M`
 on Linux, or Rufus on Windows (choose **DD Image mode** when asked) — then
-boot the target machine from USB with Legacy/CSM boot enabled. The default
+boot the target machine from USB. Both firmware kinds work: Legacy/CSM boots
+land on the VGA text console, UEFI-only machines (no CSM option at all) get
+the same console rendered on the firmware's framebuffer
+([ADR-0031](docs/adr/0031-uefi-boot-framebuffer-console.md)). The default
 GRUB entry, **QuantumOS (console)**, gives you the boot splash and then a
 clean interactive `qsh` on the machine's own screen and keyboard (it boots
 `quiet`; pick **console, verbose kernel log** to watch the kernel narrate
 itself instead). The **graphical wave field** entry renders the live
-oscillator field at 1024x768. Notes: BIOS boot only (no UEFI layer yet),
-keyboard input relies on the BIOS's PS/2 legacy emulation, and RAM beyond
-128 MB is currently ignored.
+oscillator field at 1024x768 (its text stays on COM1). Notes: the built-in
+laptop keyboard is normally an i8042 device and works under either firmware;
+an external **USB keyboard** needs the firmware's PS/2 legacy emulation,
+which UEFI-only firmware with CSM off often does not provide (there is no USB
+HID driver yet — fall back to a serial console where the board has one).
+RAM beyond what the firmware's memory map reports is not used. Hardware
+reports (what booted where) are collected in #265.
 
 ### One-Command Verification
 New contributors can verify their entire setup works with a single command:

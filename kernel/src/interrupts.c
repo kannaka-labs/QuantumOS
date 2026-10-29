@@ -321,6 +321,32 @@ void page_fault_handler(cpu_state_t *state) {
     boot_log("Error code: ");
     early_console_write_hex(state->err_code);
 
+    /* Kernel-mode fault: walk the CURRENT tables to the faulting address and
+     * print each level's raw entry, so a missing device/framebuffer mapping
+     * (#264) names the table that lost it instead of leaving a bare address. */
+    {
+        uint64_t cr3;
+        __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+        boot_log("CR3: ");
+        early_console_write_hex(cr3);
+        const uint64_t *pml4 = (const uint64_t *)(uintptr_t)(cr3 & 0x000FFFFFFFFFF000ULL);
+        uint64_t e = pml4[(fault_addr >> 39) & 0x1FF];
+        boot_log("PML4e: ");
+        early_console_write_hex(e);
+        if (e & 1) {
+            const uint64_t *pdpt = (const uint64_t *)(uintptr_t)(e & 0x000FFFFFFFFFF000ULL);
+            e = pdpt[(fault_addr >> 30) & 0x1FF];
+            boot_log("PDPTe: ");
+            early_console_write_hex(e);
+            if ((e & 1) && !(e & 0x80)) {
+                const uint64_t *pd = (const uint64_t *)(uintptr_t)(e & 0x000FFFFFFFFFF000ULL);
+                e = pd[(fault_addr >> 21) & 0x1FF];
+                boot_log("PDe: ");
+                early_console_write_hex(e);
+            }
+        }
+    }
+
     dump_cpu_state(state);
     boot_panic("Page fault");
 }
