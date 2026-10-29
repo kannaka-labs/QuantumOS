@@ -40,7 +40,7 @@ concurrency:
 jobs:
   boot-gate:
     name: Boot Gate (qemu-wasm in headless Chromium)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # pinned: ubuntu-latest became 26.04 on 2026-10-29 and the kernel built there resets at PMM init (see the migration issue)
     steps:
       - uses: actions/checkout@v4
 
@@ -96,7 +96,7 @@ jobs:
     name: Deploy to GitHub Pages
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: boot-gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # pinned: ubuntu-latest became 26.04 on 2026-10-29 and the kernel built there resets at PMM init (see the migration issue)
     permissions:
       pages: write
       id-token: write
