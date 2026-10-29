@@ -136,6 +136,18 @@ def test_the_example_scada_templates_name_real_commands():
     assert d["policy"]["scada.asset_create"] == "ask"
 
 
+def test_the_cannon_entry_denies_the_destructive_tools_and_asks_for_the_rest():
+    d = json.loads((HERE / "hub.example.json").read_text())
+    assert d["servers"]["cannon"]["args"][-1] == "clipcannon"
+    pol = d["policy"]
+    assert pol["cannon.clipcannon_project_delete"] == "deny" and pol["cannon.clipcannon_disk_cleanup"] == "deny"
+    assert pol["cannon.*"] == "ask"
+    for t in ("clipcannon_render", "clipcannon_generate_video", "clipcannon_speak", "clipcannon_ingest"):
+        assert f"cannon.{t}" not in pol, f"{t} must fall through to ask"
+    allowed = [k for k, v in pol.items() if k.startswith("cannon.") and v == "allow"]
+    assert all(any(w in k for w in ("list", "status", "get", "credits", "search", "history", "branches", "profiles", "recall", "context")) for k in allowed)
+
+
 def test_the_example_templates_for_the_stale_repos_name_real_commands():
     """kannaka-hdl, kannaka-apps and kannaka-buzz entries: real subcommands, writes ask."""
     d = json.loads((HERE / "hub.example.json").read_text())
