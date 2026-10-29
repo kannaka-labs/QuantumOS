@@ -48,6 +48,7 @@ and `hub_ledger`. There is no tool to approve or to change the policy.
 | `quantum` | kannaka-quantum (`python -m kannaka_quantum mcp`) | devices, quantum_random, resonance_recall | run_circuit | |
 | `octo` | Kannaktopus `mcp-server` | status, skills, Kannaka/HRM reads, swarm status/tail | swarm_send, absorb, dream, the octopus workflows (they call paid LLMs) | |
 | `broker` | the provider broker's `broker_mcp.py` | all (the broker enforces its own envelope and approvals) | | |
+| `cannon` | [kannaka-cannon](https://github.com/kannaka-labs/kannaka-cannon) `clipcannon` (51 tools, stdio) | project list/status, config and credits reads, disk status, transcript / scene map / narrative flow / editing context, search, edit history, branches, voice profiles, HRM recall | everything else (ingest, edits, renders, previews, and the generate / speak / compose tools that call paid providers) | project_delete, disk_cleanup |
 
 ## CLIs without an MCP server (`cli_connector.py`)
 

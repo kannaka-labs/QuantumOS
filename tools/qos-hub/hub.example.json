@@ -36,6 +36,17 @@
         "QOS_BROKER_SOCKET": "/run/qos-broker/broker.sock"
       }
     },
+    "cannon": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "~/Source/kannaka-cannon",
+        "clipcannon"
+      ],
+      "env": {},
+      "call_timeout_s": 900
+    },
     "kcli": {
       "cli": {
         "binary": "~/.local/bin/kannaka",
@@ -574,7 +585,27 @@
     "buzz.search": "allow",
     "buzz.send": "ask",
     "lens.show": "allow",
-    "lens.run": "ask"
+    "lens.run": "ask",
+    "cannon.clipcannon_project_list": "allow",
+    "cannon.clipcannon_project_status": "allow",
+    "cannon.clipcannon_config_get": "allow",
+    "cannon.clipcannon_config_list": "allow",
+    "cannon.clipcannon_credits_balance": "allow",
+    "cannon.clipcannon_credits_estimate": "allow",
+    "cannon.clipcannon_credits_history": "allow",
+    "cannon.clipcannon_disk_status": "allow",
+    "cannon.clipcannon_get_transcript": "allow",
+    "cannon.clipcannon_get_scene_map": "allow",
+    "cannon.clipcannon_get_narrative_flow": "allow",
+    "cannon.clipcannon_get_editing_context": "allow",
+    "cannon.clipcannon_search_content": "allow",
+    "cannon.clipcannon_edit_history": "allow",
+    "cannon.clipcannon_list_branches": "allow",
+    "cannon.clipcannon_voice_profiles": "allow",
+    "cannon.clipcannon_hrm_recall": "allow",
+    "cannon.clipcannon_project_delete": "deny",
+    "cannon.clipcannon_disk_cleanup": "deny",
+    "cannon.*": "ask"
   },
   "default": "ask"
 }
