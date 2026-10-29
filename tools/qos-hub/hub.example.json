@@ -634,7 +634,6 @@
     "buzz.send": "ask",
     "lens.show": "allow",
     "lens.run": "ask",
-<<<<<<< HEAD
     "cannon.clipcannon_project_list": "allow",
     "cannon.clipcannon_project_status": "allow",
     "cannon.clipcannon_config_get": "allow",
@@ -654,12 +653,10 @@
     "cannon.clipcannon_hrm_recall": "allow",
     "cannon.clipcannon_project_delete": "deny",
     "cannon.clipcannon_disk_cleanup": "deny",
-    "cannon.*": "ask"
-=======
+    "cannon.*": "ask",
     "crystal.materials": "allow",
     "crystal.primitives": "allow",
     "crystal.primitive": "allow"
->>>>>>> 6bcbd0a (qos-hub: kannaka-crystal's registry reads in the example config)
   },
   "default": "ask"
 }
