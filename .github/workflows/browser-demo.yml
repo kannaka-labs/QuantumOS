@@ -48,6 +48,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential nasm
+          rustup target add x86_64-unknown-none   # the Rust citizens (user/rust, #263)
 
       - name: Build the multiboot kernel
         run: make BUILD_TYPE=debug kernel

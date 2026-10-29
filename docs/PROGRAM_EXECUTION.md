@@ -75,6 +75,38 @@ The piped session ends with `run /bin/hello` before `exit`:
 2. `exited (code 42)` — the shell collected the exit code (SYS_WAITPID)
 3. `SPAWN: capless caller denied (EPERM)` — the capability gate, by attack
 
+## Rust citizens (#263 slice 1, ADR-0032)
+
+A program on the initrd does not have to be C. `user/rust/rhello.rs` is a
+`no_std`, `no_main` Rust program: the Makefile compiles it with plain
+`rustc` for `x86_64-unknown-none` (soft-float, no SSE, no red zone — the
+C citizens' flags in Rust's terms) into a static archive, then links it
+with the same gcc command and `user.ld` as every C citizen, plus
+`--gc-sections` (without it the panic paths behind each slice index pull
+in all of `core::fmt`: 179 KB of text instead of 9.6 KB, measured). The
+loader sees an ordinary ET_EXEC at `USER_VBASE`.
+
+`user/rust/qsys.rs` is the syscall layer, the Rust twin of `usys.h`: the
+same `int 0x80` convention, the same numbers, and `#[repr(C)]` request and
+response structs whose sizes are pinned at compile time (76 and 136 bytes
+for the field twins), so a layout drift fails the build on both sides.
+
+The session runs `run /bin/rhello` and gates on four lines:
+
+1. `RHELLO: rust no_std citizen on QuantumOS pid=` — it runs at all
+   (toolchain, link, ELF loader)
+2. `RHELLO: SYS_AUDIT stats copied N bytes into a Rust buffer` — the ABI,
+   kernel-to-user pointer direction
+3. `RHELLO: SYS_RECALL capless -> -4 (EPERM)` — the ABI, user-to-kernel
+   twin struct, and the capability gate: a spawned program holds no field
+   capability, and the refusal is exactly the one a C caller gets
+4. `exited (code 7)` — it ended on purpose; a panic prints `RHELLO: PANIC`
+   and exits 99, and any `RHELLO: FAIL`/`PANIC` line fails the gate
+
+Building needs stable `rustc` with the bare-metal target
+(`rustup target add x86_64-unknown-none`; `make install-deps` does it).
+There is no allocator yet; that is slice 2.
+
 ## Watchdog hardening (bundled from the phase-1 adversarial review)
 
 A multi-agent adversarial review of the phase-1 shell surfaced three

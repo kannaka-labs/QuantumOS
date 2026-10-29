@@ -44,7 +44,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential qemu-system-x86 grub-pc-bin xorriso mtools nasm
+          sudo apt-get install -y build-essential qemu-system-x86 grub-pc-bin grub-efi-amd64-bin xorriso mtools nasm
+          rustup target add x86_64-unknown-none   # the Rust citizens (user/rust, #263)
       - name: Build release kernel + ISO
         run: |
           make clean
@@ -100,6 +101,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential nasm
+          rustup target add x86_64-unknown-none   # the Rust citizens (user/rust, #263)
       - name: Build kernel.elf32 and fetch pinned qemu-wasm
         run: |
           make BUILD_TYPE=release build/x86_64/kernel.elf32
