@@ -507,7 +507,8 @@ We have specialized validation for AI-assisted development:
   [Console & shell](docs/CONSOLE_SHELL.md), [Program execution](docs/PROGRAM_EXECUTION.md),
   [initrd VFS](docs/INITRD_VFS.md), [Microkernel design](docs/MICROKERNEL_DESIGN.md),
   [Hardware reports](docs/HARDWARE.md) (real machines, what booted where),
-  [Firecracker](docs/FIRECRACKER.md) (microVM boot, vsock shell, the public console's launcher)
+  [Firecracker](docs/FIRECRACKER.md) (microVM boot, vsock shell, the public console's launcher),
+  [Boot options](docs/BOOT_OPTIONS.md) (every kernel command-line token and console escape)
 - **Tool docs**: [qos-hub](tools/qos-hub/README.md), [provider broker](tools/provider-broker/README.md),
   [public console](tools/qos-console/README.md), [QPU broker](tools/qpu-broker/README.md),
   [PyPI package](scripts/README-package.md)

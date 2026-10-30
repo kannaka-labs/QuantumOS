@@ -232,6 +232,9 @@ deliberate and both have a one-line fix path:
   carries, up or down (ADR-0005 clause (b), ADR-0033). A new bracket is allowed; cite the ADR-0005
   clause it preserves in the PR and update the table in the same change. `--print` emits the
   measured table.
+- **qsh help table** (`scripts/check_qsh_help.py`, #363): every command `execute()` dispatches in
+  `user/qsh.c` must have a row in `HELP[]` and vice versa, because `help` and `help <command>`
+  are printed from that table. Adding a shell command means adding its row in the same change.
 
 ### C Code Style
 ```c
