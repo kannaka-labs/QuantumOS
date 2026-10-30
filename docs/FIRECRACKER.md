@@ -85,8 +85,12 @@ Give the microVM a tap device and QuantumOS binds it as virtio-net:
 
 Firecracker appends `virtio_mmio.device=4K@0xd0000000:5` to the command line, and the
 boot log shows `NET: virtio-net up (mmio) - MAC: ...`. There is no DHCP server on a
-bare tap, so pass a static address in `boot_args` (`ip=10.0.2.15`). The stack expects
-the gateway at 10.0.2.2, so put that on the host end of the tap:
+bare tap, so pass a static address in `boot_args` (`ip=10.0.2.15`). A NIC alone is not
+networking (ADR-0030): without an `egress=` grant on the same boot line the NIC binds and
+the log says `NET: NIC present, no egress grant`, and `http` answers `refused by the
+egress grant`. Grant what the test needs, for example
+`egress=ttl=600;bytes=4194304;allow=10.0.2.2:8000/tcp` (see docs/NETWORKING.md for the
+grammar). The stack expects the gateway at 10.0.2.2, so put that on the host end of the tap:
 
 ```sh
 sudo ip tuntap add qostap0 mode tap user "$(id -un)"
@@ -130,7 +134,8 @@ host): `help` to the next prompt, p50 1384 ms over COM1, 20 ms over vsock
 
 ## Public console
 
-`tools/qos-console/` serves QuantumOS to the web: each visitor gets a fresh microVM
-booted from this same `kernel.elf` (no drives, no NIC, serial console bridged to a
-WebSocket), deleted on disconnect or after ten minutes. See its README for the
+`tools/qos-console/` serves QuantumOS to the web at https://qos.ninja-portal.com: each
+visitor gets a fresh microVM booted from this same `kernel.elf` (a 4 MiB save disk they can
+keep and resume, no NIC, the shell over vsock bridged to a WebSocket), deleted on
+disconnect, after two idle minutes or after ten minutes. See its README for the
 launcher, the outbound tunnel to the public edge, the caps and the deployment.

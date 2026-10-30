@@ -1289,14 +1289,15 @@ async def amain(a: argparse.Namespace, stop: asyncio.Future | None = None) -> in
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--kernel", required=True)
-    ap.add_argument("--firecracker", default=os.environ.get("FIRECRACKER_BIN", "/usr/local/bin/firecracker"))
-    ap.add_argument("--run-dir", required=True)
+    ap.add_argument("--kernel", required=True, help="the QuantumOS kernel.elf every visitor boots")
+    ap.add_argument("--firecracker", default=os.environ.get("FIRECRACKER_BIN", "/usr/local/bin/firecracker"),
+                    help="firecracker binary (default $FIRECRACKER_BIN or /usr/local/bin/firecracker)")
+    ap.add_argument("--run-dir", required=True, help="where sessions, sockets and the boot snapshot live")
     g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--listen-unix")
+    g.add_argument("--listen-unix", help="Unix socket nginx proxies /ws, /stats and the page to (production)")
     g.add_argument("--listen-tcp", help="host:port (tests only)")
-    ap.add_argument("--max-vms", type=int, default=4)
-    ap.add_argument("--per-ip", type=int, default=1)
+    ap.add_argument("--max-vms", type=int, default=4, help="visitors at once; the page says when one is free")
+    ap.add_argument("--per-ip", type=int, default=1, help="sessions per address (X-Real-IP from nginx)")
     ap.add_argument("--max-seconds", type=float, default=600, help="hard cap per session")
     ap.add_argument("--idle-seconds", type=float, default=120,
                     help="end a session after this long with no input and no output")
@@ -1312,8 +1313,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="allow a non-loopback --listen-tcp: a proxy in front really sets X-Real-IP")
     ap.add_argument("--internal-token-file", default=None,
                     help="file holding the token that tags our own traffic out of the visitor funnel")
-    ap.add_argument("--mem-mib", type=int, default=128)
-    ap.add_argument("--boot-args", default="quiet")
+    ap.add_argument("--mem-mib", type=int, default=128, help="guest RAM per VM")
+    ap.add_argument("--boot-args", default="quiet", help="kernel command line (quiet; add qseed=, egress= as needed)")
     ap.add_argument("--snapshot", choices=("auto", "off"), default="auto",
                     help="auto: restore visitors from a booted snapshot; off: cold-boot every session")
     ap.add_argument("--state-file",

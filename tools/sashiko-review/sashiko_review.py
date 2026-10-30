@@ -546,20 +546,31 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("example", help="print the example config (edit it, then save it as review.json)")
+    HELP = {
+        "check": "validate the config: the model key works, the budget parses, Sashiko answers",
+        "serve": "expose the review as MCP tools over stdio (review_quote, review_start, ...)",
+        "jobs": "list the reviews this config has started",
+        "quote": "price a review of <repo> at <rev> without starting it",
+        "start": "start a review of <repo> at <rev> (spends within the budget you set)",
+        "status": "where a review job is",
+        "result": "the finished review's findings",
+        "cancel": "stop a running review",
+    }
     for name in ("check", "serve", "jobs"):
-        sub.add_parser(name).add_argument("--config", required=True)
+        sub.add_parser(name, help=HELP[name]).add_argument(
+            "--config", required=True, help="review.json (see `qos-review example`)")
     for name in ("quote", "start"):
-        p = sub.add_parser(name)
-        p.add_argument("--config", required=True)
-        p.add_argument("repo")
-        p.add_argument("rev")
-        p.add_argument("--project", default="sashiko", choices=PROJECTS)
+        p = sub.add_parser(name, help=HELP[name])
+        p.add_argument("--config", required=True, help="review.json (see `qos-review example`)")
+        p.add_argument("repo", help="repository URL or local path")
+        p.add_argument("rev", help="commit, branch or tag to review")
+        p.add_argument("--project", default="sashiko", choices=PROJECTS, help="Sashiko project profile (default sashiko)")
         if name == "start":
             p.add_argument("--wait", action="store_true", help="stay until the review finishes")
     for name in ("status", "result", "cancel"):
-        p = sub.add_parser(name)
-        p.add_argument("--config", required=True)
-        p.add_argument("job")
+        p = sub.add_parser(name, help=HELP[name])
+        p.add_argument("--config", required=True, help="review.json (see `qos-review example`)")
+        p.add_argument("job", help="the job id `start` printed")
     a = ap.parse_args(argv)
     if a.cmd == "example":
         print((HERE / "review.example.json").read_text(encoding="utf-8"), end="")

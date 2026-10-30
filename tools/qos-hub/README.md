@@ -55,13 +55,28 @@ and `hub_ledger`. There is no tool to approve or to change the policy.
 
 ## What the example config wires up
 
+Seventeen servers. Reads are allowed; anything that writes to a shared bus, spends, or changes a
+store asks first; the few truly one-way actions are denied. Unlisted tools ask.
+
 | server | from | allowed | asks first | denied |
 |---|---|---|---|---|
-| `kannaka` | the Kannaka plugin's `kannaka-mcp.mjs` | status, recall, swarm status/tail, KAX compute roster/status/events | remember, dream, **swarm_send** (public bus), **compute_wake** (spends KAX credits) | compute_grant |
+| `kannaka` | the Kannaka plugin's `kannaka-mcp.mjs` (stdio) | status, recall, swarm status/tail, KAX compute roster/status/events | remember, dream, **swarm_send** (public bus), **compute_wake** (spends KAX credits) | compute_grant |
+| `kcli` | the `kannaka` CLI (templates) | status, recall, swarm status | | |
 | `quantum` | kannaka-quantum (`python -m kannaka_quantum mcp`) | devices, quantum_random, resonance_recall | run_circuit | |
-| `octo` | Kannaktopus `mcp-server` | status, skills, Kannaka/HRM reads, swarm status/tail | swarm_send, absorb, dream, the octopus workflows (they call paid LLMs) | |
+| `octo` | Kannaktopus `mcp-server` | status, skills, Kannaka/HRM reads, swarm status/tail | swarm_send, absorb, dream, the octopus workflows (paid LLMs) | |
 | `broker` | the provider broker's `broker_mcp.py` | all (the broker enforces its own envelope and approvals) | | |
-| `cannon` | [kannaka-cannon](https://github.com/kannaka-labs/kannaka-cannon) `clipcannon` (51 tools, stdio) | project list/status, config and credits reads, disk status, transcript / scene map / narrative flow / editing context, search, edit history, branches, voice profiles, HRM recall | everything else (ingest, edits, renders, previews, and the generate / speak / compose tools that call paid providers) | project_delete, disk_cleanup |
+| `review` | `qos-review serve` (Sashiko with your own model key, ADR-0028) | quote, status, result, jobs | review_start (spends your budget) | |
+| `cannon` | [kannaka-cannon](https://github.com/kannaka-labs/kannaka-cannon) `clipcannon` (51 tools) | project/config/credits/disk reads, transcript, scene map, search, history, branches, voices, HRM recall | everything else (ingest, edits, renders, paid generate/speak/compose) | project_delete, disk_cleanup |
+| `scada` | 0xSCADA CLI (templates) | status, sites, site, assets, asset, events, blockchain | asset_create | |
+| `steward` | kannaka-steward `govern` and `trade` on the offline warrant fixtures | all listed (never signs or submits) | | |
+| `hdl` | [kannaka-hdl](https://github.com/kannaka-labs/kannaka-hdl) | check, grow (JSON plan) | | |
+| `apps` | [kannaka-apps](https://github.com/kannaka-labs/kannaka-apps) store | list, plan (`--dry-run`) | run (one-way on live memory) | |
+| `buzz` | the Hive's [`buzz` CLI](https://github.com/kannaka-labs/kannaka-buzz) | channels, messages, search | send (other members read it) | |
+| `lens` | [kannaka-lens](https://github.com/kannaka-labs/kannaka-lens) | show | run (minutes of CPU, writes to the HRM) | |
+| `crystal` | [kannaka-crystal](https://github.com/kannaka-labs/kannaka-crystal) | materials, primitives, primitive | | |
+| `dna` | [kannaka-dna](https://github.com/kannaka-labs/kannaka-dna) | verify, stats, lineage | express (writes a birth kit) | |
+| `city` | KAX City (Agent-kax) over HTTP with a bearer token | look, rooms, onboarding, Joinery catalog/works/mine | enter, say, goto, leave, Joinery buy/sell/flat | |
+| `cc` | the Kannaka Command Center over HTTP with OAuth `client_credentials` | the 19 reads: bus, presence, dreams, Nostr and Hive traffic, recall, markets, compute roster | ask_kannaka, place_bet, propose_prediction, buy_credits, redeem_credits, wake_machine | |
 
 ## CLIs without an MCP server (`cli_connector.py`)
 

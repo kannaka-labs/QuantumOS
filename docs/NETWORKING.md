@@ -735,23 +735,18 @@ recorded slots, checking each for the virtio magic and a network device id.
 `netdev_init()` tries virtio-net **before** the PCI bus scan, so a guest
 with both takes the paravirtual NIC.
 
-### Status: written, not yet run
+### Status: verified on Firecracker
 
-**This driver has never been compiled or executed.** There is no
-cross-toolchain, KVM or QEMU on the machine it was written on, so nothing
-here has been past a compiler. It is documented because the seam and the
-cmdline contract are worth reviewing on their merits — not because it is
-known to work.
-
-The acceptance test is the one that already exists and has never been able
-to run: boot under Firecracker with a tap device and require
-`net_selftest()` (ARP → DHCP → ping → DNS) to pass. Until that goes green,
-treat this section as a description of intent.
-
-Where it is likeliest wrong, for whoever runs it first: the avail/used ring
-index wrap arithmetic; whether Firecracker wants `QueueNum` written before
-or after the address registers; and whether refusing a `QueueNumMax < 64`
-outright should instead shrink the ring.
+The paragraph that stood here until 2026-10-30 said this driver had never been
+compiled or run. It has: the first Firecracker boot with a tap device was
+verified on 2026-10-22 (`qsh: http 10.0.2.2 -> HTTP/1.0 200 OK` against a host
+`python3 -m http.server`, and fieldsyncd's UDP to `peer=10.0.2.2`; see
+docs/FIRECRACKER.md), `scripts/firecracker_net_selftest.sh` repeats it, and
+QEMU's virtio-net PCI path is gated in CI (`ci-smoke-net-virtio`,
+`ci-smoke-net-virtio-nofeat`, `ci-smoke-net-virtio-tap`). The offloads and
+MSI-X arrived with #253 and #328 (v0.6.2). The ring index arithmetic and the
+`QueueNum` ordering that the original note flagged as the likeliest faults
+were right as written.
 
 ## The e1000 driver (`kernel/src/e1000.c`, #252)
 

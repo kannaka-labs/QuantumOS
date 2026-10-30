@@ -2,9 +2,9 @@
 
 A web page where a visitor boots a real QuantumOS virtual machine and types into its
 shell. Each visitor gets a fresh Firecracker microVM on KVM (docs/FIRECRACKER.md), with
-no disk and no network; its serial console is bridged to the browser over a WebSocket.
-The machine is deleted when the visitor leaves, when the guest halts, or after ten
-minutes.
+a 4 MiB save disk (below) and no network; its serial console is bridged to the browser over a WebSocket.
+The machine is deleted when the visitor leaves, when the guest halts, after two minutes
+with no input and no output, or after ten minutes.
 
 ```
 browser ──https/wss──▶ O1 nginx (/qos/, basic auth, rate limits)
@@ -238,7 +238,8 @@ Every limit, with its flag and default (#257):
   `X-Real-IP`, which only nginx sets. The launcher listens on a Unix socket (or loopback
   in tests). It refuses to start on any other `--listen-tcp` address unless
   `--trust-forwarded-for` says a proxy in front really sets that header.
-- The guest has no NIC and no drives, so a visitor can reach nothing but the guest.
+- The guest has no NIC, and its only drive is its own 4 MiB save disk, so a visitor can
+  reach nothing but the guest.
 - The launcher log records session id, a per-process salted hash of the address, start,
   end, reason and duration. It never records keystrokes or guest output. The metrics
   above add no new record of addresses.
@@ -249,8 +250,8 @@ Every limit, with its flag and default (#257):
   `restrict,port-forwarding,permitlisten="127.0.0.1:8930",command="/bin/false"`.
 - `/etc/nginx/qos-console.htpasswd` (root:nginx 640); the plaintext credentials are in
   `/etc/kannaka-secrets/qos-console.env` (root 600).
-- The staging route is `https://staff.ninja-portal.com/qos/`. Going public means a DNS
-  record for a dedicated hostname, a certificate, and a server block without basic auth.
+- Public at `https://qos.ninja-portal.com` (its own server block, no basic auth, certbot
+  certificate); the staging route `https://staff.ninja-portal.com/qos/` stays behind basic auth.
 
 ## Tests
 
