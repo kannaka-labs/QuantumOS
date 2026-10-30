@@ -66,8 +66,28 @@ def expected_aggregate(qseed_hex):
     return agg ^ _fnv1a(q.to_bytes(8, "little"))
 
 
+_SOC = None  # the society under test, so a failure can print the evidence it needs
+
+
+def _dump_members(lines=40):
+    """On failure, print each member's log tail. The verdict alone has not been enough
+    to tell a harness race from a guest fault (#361); the next failure carries its logs."""
+    soc = _SOC
+    if soc is None or not getattr(soc, "members", None):
+        return
+    for i, m in enumerate(soc.members):
+        try:
+            tail = m._log_text()[-6000:].splitlines()[-lines:]
+        except Exception as e:  # noqa: BLE001 - never let the dump hide the verdict
+            tail = [f"(log unavailable: {type(e).__name__})"]
+        print(f"--- member {i} log tail ({len(tail)} lines) ---")
+        for ln in tail:
+            print("   ", ln)
+
+
 def _fail(msg):
     print(f"FAIL: {msg}")
+    _dump_members()
     raise SystemExit(1)
 
 
@@ -85,6 +105,8 @@ def _await(pred, deadline, what):
 
 def main():
     soc = QosSociety(kernel=_kernel())
+    global _SOC
+    _SOC = soc
     exp = [expected_aggregate(q) for q in QSEEDS]
     # FIXTURE anti-vacuity: all N expected aggregates must be pairwise-distinct,
     # else value-attribution cannot tell peers apart (would let a relayed value
