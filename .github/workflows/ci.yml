@@ -50,6 +50,9 @@ jobs:
     - name: Interrupt-flag primitives match the ADR-0005 inventory (ADR-0033)
       run: python3 scripts/check_irq_primitives.py
 
+    - name: qsh help table matches the dispatcher (#358)
+      run: python3 scripts/check_qsh_help.py && python3 scripts/check_qsh_help.py --selftest
+
     - name: Run unit tests
       run: |
         make test
