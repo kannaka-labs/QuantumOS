@@ -97,41 +97,145 @@ static const char *arg_of(const char *line, const char *cmd) {
  * Builtins
  * ------------------------------------------------------------------ */
 
-static void cmd_help(void) {
+/* One row per command. `help` prints the compact grouped index from this
+ * table and `help <cmd>` prints a row's usage and detail, so the index can
+ * never again list a command the shell does not have, or miss one it has. */
+struct help_row {
+    const char *group; /* printed once per group in the index */
+    const char *name;  /* the word the dispatcher matches */
+    const char *usage; /* arguments, as typed */
+    const char *desc;  /* one line */
+    const char *more;  /* `help <cmd>` detail; "" for none */
+};
+
+static const struct help_row HELP[] = {
+    {"memory", "imprint", "[--energy 0-100] <text>", "store a phrase in the holographic field",
+     "Patterns are up to 64 bytes; a region holds 8 slots. --energy sets the slot's importance,\r\n"
+     "  which drives recall ranking and eviction. 'sync' persists the field."},
+    {"memory", "recall", "<cue>", "bring a phrase back from a corrupted cue",
+     "Prints FIELD: winner=\"...\" with the exact stored bytes, and reinforces the winner."},
+    {"memory", "field", "", "live slots and their energy, read-only",
+     "FIELDINFO: then one FIELDSLOT: line per slot. Unlike recall it never perturbs the field."},
+    {"memory", "fieldtest", "", "run the field self-test",
+     "Asserts the cross-region EPERM and the degenerate-probe (n=0) contracts."},
+    {"memory", "ghost", "[exit]", "ghostd's field status: order R and live patterns",
+     "'ghost exit' asks ghostd to die; the service watchdog rebirths it and the peer IPC\r\n"
+     "  capability is re-minted (ADR-0023). ghost rolls no dice: see qrand and qseed."},
+    {"quantum", "qrand", "", "64 bits from the seeded generator",
+     "Where the seed came from: qseed."},
+    {"quantum", "qseed", "", "the seed this machine booted with and its provenance",
+     "Host randomness by default; a real QPU when booted with qseed= from the qBraid broker."},
+    {"quantum", "qpu", "run|real|job ...",
+     "circuits on qBraid through the host broker, if attached", ""},
+    {"programs", "run", "<path> [args...]", "start a program from the initrd as a citizen",
+     "ls /bin lists what is installed (hello, args, qtop, life, consciousnessd, rhello, ...).\r\n"
+     "  Try: run /bin/qtop. A running program is not stopped by Ctrl-C; most exit on their own."},
+    {"files", "ls", "[path]", "list a directory of the initrd", ""},
+    {"files", "cat", "<path>", "print a file", ""},
+    {"files", "write", "<path> <text>", "create or replace an overlay file with the text", ""},
+    {"files", "rm", "<path>", "remove an overlay file", ""},
+    {"files", "sync", "", "persist the overlay and the field to the save disk, if one is attached",
+     "On the public console this is what keeps a saved machine across sessions."},
+    {"net", "http", "<host> [port]", "GET / from a host over TCP",
+     "Refused unless the kernel was booted with an egress= grant that allows it (ADR-0030)."},
+    {"net", "tcpput", "<ip> <port> <bytes>", "send that many bytes over one TCP connection",
+     "Up to 16 MiB. Within the egress grant."},
+    {"net", "nslookup", "<host>", "resolve a name through the grant's DNS server", ""},
+    {"net", "udping", "<host>", "UDP echo probe", ""},
+    {"net", "net2", "<peer-ip>", "guest-to-guest UDP probe on port 9999", ""},
+    {"net", "egress", "", "the EGRESS rows of the audit ledger: what the grant allowed and refused",
+     "perms encodes (proto<<16)|port. A machine with no NIC or no grant has no network at all."},
+    {"system", "ps", "", "the process table", ""},
+    {"system", "sched", "", "scheduler counters: switches, preemptions, fairness", ""},
+    {"system", "manifest", "", "each citizen's declared allow-set, spawn quota and CPU ticks",
+     "Built by the kernel from grant flags, so a citizen cannot forge its own row."},
+    {"system", "audit", "", "the capability ledger: every GRANT, DENY and SPAWN, kernel-recorded",
+     "AUDIT: seq= pid= kind=GRANT|DENY|SPAWN|MDENY|QUOTA res=TYPE:id perms= verdict=OK|EPERM"},
+    {"system", "free", "", "heap and memory figures", ""},
+    {"system", "uptime", "", "ticks since boot", ""},
+    {"system", "date", "", "the wall clock", ""},
+    {"system", "pid", "", "this shell's pid", ""},
+    {"system", "echo", "<text>", "print the text", ""},
+    {"shell", "clear", "", "clear the screen", ""},
+    {"shell", "help", "[command]", "this index, or one command's usage and detail", ""},
+    {"shell", "exit", "", "end the shell; the watchdog restarts it in about 2 s", ""},
+};
+
+#define HELP_ROWS ((int)(sizeof(HELP) / sizeof(HELP[0])))
+
+static void help_index(void) {
     /* "qsh commands:" is the CI grep anchor — keep it intact (colour codes
-     * sit outside the phrase). Grouped by what each command is FOR, with a
-     * one-line description, so a newcomer knows where to start. */
-    out(A_TITLE "qsh commands:" A0 "\r\n");
-    out(A_CAT "  memory " A0 A_CMD "imprint" A0 " <text>   " A_DIM "store a phrase (opt. " A_KEY
-              "--energy 0-100" A_DIM ")" A0 "\r\n");
-    out("         " A_CMD "recall" A0 " <cue>     " A_DIM "bring it back from a corrupted cue" A0
+     * sit outside the phrase). One line per group so the index fits an
+     * 80x25 screen; `help <cmd>` has the detail. */
+    out(A_TITLE "qsh commands:" A0 A_DIM "   help <command> for detail;  ls /bin for programs" A0
+                "\r\n");
+    const char *group = "";
+    for (int i = 0; i < HELP_ROWS; i++) {
+        const struct help_row *r = &HELP[i];
+        if (!is_cmd(r->group, group)) {
+            if (i) {
+                out("\r\n");
+            }
+            group = r->group;
+            out(A_CAT "  ");
+            out(group);
+            out(A0);
+            for (int pad = (int)str_len(group); pad < 9; pad++) {
+                out(" ");
+            }
+        } else {
+            out("  ");
+        }
+        out(A_CMD);
+        out(r->name);
+        out(A0);
+        if (r->usage[0]) {
+            out(A_DIM " ");
+            out(r->usage);
+            out(A0);
+        }
+    }
+    out("\r\n" A_CAT "  keys     " A0 A_DIM
+        "backspace only, no history or arrows; Ctrl-C stops a qpu wait; 119 chars a line" A0
         "\r\n");
-    out("         " A_CMD "field" A0 "          " A_DIM
-        "inspect the field: live slots + energy (read-only)" A0 "\r\n");
-    out("         " A_CMD "ghost" A0 "          " A_DIM "field status: order R and live patterns" A0
-        "\r\n");
-    out("         " A_CMD "fieldtest" A0 "      " A_DIM "run the field self-test" A0 "\r\n");
-    out(A_CAT "  quantum" A0 " " A_CMD "qrand" A0 "          " A_DIM
-              "64 bits from the seeded generator" A0 "\r\n");
-    out("         " A_CMD "qseed" A0 "          " A_DIM "the seed this system started with" A0
-        "\r\n");
-    out("         " A_CMD "ghost" A0 "          " A_DIM
-        "dice + resonant recall (seed: see qseed)" A0 "\r\n");
-    out("         " A_CMD "qpu" A0 "            " A_DIM
-        "send a circuit to the host's qBraid broker, if one is attached" A0 "\r\n");
-    out(A_CAT "  run    " A0 A_CMD "run" A0 " <path>      " A_DIM "start a citizen  " A_KEY
-              "try: run /bin/qtop" A0 "\r\n");
-    out(A_CAT "  files  " A0 A_CMD "ls" A0 " " A_CMD "cat" A0 " " A_CMD "write" A0 " " A_CMD "rm" A0
-              " " A_CMD "sync" A0 "  " A_DIM "browse and edit the initrd" A0 "\r\n");
-    out(A_CAT "  net    " A0 A_CMD "http" A0 " <host>   " A_CMD "tcpput" A0 "   " A_CMD
-              "nslookup" A0 "   " A_CMD "udping" A0 "   " A_CMD "egress" A0 "   " A_DIM
-              "reach the network, within the grant" A0 "\r\n");
-    out(A_CAT "  system " A0 A_CMD "ps" A0 " " A_CMD "free" A0 " " A_CMD "uptime" A0 " " A_CMD
-              "date" A0 " " A_CMD "pid" A0 " " A_CMD "echo" A0 "  " A_DIM "inspect the machine" A0
-              "\r\n");
-    out("         " A_CMD "audit" A0 "          " A_DIM
-        "capability ledger: who was granted/denied what (kernel-recorded)" A0 "\r\n");
-    out(A_CAT "  shell  " A0 A_CMD "clear" A0 " " A_CMD "help" A0 " " A_CMD "exit" A0 "\r\n");
+}
+
+static void cmd_qpu_usage(void);
+
+static void cmd_help(const char *topic) {
+    if (!topic || !topic[0]) {
+        help_index();
+        return;
+    }
+    for (int i = 0; i < HELP_ROWS; i++) {
+        const struct help_row *r = &HELP[i];
+        if (!is_cmd(topic, r->name)) {
+            continue;
+        }
+        out(A_CMD);
+        out(r->name);
+        out(A0);
+        if (r->usage[0]) {
+            out(" ");
+            out(r->usage);
+        }
+        out("\r\n  " A_DIM);
+        out(r->desc);
+        out(A0 "\r\n");
+        if (is_cmd(r->name, "qpu")) {
+            cmd_qpu_usage();
+            out(A_DIM "  Simulator runs are free; 'real' spends the host's daily QPU budget. No "
+                      "answer\r\n"
+                      "  means no broker is attached to this machine. Ctrl-C stops the wait." A0
+                      "\r\n");
+        } else if (r->more[0]) {
+            out(A_DIM "  ");
+            out(r->more);
+            out(A0 "\r\n");
+        }
+        return;
+    }
+    out("qsh: help: no such command; 'help' lists them\r\n");
 }
 
 /* write <path> <text>: create/truncate an overlay file with the text
@@ -1928,8 +2032,10 @@ static void execute(const char *line) {
     }
 
     const char *a;
-    if (is_cmd(line, "help")) {
-        cmd_help();
+    if ((a = arg_of(line, "help")) != 0) {
+        cmd_help(a);
+    } else if (is_cmd(line, "help")) {
+        cmd_help(0);
     } else if ((a = arg_of(line, "echo")) != 0) {
         char b[LINE_MAX + 16];
         int o = ghost_put(b, 0, "qsh: ");
@@ -1955,7 +2061,7 @@ static void execute(const char *line) {
     } else if ((a = arg_of(line, "run")) != 0) {
         cmd_run(a);
     } else if (is_cmd(line, "run")) {
-        out("qsh: run: usage: run <path>\r\n");
+        out("qsh: run: usage: run <path> [args...]\r\n");
     } else if ((a = arg_of(line, "write")) != 0) {
         cmd_write(a);
     } else if (is_cmd(line, "write")) {
@@ -2066,8 +2172,8 @@ void _start(void) {
 
     /* A one-line nudge so a first-time visitor knows what to try. */
     if (restarts == 0) {
-        out(A_DIM "  try " A_KEY "ghost" A0 A_DIM "   " A_KEY "run /bin/qtop" A0 A_DIM
-                  "   or " A_KEY "imprint hello world" A0 A_DIM " then " A_KEY
+        out(A_DIM "  try " A_KEY "help" A0 A_DIM "   " A_KEY "run /bin/qtop" A0 A_DIM "   " A_KEY
+                  "qpu" A0 A_DIM "   or " A_KEY "imprint hello world" A0 A_DIM " then " A_KEY
                   "recall hxllo wxrld" A0 "\r\n");
     }
 

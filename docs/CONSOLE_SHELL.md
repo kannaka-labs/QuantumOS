@@ -60,7 +60,7 @@ every byte alive:
    level-evaluated when IER changes.
 
 The smoke test gates this with the *input integrity* check: the first
-piped command must execute intact (`qsh: commands: help`).
+piped command must execute intact (`qsh commands:`).
 
 ## Syscalls
 
@@ -101,35 +101,53 @@ Line discipline lives in the shell, not the kernel: qsh echoes, handles
 backspace, assembles lines. Every logical output line is written with a
 single `SYS_CONS` call so tick logs never split it.
 
-Builtins: `help`, `echo <text>`, `ps`, `free`, `uptime`, `pid`,
-`qrand`, `qseed`, `ghost` (STATUS query to `ghostd` over capability
-IPC), `imprint [--energy <0-100>] <text>` / `recall <probe>` (the kernel
-holographic field, epic #95: the shell holds the `CAP_RESOURCE_FIELD`
-capability over region 0, so the operator can store text and recover it
-later from a corrupted probe — `recall the cxt sxt` returns
-`FIELD: winner="the cat sat"` with the exact stored bytes; the optional
-`--energy` percent sets the slot's importance, which drives recall
-ranking and eviction), `field` (epic #127 B1: `SYS_FIELD_INFO`, a
-READ-ONLY enumeration of the region — `FIELDINFO: region=0 live=N cap=8`
-then a `FIELDSLOT:` line per live slot with its energy, effective
-energy, retrievals, age, and a bounded preview; unlike `recall` it does
-NOT reinforce, so it never perturbs the field), `fieldtest` (asserts the
-cross-region EPERM and degenerate-probe n=0 contracts from the
-cap-holding side; `ghost_test` proves the capless side), `audit`
-(epic #133 Phase D: `SYS_AUDIT`, the capability AUTHORITY LEDGER — the
-KERNEL records every capability GRANT, DENY, and SPAWN, so a citizen
-cannot forge or suppress its own entry; `audit` prints `AUDIT: total=…`
-then an `AUDIT: seq=… pid=… kind=GRANT|DENY|SPAWN|MDENY|QUOTA res=TYPE:id
-perms=… verdict=OK|EPERM` line per event — read-only introspection that
-makes "authority IS the capability set, and every attempt to exceed it is
-provable" observable), `manifest` (epic #135 Phase D: `SYS_MANIFEST`, the
-per-pid INTENT MANIFEST — a policy layer above raw capabilities that the
-KERNEL builds from each citizen's grant flags, so a citizen cannot forge
-its own row; `manifest` prints a `MANIFEST: pid=… bound=1 spawn=used/max
-cpu_ticks=…` line per bound citizen plus a `MANIFEST: pid=… allow
-res=TYPE:id perms=…` line per declared resource — declared intent made
-inspectable, and the spawn quota's enforcement observable), `clear`,
-`exit`.
+Builtins (`help` prints this index from a table in `user/qsh.c`; `help <command>`
+prints one command's usage and detail, so the index cannot drift from the
+dispatcher):
+
+| group | commands |
+|---|---|
+| memory | `imprint [--energy 0-100] <text>`, `recall <cue>`, `field` (read-only slot listing), `fieldtest`, `ghost [exit]` |
+| quantum | `qrand`, `qseed`, `qpu run\|real <bell\|ghz3\|grover3> [shots]`, `qpu job <id>` |
+| programs | `run <path> [args...]` (`ls /bin` lists what is installed) |
+| files | `ls [path]`, `cat <path>`, `write <path> <text>`, `rm <path>`, `sync` |
+| net | `http <host> [port]`, `tcpput <ip> <port> <bytes>`, `nslookup <host>`, `udping <host>`, `net2 <peer-ip>`, `egress` |
+| system | `ps`, `sched`, `manifest`, `audit`, `free`, `uptime`, `date`, `pid`, `echo <text>` |
+| shell | `clear`, `help [command]`, `exit` |
+
+What the less obvious ones are for:
+
+- `imprint` / `recall` (epic #95): the shell holds the `CAP_RESOURCE_FIELD`
+  capability over region 0, so the operator can store text and recover it
+  later from a corrupted probe; `recall the cxt sxt` returns
+  `FIELD: winner="the cat sat"` with the exact stored bytes. Patterns are
+  64 bytes, a region holds 8 slots, and `--energy` sets the slot's
+  importance, which drives recall ranking and eviction.
+- `field` (epic #127 B1): `SYS_FIELD_INFO`, a read-only enumeration,
+  `FIELDINFO: region=0 live=N cap=8` then a `FIELDSLOT:` line per live slot.
+  Unlike `recall` it does not reinforce, so it never perturbs the field.
+- `fieldtest`: asserts the cross-region EPERM and degenerate-probe n=0
+  contracts from the cap-holding side (`ghost_test` proves the capless side).
+- `ghost`: a STATUS query to `ghostd` over capability IPC, answered as
+  `qsh: ghost R=... live=...`. `ghost exit` asks ghostd to die; the watchdog
+  rebirths it and re-mints the peer capability (ADR-0023). It rolls no dice.
+- `qpu`: circuits on qBraid through the host's broker (`tools/qpu-broker`),
+  when one is attached; the simulator is free, `real` spends the daily budget.
+- `audit` (epic #133 Phase D): `SYS_AUDIT`, the capability authority ledger.
+  The kernel records every GRANT, DENY and SPAWN, so a citizen cannot forge
+  or suppress its own entry: `AUDIT: total=...` then one
+  `AUDIT: seq=... pid=... kind=GRANT|DENY|SPAWN|MDENY|QUOTA res=TYPE:id
+  perms=... verdict=OK|EPERM` line per event.
+- `manifest` (epic #135 Phase D): `SYS_MANIFEST`, the per-pid intent
+  manifest the kernel builds from each citizen's grant flags:
+  `MANIFEST: pid=... bound=1 spawn=used/max cpu_ticks=...` plus one
+  `MANIFEST: pid=... allow res=TYPE:id perms=...` line per declared resource.
+- `egress`: the `kind=EGRESS` rows of the same ledger, what the boot-time
+  `egress=` grant allowed and refused (ADR-0030); `perms` encodes
+  `(proto<<16)|port`. The net commands are refused without a grant.
+- `sched`: the `SCHED:` counters (switches, preemptions, fairness).
+- `sync`: persists the overlay and the field to the save disk when one is
+  attached (the public console's saved machines).
 
 `exit` is a supervised death: the shell terminates, its heartbeat goes
 silent, and the service watchdog restarts it (~2 s); the reborn shell
@@ -150,7 +168,7 @@ The smoke test pipes `help ps free uptime ghost qrand exit` into QEMU's
 stdin and asserts, from the same boot:
 
 1. `QSH: QuantumOS interactive shell ready` — shell up with its console cap
-2. `qsh: commands: help` — first piped command intact (input integrity)
+2. `qsh commands:` — first piped command intact (input integrity)
 3. `qsh RUNNING` — `ps` shows the shell observing itself in the table
 4. `MEM: heap free=` — live memory stats
 5. `qsh: ghost R=` — field status fetched from ghostd over IPC
@@ -323,11 +341,4 @@ visible on a UEFI screen too.
 - RAM is sized from the multiboot memory map (#215) but capped at the
   1 GB low identity map, so machines with more than 1 GB use only the
   first 1 GB.
-- Peer IPC capabilities (qsh ↔ ghostd) are not re-minted on watchdog
-  restart — only declared *resource* caps are. A reborn shell keeps its
-  console but loses `ghost` until this service.c limitation is fixed
-  (shared with the other demo peers).
 - Extended PS/2 keys (arrows, etc.) are swallowed; no line history.
-- Next phases of epic #62: an embedded initrd + read-only VFS (`ls`,
-  `cat`, issue #64), then `SYS_SPAWN`/`SYS_WAITPID` so the shell can run
-  programs from the filesystem (issue #65).

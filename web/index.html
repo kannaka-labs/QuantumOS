@@ -8,10 +8,10 @@
 <meta property="og:title" content="QuantumOS — a real 64-bit OS in your browser">
 <meta property="og:description" content="Boot QuantumOS and type into a live shell. No install, no server — the whole machine is real qemu-system-x86_64, compiled to WebAssembly.">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://flaukowski.github.io/QuantumOS/">
-<meta property="og:image" content="https://flaukowski.github.io/QuantumOS/preview.png">
+<meta property="og:url" content="https://kannaka-labs.github.io/QuantumOS/">
+<meta property="og:image" content="https://kannaka-labs.github.io/QuantumOS/preview.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://flaukowski.github.io/QuantumOS/preview.png">
+<meta name="twitter:image" content="https://kannaka-labs.github.io/QuantumOS/preview.png">
 <!-- MUST be first: on a static host that can't send COOP/COEP (GitHub Pages),
      this registers a service worker and reloads ONCE to enable SharedArrayBuffer,
      which qemu-wasm needs. Loading it before anything else means the reload
@@ -180,15 +180,16 @@
       <aside class="crib" aria-label="Commands to try">
         <h2>Type into it</h2>
         <ul>
-          <li><code>help</code><span class="desc">List every command the shell knows.</span></li>
-          <li><code>ghost</code><span class="desc">Roll the dice and recall a memory by resonance.</span></li>
+          <li><code>help</code><span class="desc">The command index; <code>help recall</code> explains one command.</span></li>
+          <li><code>ghost</code><span class="desc">The field daemon's status: order R and live patterns.</span></li>
           <li><code>qrand</code><span class="desc">64 bits from the entropy pool (a PRNG in your tab).</span></li>
           <li><code>run /bin/consciousnessd</code><span class="desc">Watch an oscillator field synchronize to order.</span></li>
           <li><code>run /bin/qtop</code><span class="desc">A live process and phase-field dashboard.</span></li>
           <li><code>imprint a cat sat on the mat</code><span class="desc">Store a phrase in the holographic field…</span></li>
           <li><code>recall a cxt sxt on thx mat</code><span class="desc">…then recall it from a typo.</span></li>
+          <li><code>audit</code><span class="desc">The kernel's capability ledger: who was granted and denied what.</span></li>
         </ul>
-        <div class="hint">Click the terminal first, then type. It's the real OS — everything runs for real.</div>
+        <div class="hint">Click the terminal first, then type. It's the real OS — everything runs for real. For a KVM machine with a save disk and real quantum hardware behind <code>qpu</code>, use the <a href="https://qos.ninja-portal.com">public console</a>.</div>
       </aside>
     </div>
   </main>
@@ -215,7 +216,7 @@
       </div>
     </div>
     <div class="colophon">
-      <a href="https://github.com/flaukowski/QuantumOS">Source · flaukowski/QuantumOS</a>
+      <a href="https://github.com/kannaka-labs/QuantumOS">Source · kannaka-labs/QuantumOS</a>
       <span>QEMU © its authors, GPLv2 · xterm.js MIT · xterm-pty MIT</span>
       <span>Best on desktop Chrome or Firefox.</span>
     </div>

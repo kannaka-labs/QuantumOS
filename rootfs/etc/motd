@@ -1,2 +1,3 @@
-Welcome to QuantumOS — wave-interference memory; dice seeded by the host, not by a QPU.
-Type 'help' for commands; 'ls /' to browse the initrd.
+Welcome to QuantumOS: a capability microkernel with wave-interference memory.
+Type 'help' for the command index and 'help <command>' for detail; 'ls /bin' lists
+programs; 'qseed' says where this machine's randomness came from.
