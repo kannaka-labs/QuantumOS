@@ -192,10 +192,11 @@ follow-ups). This is an estimate from the inventory, not a measurement.
 
 ### Residual risks
 
-- The invariant is still comment-enforced. A static gate that fails the build when a new
-  `pushfq` or `*_irq_save` appears outside the eleven known helpers would make the
-  inventory above self-maintaining; it is cheap and is the one piece of code this ADR
-  recommends.
+- The invariant was comment-enforced until #355: `scripts/check_irq_primitives.py` now fails
+  the build when the per-file counts of `cli`, `sti`, `pushfq` and `popfq` in the kernel's
+  inline asm and `.S` files differ from the measured table, up or down, so the inventory
+  above maintains itself. Helper call sites are not counted; a new primitive must cite the
+  ADR-0005 clause it preserves and update the table in the same PR.
 - The console ring's two interrupt producers are correct only because one CPU takes one
   interrupt at a time. That is the first thing to break on any `-smp` boot, and the first
   thing a future bring-up must lock.

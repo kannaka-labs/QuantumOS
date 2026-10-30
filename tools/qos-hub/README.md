@@ -135,7 +135,8 @@ The example config wires up:
 
 KAX refuses to refresh an expired token, so the hub has to start with a fresh one.
 
-Next in #297: the Command Center (OAuth) and PFORK_MCP.
+Next in #297: the Command Center (OAuth). PFORK_MCP has no live endpoint (measured
+2026-10-30, see the issue); it would also need an `x-api-key` header option here.
 
 ## Trust boundary
 
