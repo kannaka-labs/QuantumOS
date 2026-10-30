@@ -11,6 +11,14 @@ Status: Accepted
 > `kernel/include/kernel/` copies everything actually includes). A dead-code sweep in the
 > #180/#181 tradition; the build + `ci-smoke` staying green is the proof they were dead.
 
+> **Update (2026-10-30).** Revisited in ADR-0033 for #261, with a measured inventory: 39
+> interrupt-off brackets in 14 files (36 through eleven per-subsystem helpers), every service
+> an IF=1 kernel thread (not the three this ADR lists), and the local APIC in use for MSI-X
+> since #253 (`kernel/src/pci_msix.c`), so "no APIC exists" below is no longer literally true;
+> the PIC-8259, the PIT tick, the BSP-only Multiboot1 entry and the absence of any ACPI
+> reader still are. The clauses of this ADR are unchanged; ADR-0033 records the staged path
+> and the triggers under which they would be renegotiated.
+
 ## Context
 
 QuantumOS runs on exactly one CPU. This was never an accident of youth: it is the
