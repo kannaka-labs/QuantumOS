@@ -594,6 +594,17 @@
         "refresh_every_s": 600
       }
     },
+    "cc": {
+      "_comment": "The Kannaka Command Center (nats.ninja-portal.com): 25 tools over the NATS bus and the GhostSignals markets. Headless agents use the OAuth 2.1 client_credentials grant: create a client on https://nats.ninja-portal.com/integrations with the scopes you want (mcp:read for everything below marked allow; mcp:recall for ask_kannaka), put the secret alone in a 0600 file, and name the client id here. Tokens last 900 s; the hub renews them.",
+      "url": "https://nats.ninja-portal.com/mcp",
+      "auth": {
+        "token_url": "https://nats.ninja-portal.com/api/public/auth/agent/token",
+        "client_id": "REPLACE-WITH-THE-CLIENT-ID",
+        "client_secret_file": "~/.kannaka/command-center-client-secret.txt",
+        "scope": "mcp:read",
+        "refresh_every_s": 600
+      }
+    },
     "review": {
       "command": "qos-review",
       "args": [
@@ -699,7 +710,32 @@
     "dna.express": "ask",
     "crystal.materials": "allow",
     "crystal.primitives": "allow",
-    "crystal.primitive": "allow"
+    "crystal.primitive": "allow",
+    "cc.whoami": "allow",
+    "cc.list_subjects": "allow",
+    "cc.capture_messages": "allow",
+    "cc.query_messages": "allow",
+    "cc.stream_stats": "allow",
+    "cc.consciousness_now": "allow",
+    "cc.presence_roster": "allow",
+    "cc.recent_dreams": "allow",
+    "cc.dream_digest": "allow",
+    "cc.nostr_traffic": "allow",
+    "cc.hive_traffic": "allow",
+    "cc.recall": "allow",
+    "cc.resonate": "allow",
+    "cc.list_markets": "allow",
+    "cc.get_market": "allow",
+    "cc.market_leaderboard": "allow",
+    "cc.my_market_account": "allow",
+    "cc.compute_machines": "allow",
+    "cc.compute_events": "allow",
+    "cc.ask_kannaka": "ask",
+    "cc.place_bet": "ask",
+    "cc.propose_prediction": "ask",
+    "cc.buy_credits": "ask",
+    "cc.redeem_credits": "ask",
+    "cc.wake_machine": "ask"
   },
   "default": "ask"
 }

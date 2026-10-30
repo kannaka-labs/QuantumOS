@@ -38,6 +38,12 @@ from that file or variable at start, sent as "Authorization: Bearer ...", and ne
 stored in the config. Short-lived tokens (KAX: 15 minutes) can be renewed: add
 "refresh_url" (POST with the current token, reply {"token": ...}) and "refresh_every_s"; the
 new token is used from the next request on and written back to bearer_file (0600).
+Or an OAuth 2.1 client_credentials grant (the Command Center's headless-agent flow):
+{"auth": {"token_url": "https://host/api/public/auth/agent/token", "client_id": "...",
+"client_secret_file": "~/secret.txt" | "client_secret_env": "NAME", "scope": "mcp:read"}}.
+The hub posts the grant at start and again every "refresh_every_s" (default 600; the
+Command Center's tokens last 900), and uses the new access_token from the next request on.
+The secret only ever comes from a file or a variable, never from the config.
 
 Hub tools (always present): hub_tools (every tool with its policy), hub_call_approved,
 hub_ledger. There is deliberately no tool to approve or to change the policy.
@@ -295,7 +301,9 @@ class BearerToken:
     def __init__(self, token: str, spec: dict, ledger: "HubLedger", ns: str):
         self.token, self.ledger, self.ns = token, ledger, ns
         auth = spec.get("auth") or {}
+        self.auth = auth
         self.refresh_url = auth.get("refresh_url")
+        self.token_url = auth.get("token_url")      # client_credentials: re-run the grant instead
         self.every = float(auth.get("refresh_every_s", 600))
         self.file = Path(os.path.expanduser(auth["bearer_file"])) if "bearer_file" in auth else None
 
@@ -313,11 +321,15 @@ class BearerToken:
         import httpx
         try:
             async with httpx.AsyncClient(timeout=20) as c:
-                r = await c.post(self.refresh_url, headers={"Authorization": f"Bearer {self.token}"})
-            r.raise_for_status()
-            new = (r.json() or {}).get("token")
-            if not isinstance(new, str) or not new:
-                raise ValueError("no token in the refresh reply")
+                if self.token_url:
+                    url, form = client_credentials_form(self.auth)
+                    new = access_token_from(await c.post(url, data=form))
+                else:
+                    r = await c.post(self.refresh_url, headers={"Authorization": f"Bearer {self.token}"})
+                    r.raise_for_status()
+                    new = (r.json() or {}).get("token")
+                    if not isinstance(new, str) or not new:
+                        raise ValueError("no token in the refresh reply")
         except Exception as e:  # noqa: BLE001 - keep the current token; never echo either one
             log.warning("token refresh for %s failed: %s", self.ns, type(e).__name__)
             self.ledger.event("hub_token_refresh", server=self.ns, ok=False, error=type(e).__name__)
@@ -338,12 +350,67 @@ class BearerToken:
             await self.refresh_once()
 
 
+def client_credentials_form(auth: dict) -> tuple[str, dict]:
+    """The token endpoint and form body of an OAuth 2.1 client_credentials grant (RFC 6749
+    section 4.4), as the Command Center's /api/public/auth/agent/token takes it. The client id
+    is public and may sit in the config (or be named by client_id_env); the secret only ever
+    comes from client_secret_file or client_secret_env, so it cannot land in the config.
+    Raises ValueError, never carrying the secret, when either is missing."""
+    cid = (auth.get("client_id") or os.environ.get(auth.get("client_id_env", ""), "")).strip()
+    if "client_secret_file" in auth:
+        try:
+            secret = Path(os.path.expanduser(auth["client_secret_file"])).read_text().strip()
+        except OSError as e:
+            raise ValueError(f"cannot read the client secret file: {type(e).__name__}") from None
+    else:
+        secret = os.environ.get(auth.get("client_secret_env", ""), "").strip()
+    if not cid or not secret:
+        raise ValueError("client_credentials needs client_id (or client_id_env) and a non-empty "
+                         "client_secret_file or client_secret_env")
+    form = {"grant_type": "client_credentials", "client_id": cid, "client_secret": secret}
+    for k in ("scope", "resource"):
+        if auth.get(k):
+            form[k] = auth[k]
+    return auth["token_url"], form
+
+
+def access_token_from(r) -> str:
+    """The access_token of a token-endpoint reply, or ValueError naming only the status and the
+    server's error code (RFC 6749 section 5.2), never the body."""
+    if r.status_code != 200:
+        try:
+            code = (r.json() or {}).get("error", "?")
+        except ValueError:
+            code = "?"
+        raise ValueError(f"token endpoint answered {r.status_code} {code}")
+    tok = (r.json() or {}).get("access_token")
+    if not isinstance(tok, str) or not tok:
+        raise ValueError("no access_token in the token reply")
+    return tok
+
+
+def client_credentials_token(auth: dict) -> str:
+    """Run the grant once, synchronously (start-up)."""
+    import httpx
+    url, form = client_credentials_form(auth)
+    try:
+        with httpx.Client(timeout=20) as c:
+            return access_token_from(c.post(url, data=form))
+    except ValueError:
+        raise
+    except Exception as e:  # noqa: BLE001 - the message must not carry the secret
+        raise ValueError(f"client_credentials token request failed: {type(e).__name__}") from None
+
+
 def http_headers(spec: dict) -> dict:
     """The Authorization header for an HTTP server, from a token file or variable named in
-    the config. Raises ValueError if the config names one that is missing or empty."""
+    the config, or from a client_credentials grant. Raises ValueError if the config names
+    one that is missing or empty, or the grant is refused."""
     auth = spec.get("auth") or {}
     token = None
-    if "bearer_file" in auth:
+    if "token_url" in auth:
+        token = client_credentials_token(auth)
+    elif "bearer_file" in auth:
         try:
             token = Path(os.path.expanduser(auth["bearer_file"])).read_text().strip()
         except OSError as e:
@@ -351,7 +418,8 @@ def http_headers(spec: dict) -> dict:
     elif "bearer_env" in auth:
         token = os.environ.get(auth["bearer_env"], "").strip()
     elif auth:
-        raise ValueError("auth must be {'bearer_file': path} or {'bearer_env': NAME}")
+        raise ValueError("auth must be {'bearer_file': path}, {'bearer_env': NAME} or "
+                         "{'token_url': ..., 'client_id': ..., 'client_secret_file'|'client_secret_env': ...}")
     if auth and not token:
         raise ValueError("the configured bearer token is empty")
     return {"Authorization": f"Bearer {token}"} if token else {}
@@ -398,7 +466,7 @@ async def serve(config: dict, db: str) -> None:
     def http_ctx(ns, spec):
         headers = http_headers(spec)
         auth = None
-        if headers and (spec.get("auth") or {}).get("refresh_url"):
+        if headers and ((spec.get("auth") or {}).get("refresh_url") or (spec.get("auth") or {}).get("token_url")):
             bearer = BearerToken(headers.pop("Authorization").split(" ", 1)[1], spec, ledger, ns)
             auth = bearer.httpx_auth()
             refreshers.append(asyncio.create_task(bearer.keep_fresh()))
