@@ -329,6 +329,45 @@
         }
       }
     },
+    "dna": {
+      "cli": {
+        "binary": ["python3", "-I", "-m", "kdna"],
+        "cwd": "~/Source/kannaka-dna",
+        "timeout_s": 60,
+        "tools": {
+          "verify": {
+            "description": "Check one committed genome: its SHA-256 matches its content and its conserved genes carry the lineage's values.",
+            "argv": ["verify", "{genome}"],
+            "params": {
+              "genome": {"type": "string", "pattern": "genomes/(e001/)?kannaka-g[0-9]{1,2}(-[a-f0-9]{6})?[.]json"}
+            }
+          },
+          "stats": {
+            "description": "Karyotype of one genome: chromosomes, genes, conserved count, pointers, bases, GC content.",
+            "argv": ["stats", "{genome}"],
+            "params": {
+              "genome": {"type": "string", "pattern": "genomes/(e001/)?kannaka-g[0-9]{1,2}(-[a-f0-9]{6})?[.]json"}
+            }
+          },
+          "lineage": {
+            "description": "The family tree of a genome directory (conception mode, mutations, telomere per individual).",
+            "argv": ["lineage", "{dir}"],
+            "params": {
+              "dir": {"type": "string", "enum": ["genomes", "genomes/e001"]}
+            }
+          },
+          "express": {
+            "description": "Express a genome as a role into a birth kit under births/<name> (persona, memory settings, seed memories, pinned artifacts). Writes files; no identity is minted without --hive, which this template does not pass.",
+            "argv": ["express", "{genome}", "--role", "{role}", "-o", "{out}"],
+            "params": {
+              "genome": {"type": "string", "pattern": "genomes/(e001/)?kannaka-g[0-9]{1,2}(-[a-f0-9]{6})?[.]json"},
+              "role": {"type": "string", "enum": ["role-steward", "role-scientist", "role-dj", "role-cohost", "role-swarm-mind"]},
+              "out": {"type": "string", "pattern": "births/[a-z0-9-]{1,40}"}
+            }
+          }
+        }
+      }
+    },
     "apps": {
       "cli": {
         "binary": [
@@ -654,6 +693,10 @@
     "cannon.clipcannon_project_delete": "deny",
     "cannon.clipcannon_disk_cleanup": "deny",
     "cannon.*": "ask",
+    "dna.verify": "allow",
+    "dna.stats": "allow",
+    "dna.lineage": "allow",
+    "dna.express": "ask",
     "crystal.materials": "allow",
     "crystal.primitives": "allow",
     "crystal.primitive": "allow"
