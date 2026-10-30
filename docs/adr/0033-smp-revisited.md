@@ -1,7 +1,7 @@
 # 33. SMP revisited: single-core stays, with the staged path and the triggers that would reopen it
 
 Date: 2026-10-30
-Status: Proposed (answers #261; ADR-0005 stands until this is accepted)
+Status: Accepted (2026-10-30, Nick; answers #261)
 
 ## Context
 
