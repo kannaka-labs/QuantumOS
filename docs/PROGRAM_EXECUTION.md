@@ -15,6 +15,10 @@ kernel loads it only when the shell asks. The Makefile stages a copy of
 that — so the kernel never carries `/bin/hello`'s bytes as a linked
 symbol; they live in the archive and are found by path at spawn time.
 
+The full inventory of `/bin`, and which programs are meant to be started by hand, is
+in [docs/INITRD_VFS.md](INITRD_VFS.md#what-is-in-bin). `help run` in the shell says the
+same in two lines.
+
 ## Syscalls
 
 ### `SYS_SPAWN` (21)

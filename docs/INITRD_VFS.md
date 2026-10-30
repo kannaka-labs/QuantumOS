@@ -4,6 +4,27 @@ Epic #62, phase 2 (issue #64). QuantumOS's first filesystem: a ustar
 archive built from `rootfs/` at compile time, embedded in the kernel
 image, and served to ring 3 through four syscalls.
 
+## What is in `/bin`
+
+The initrd carries `rootfs/` (today `/etc/motd` and `/etc/kannaka.session`) plus the
+programs the Makefile stages into `/bin` (`INITRD_BIN_PROGS`). `ls /bin` in the shell
+lists them; `run /bin/<name> [args...]` starts one as a capless citizen.
+
+| program | what it is | start it yourself? |
+|---|---|---|
+| `hello` | the first program that lived on the filesystem: prints a greeting, exits 42 | yes |
+| `args` | echoes its argument vector; proves the argv path (`run /bin/args a b c`) | yes |
+| `libqtest` | the libq runtime self-test at -O2 (string, memory, heap, printf) | yes |
+| `consciousnessd` | a population of coupled Kuramoto oscillators synchronizing to order; prints the order parameter as it climbs | yes |
+| `qtop` | the kannaka-tui essence as a console dashboard: processes, phase field, consciousness gauges | yes |
+| `life` | Conway's Game of Life as a native citizen, no floats, capless | yes |
+| `rhello` | the first Rust citizen (ADR-0032): `no_std`, built by cargo in `user/rust`, linked like a C citizen | yes |
+| `qprobe` | the spawn target of the quota proof: prints one marker and exits 7 | it is for `quota-test`; harmless by hand |
+| `agentsub` | the sub-agent `agentd` spawns in the delegation demo; holds only what it is handed | it is for `agentd`; by hand it has nothing to do |
+
+The Rust citizens that run as *services* (`rfieldd`, `rkannaka`) are embedded in the
+kernel image like the C services, not placed in `/bin`.
+
 ## Why an embedded ustar
 
 The `-kernel` boot path (CI, the qBraid watch window) loads exactly one
