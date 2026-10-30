@@ -52,7 +52,7 @@ SMP; defer UEFI, a libagent extraction, and a block filesystem — are recorded 
 | [0030](0030-egress-grant.md) | Accepted | Networking is an egress grant (default off, allowlist, budgets, receipt), not a side effect of a NIC |
 | [0031](0031-uefi-boot-framebuffer-console.md) | Accepted | UEFI boot: Multiboot1 kept, hybrid ISO, the screen console rendered on the GOP framebuffer; the boot-stack overflow that zeroed page tables on every boot |
 | [0032](0032-rust-citizens.md) | Accepted | Rust `no_std` citizens are the path for running the Kannaka tools inside QuantumOS: a cargo workspace + the C link line, same ABI and capability gate; `/bin/rhello` (no heap, no authority) and the `rkannaka` service (libq-arena allocator, a field grant, kannaka's verbs replayed from `/etc/kannaka.session`) as the CI proofs |
-| [0033](0033-smp-revisited.md) | Proposed | SMP revisited for #261: a measured inventory (39 interrupt-off brackets in 14 files, every service an IF=1 kernel thread, LAPIC used only for MSI-X, no ACPI reader), what a big-kernel-lock SMP would and would not keep true, the hardware floor and a cost estimate; single-core stays, with the staged path and the triggers that would reopen it |
+| [0033](0033-smp-revisited.md) | Accepted | SMP revisited for #261: a measured inventory (39 interrupt-off brackets in 14 files, every service an IF=1 kernel thread, LAPIC used only for MSI-X, no ACPI reader), what a big-kernel-lock SMP would and would not keep true, the hardware floor and a cost estimate; single-core stays, with the staged path and the triggers that would reopen it |
 
 ## Sequencing of the next phases
 
