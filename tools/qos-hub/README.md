@@ -105,7 +105,10 @@ The example config wires up:
   into the HRM;
 - `crystal`: [kannaka-crystal](https://github.com/kannaka-labs/kannaka-crystal) `materials` and the
   `primitives` registry reads (by class and persistence floor, or one `CRY-######`), all allowed;
-  evolving, promoting, pruning and publishing are not listed.
+  evolving, promoting, pruning and publishing are not listed;
+- `dna`: [kannaka-dna](https://github.com/kannaka-labs/kannaka-dna) `verify`, `stats` and `lineage`
+  over the committed genomes are allowed (stdlib Python, reads only); `express` asks, because it
+  writes a birth kit. Cloning, mating and `--hive` identity minting are not listed.
 
 ## MCP servers over HTTP
 

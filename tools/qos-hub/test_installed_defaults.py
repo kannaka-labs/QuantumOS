@@ -157,12 +157,16 @@ def test_the_example_templates_for_the_stale_repos_name_real_commands():
     assert first("buzz") <= {"channels", "messages"}         # buzz-cli groups used here
     assert first("lens") <= {"run", "show"}                  # lens <run|show>
     assert first("crystal") <= {"materials", "primitives"}  # kannaka-crystal read verbs only
+    assert first("dna") <= {"verify", "stats", "lineage", "express"}  # python -m kdna verbs
+    assert d["servers"]["dna"]["cli"]["binary"][:2] == ["python3", "-I"], "kdna runs isolated from the cwd's site"
+    assert "--hive" not in d["servers"]["dna"]["cli"]["tools"]["express"]["argv"], "the hub never mints an identity"
     plan = d["servers"]["apps"]["cli"]["tools"]["plan"]["argv"]
     assert plan[-1] == "--dry-run", "plan must never execute an app"
     for tool, policy in (("apps.run", "ask"), ("buzz.send", "ask"), ("lens.run", "ask"),
-                         ("apps.plan", "allow"), ("hdl.grow", "allow"), ("lens.show", "allow")):
+                         ("apps.plan", "allow"), ("hdl.grow", "allow"), ("lens.show", "allow"),
+                         ("dna.verify", "allow"), ("dna.express", "ask")):
         assert d["policy"][tool] == policy
-    for s in ("hdl", "apps", "buzz", "lens", "crystal"):
+    for s in ("hdl", "apps", "buzz", "lens", "crystal", "dna"):
         for t in d["servers"][s]["cli"]["tools"].values():
             for a in t["argv"]:
                 assert "{" not in a or (a.startswith("{") and a.endswith("}")), f"{s}: placeholder must fill a whole argv slot: {a}"
