@@ -53,12 +53,15 @@
 <div class="wrap">
   <header>
     <h1>QuantumOS Console</h1>
-    <span class="tag">staging · real KVM microVM</span>
+    <span class="tag">public · real KVM microVM</span>
   </header>
-  <p class="note">Each boot starts a fresh QuantumOS virtual machine on Firecracker, with a small blank disk
-    and no network. It is at the <code>qsh&gt;</code> prompt within a second or two. You get ten minutes;
-    the machine is deleted when you close the page or the timer runs out, unless you keep it.
-    Nothing you type is logged.</p>
+  <p class="note">Each boot starts a fresh QuantumOS virtual machine on Firecracker, with a 4&nbsp;MiB save disk
+    and no network. It is at the <code>qsh&gt;</code> prompt within a second or two. You get ten minutes,
+    and a session ends after two minutes with nothing typed or printed (a warning appears 15&nbsp;s before).
+    The machine is deleted when you close the page or the timer runs out, unless you keep it.
+    Nothing you type is logged. The <code>qpu</code> command reaches a real quantum broker on this host:
+    the simulator is free, <code>qpu real</code> queues on real hardware within a daily budget, and
+    <a href="calibration">calibration</a> shows what the last real runs measured.</p>
   <div class="bar">
     <button id="boot">Boot QuantumOS</button>
     <button id="keepbtn" class="secondary" hidden>Keep this machine</button>
@@ -82,8 +85,13 @@
       copy in Oracle Cloud is encrypted and follows the same deletions.</p>
   </div>
   <div id="term" role="application" aria-label="QuantumOS serial console"></div>
-  <footer>Try <code>help</code>, <code>ls /</code>, <code>imprint a cat sat on the mat</code> then
-    <code>recall a cxt sxt on thx mat</code>.
+  <footer>Try <code>help</code> (and <code>help recall</code> for one command), <code>ls /bin</code>,
+    <code>imprint a cat sat on the mat</code> then <code>recall a cxt sxt on thx mat</code>,
+    <code>run /bin/qtop</code>, <code>run /bin/life</code>, <code>qpu run bell</code>, <code>ps</code>,
+    <code>audit</code>, <code>manifest</code>. <code>sync</code> is what saves a kept machine.
+    Network commands are refused here (no NIC). Backspace works; there is no history and the arrow keys
+    do nothing. Source and docs: <a href="https://github.com/kannaka-labs/QuantumOS">kannaka-labs/QuantumOS</a>;
+    a no-server browser build: <a href="https://kannaka-labs.github.io/QuantumOS/">kannaka-labs.github.io/QuantumOS</a>.
     The page counts page loads and Boot presses, with no cookies and no addresses kept:
     <a href="stats">visitor counts and timings</a>.</footer>
 </div>

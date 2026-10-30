@@ -387,8 +387,25 @@ def qos_shutdown() -> dict:
     return _vm.shutdown()
 
 
-def main() -> None:
-    """Console-script entry point (``qos-mcp``): serve the MCP tools over stdio."""
+def main(argv=None) -> None:
+    """Console-script entry point (``qos-mcp``): serve the MCP tools over stdio.
+
+    With no arguments it speaks MCP on stdin/stdout, which is what a client's
+    ``command`` entry expects. ``--help`` and ``--version`` answer and exit, so
+    typing the command by hand does not leave a silent process waiting on stdin.
+    """
+    import argparse
+    import sys as _sys
+    ap = argparse.ArgumentParser(prog="qos-mcp", description="QuantumOS as MCP tools: boot the kernel under QEMU and drive its shell, field, ledgers and society from an agent. Environment: QOS_KERNEL (kernel.elf), QOS_KANNAKA_BIN (the kannaka CLI for the Kannaka tools). No arguments: serve over stdio.")
+    ap.add_argument("--version", action="store_true", help="print the quantumos-host-tools version and exit")
+    a = ap.parse_args(argv if argv is not None else _sys.argv[1:])
+    if a.version:
+        try:
+            from importlib.metadata import version as _v
+            print(_v("quantumos-host-tools"))
+        except Exception:  # noqa: BLE001 - a checkout without the package installed
+            print("dev")
+        return
     mcp.run()
 
 

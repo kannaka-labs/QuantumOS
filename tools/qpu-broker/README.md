@@ -21,7 +21,7 @@ qBraid simulator, or a real QPU
   └─ answer on COM1: ESC ] qres ; <tag> ; <state> ; <job> ; <text> BEL
 ```
 
-The console VMs still have no NIC and no disk. COM1 is their only channel, and this is a
+The console VMs have no NIC, and their only drive is the 4 MiB save disk. COM1 is their only channel, and this is a
 second use of it, alongside the session reseed (ADR-0025). On a machine with no broker
 (QEMU, a laptop), nothing answers `qpu` and the command says so.
 
