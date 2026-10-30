@@ -7,7 +7,31 @@ Full per-PR provenance: `git log` and the PR list on GitHub.
 
 ## [Unreleased]
 
-*(nothing yet)*
+### Decided
+- **ADR-0033, SMP revisited** (#354, accepted #357, closes #261): single-core stays, by a measured
+  inventory of the tree rather than July's estimates; the big-kernel-lock path and the three
+  triggers that would reopen the question are recorded. ADR-0005 carries an update note.
+- `scripts/check_irq_primitives.py` (#355) fails the build when the per-file counts of `cli`,
+  `sti`, `pushfq` and `popfq` differ from the inventory, up or down.
+
+### Host tools
+- `qos-hub` connectors in the example config: kannaka-hdl, kannaka-apps and the Hive's `buzz` CLI
+  (#348), kannaka-lens (#349), kannaka-cannon's MCP server (#350), kannaka-crystal (#351),
+  kannaka-dna (#353). HTTP servers can authenticate with the OAuth 2.1 `client_credentials` grant;
+  the Command Center is in the example config (#356).
+- Claude Code plugin manifests at the repository root: the hub installs from the constellation
+  marketplace (#352).
+
+### Guest
+- Rust citizens: a cargo workspace with a `GlobalAlloc` over libq's arena, `rfieldd` (a Rust
+  service with a field grant) and `rkannaka`, which replays `/etc/kannaka.session` over the kernel
+  field at boot (#343, #340).
+- `qsh help` is printed from one table and `help <command>` gives per-command detail; `/etc/motd`
+  and the browser demo stop describing `ghost` as dice (#358).
+
+### Build and CI
+- The ISA is pinned to plain x86-64 and gated; clang-format is pinned to 21.1.8; CI runs on
+  ubuntu-26.04 (#347, after #345/#346 found the 26.04 image reset the kernel at PMM init).
 
 ## [0.6.2] — 2026-10-29 — networking as an egress grant, UEFI boot, a faster shell and TCP, the first Rust citizen
 
@@ -21,7 +45,7 @@ egress grant refuses. Everything else is additive.
   The grant names a TTL, a byte budget, an allowlist of `host:port/proto` entries and the ports
   the guest may listen on (`egress=ttl=600;bytes=4194304;allow=10.0.2.2:53/udp,...;listen=8080`).
   A call outside the grant is refused with `SYS_EEGRESS`; every use and every refusal is a receipt
-  row (`AUDIT_EGRESS`) in the authority ledger, and `qsh egress` shows the grant and what is left.
+  row (`AUDIT_EGRESS`) in the authority ledger, and `qsh egress` lists those rows: what the grant allowed and refused.
 - **A host can grant after boot** over the console escape `ESC ] egress ; <key> ; <spec> BEL`,
   gated by `egress_key=<16 hex>` on the boot line, which ring 3 cannot read (#327). The net thread
   waits offline for a grant instead of giving up.

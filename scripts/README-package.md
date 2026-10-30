@@ -51,6 +51,9 @@ directory to find one in, and the society tools take no kernel argument.
   (ADR-0027), with `allow` / `ask` / `deny` per tool. An `ask` call is stored exactly and
   runs only after you approve it with the same key. `qos-hub example` prints a starting
   config.
+- **`qos-review`** — Sashiko review of a change with *your own* model key (ADR-0028): `qos-review check`
+  validates the key and budget, `qos-review quote`/`start`/`status`/`result` run a review, `qos-review serve`
+  exposes it as MCP tools. Nothing is spent without a quote you accepted.
 
 ```bash
 qos-broker envelope --db broker.db --per-day 2 --per-action 1 --classes storage,compute --max-lease 24h
@@ -61,9 +64,10 @@ claude mcp add quantumos -- qos-hub serve --config $PWD/hub.json --db $PWD/broke
 ## Honesty note
 
 The boot attestation is *verified ≠ live*: the signature covers the boot string, not
-the liveness of any later reply. Authenticating per-reply and the society wire is
-planned work (see the repo's ADR-0019/0020). This is alpha software; the tool
-contracts are **not frozen** below 1.0.
+the liveness of any later reply. Per-reply authentication (FSYN + COM2 reply-auth) and the
+authenticated society wire shipped with ADR-0019. The v1 contracts (the syscall ABI, the MCP
+tool surface in `contracts/mcp/v1-tools.json`, the society wire) are frozen and gated in CI
+(ADR-0020); anything outside them is still alpha and may change.
 
 ## License
 

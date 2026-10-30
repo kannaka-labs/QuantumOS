@@ -221,6 +221,18 @@ mind about cast spacing and macro braces between releases (18 and 21
 disagreed on five files when ubuntu-latest moved to 26.04, #346). Use the
 same version locally; if a different one disagrees, prefer the CI verdict.
 
+Two more static gates run in the `build` job and fail a PR with a short message; both are
+deliberate and both have a one-line fix path:
+
+- **ISA baseline** (`make ci-isa-baseline`, #347): the kernel and the citizens must contain only
+  plain x86-64 instructions (no x86-64-v2/v3), so the ISO boots on the oldest machine the hardware
+  reports cover. A new instruction class means a compiler flag crept in; check `CFLAGS`.
+- **Interrupt-flag primitives** (`scripts/check_irq_primitives.py`, #355): the per-file counts of
+  `cli`, `sti`, `pushfq` and `popfq` in inline asm and `.S` files must match the table the script
+  carries, up or down (ADR-0005 clause (b), ADR-0033). A new bracket is allowed; cite the ADR-0005
+  clause it preserves in the PR and update the table in the same change. `--print` emits the
+  measured table.
+
 ### C Code Style
 ```c
 // Good example
