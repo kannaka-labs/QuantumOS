@@ -56,18 +56,33 @@ shipped (ADR-0031, v0.6.2) and SMP was revisited against a measured inventory an
 | [0032](0032-rust-citizens.md) | Accepted | Rust `no_std` citizens are the path for running the Kannaka tools inside QuantumOS: a cargo workspace + the C link line, same ABI and capability gate; `/bin/rhello` (no heap, no authority) and the `rkannaka` service (libq-arena allocator, a field grant, kannaka's verbs replayed from `/etc/kannaka.session`) as the CI proofs |
 | [0033](0033-smp-revisited.md) | Accepted | SMP revisited for #261: a measured inventory (39 interrupt-off brackets in 14 files, every service an IF=1 kernel thread, LAPIC used only for MSI-X, no ACPI reader), what a big-kernel-lock SMP would and would not keep true, the hardware floor and a cost estimate; single-core stays, with the staged path and the triggers that would reopen it |
 
-## Sequencing of the next phases
+## Sequencing of the phases
 
-1. **ADR-0018 (now)** — release + package at 0.x. No contract freeze.
-2. **ADR-0019** — authenticate the swarm plane. Extends the COM2/attestation contracts,
-   so it must precede any freeze.
-3. **ADR-0020** — freeze the v1 contracts, after 0019's wire changes settle and the
-   pre-freeze fixes land.
-4. **ADR-0021** — honest memory to 1 GB, standalone; also closes two verified latent
-   defects (the PMM/kheap reservation gap and the Multiboot2-magic trap).
+The July panel's four next phases shipped in order, and the arcs since are recorded one
+ADR each:
 
-Deferred (panel verdicts, no ADR yet): a `libagent` extraction (needs a second orchestrator consumer + actor-bearing audit
-records), and a block/log filesystem (no agent-native consumer needs partial writes).
+1. **ADR-0018** — release + package at 0.x (v0.4.0 was the first tag; `quantumos-host-tools`
+   on PyPI).
+2. **ADR-0019** — authenticate the swarm plane (FSYN + COM2 reply-auth).
+3. **ADR-0020** — freeze the v1 contracts (syscall ABI, MCP tool surface, society wire), gated.
+4. **ADR-0021** — honest memory to 1 GB; closed the PMM/kheap reservation gap and the
+   Multiboot2-magic trap.
+5. **ADR-0022, 0023** — what the latency and rebirth work found: COM2 round trips are bound
+   by the scheduler cadence; IPC peers are re-wired on watchdog rebirth.
+6. **ADR-0024, 0025, 0029** — the Firecracker path: one virtio-net driver over pci and
+   mmio, a reseed per console session after a snapshot restore, the shell over vsock.
+7. **ADR-0026, 0027, 0028** — the host tools: the provider broker, the ecosystem hub, and
+   Sashiko review with the person's own model key.
+8. **ADR-0030** — networking is an egress grant (v0.6.2).
+9. **ADR-0031** — UEFI boot and the framebuffer console (v0.6.2); the panel's "defer UEFI"
+   held until a real-machine report needed it.
+10. **ADR-0032** — Rust `no_std` citizens, the path for the Kannaka tools inside the guest.
+11. **ADR-0033** — SMP revisited against a measured inventory and kept closed, with the
+    staged path and the triggers that would reopen it (accepted 2026-10-30).
+
+Still deferred (panel verdicts, no ADR): a `libagent` extraction (needs a second orchestrator
+consumer + actor-bearing audit records, ADR-0009's reserved field), and a block/log filesystem
+(no agent-native consumer needs partial writes; the save disk is a ustar overlay).
 
 ## Format
 
