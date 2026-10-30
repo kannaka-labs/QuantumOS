@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "quantumos-host-tools"
 dynamic = ["version"]
-description = "Host-side toolkit for QuantumOS: MCP server, attested VM bridge (QosVM/QosSociety), Lamport attestation verifier, and quantum gateway mirrors"
+description = "Host-side toolkit for QuantumOS: MCP server, attested VM bridge (QosVM/QosSociety), Lamport attestation verifier, quantum gateway mirrors, the provider broker, the qos-hub MCP front door, and Sashiko review"
 readme = "scripts/README-package.md"
 license = "GPL-2.0-only"
 requires-python = ">=3.10"
@@ -30,9 +30,10 @@ qbraid = ["qbraid"]             # qbraid_boot real-QPU entropy handoff
 oci = ["oci>=2.100"]            # the provider broker's OCI plugin (buckets, Always Free VMs)
 
 [project.urls]
-Homepage = "https://github.com/flaukowski/QuantumOS"
-"Live demo" = "https://flaukowski.github.io/QuantumOS/"
-Changelog = "https://github.com/flaukowski/QuantumOS/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/kannaka-labs/QuantumOS"
+"Live demo" = "https://kannaka-labs.github.io/QuantumOS/"
+"Public console" = "https://qos.ninja-portal.com"
+Changelog = "https://github.com/kannaka-labs/QuantumOS/blob/main/CHANGELOG.md"
 
 [project.scripts]
 qos-mcp = "qos_mcp:main"

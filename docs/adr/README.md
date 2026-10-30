@@ -9,7 +9,9 @@ The as-built ADRs were reconciled from a full ground-truth inventory of the 126 
 PRs (#7–#183) at main. The next-phase ADRs were produced by an adversarial design panel
 (2026-07-11) that attacked eight candidate directions against the real code; its
 verdicts — adopt the authenticated swarm plane, the v1 freeze, and honest memory; reject
-SMP; defer UEFI, a libagent extraction, and a block filesystem — are recorded here.
+SMP; defer UEFI, a libagent extraction, and a block filesystem — are recorded here. Since then UEFI
+shipped (ADR-0031, v0.6.2) and SMP was revisited against a measured inventory and kept closed
+(ADR-0033, accepted 2026-10-30); the later ADRs record the shipped arcs PR by PR.
 
 ## As-built (Accepted)
 
