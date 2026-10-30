@@ -193,3 +193,87 @@ def test_a_short_lived_token_is_refreshed_on_the_open_session(tmp_path):
     assert tok.read_text().startswith("rotated-"), "the new token is written back to the file"
     assert oct(tok.stat().st_mode & 0o777) == "0o600"
     assert FakeCity.calls == ["city_look", "city_look"]
+
+
+SECRET = "test-client-secret-not-real"
+
+
+class CredentialCity(FakeCity):
+    """A server with the Command Center's shape: POST /api/public/auth/agent/token takes an
+    OAuth 2.1 client_credentials form and issues a fresh short-lived token; /api/mcp accepts
+    only the most recently issued one."""
+    current = None
+    issued = 0
+    grants: list = []
+
+    def do_POST(self):
+        if self.path.endswith("/auth/agent/token"):
+            from urllib.parse import parse_qs
+            form = {k: v[0] for k, v in parse_qs(self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()).items()}
+            CredentialCity.grants.append({k: v for k, v in form.items() if k != "client_secret"})
+            if form.get("grant_type") != "client_credentials":
+                return self._send(400, {"error": "unsupported_grant_type"})
+            if form.get("client_id") != "hub-test" or form.get("client_secret") != SECRET:
+                return self._send(401, {"error": "invalid_client", "error_description": "Bad secret"})
+            CredentialCity.issued += 1
+            CredentialCity.current = f"issued-{CredentialCity.issued}"
+            return self._send(200, {"access_token": CredentialCity.current, "token_type": "Bearer",
+                                    "expires_in": 900, "scope": form.get("scope", "mcp:read")})
+        global TOKEN
+        saved, TOKEN = TOKEN, CredentialCity.current
+        try:
+            return super().do_POST()
+        finally:
+            TOKEN = saved
+
+
+@pytest.fixture
+def credential_city():
+    CredentialCity.current, CredentialCity.issued, CredentialCity.grants, FakeCity.calls = None, 0, [], []
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), CredentialCity)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}"
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_client_credentials_grant_is_run_at_start_and_renewed(credential_city, tmp_path):
+    base = credential_city
+    sec = tmp_path / "secret.txt"
+    sec.write_text(SECRET + "\n")
+    db = str(tmp_path / "pb.db")
+    cfg = tmp_path / "hub.json"
+    cfg.write_text(json.dumps({"servers": {"cc": {"url": base + "/api/mcp", "auth": {
+        "token_url": base + "/api/public/auth/agent/token", "client_id": "hub-test",
+        "client_secret_file": str(sec), "scope": "mcp:read", "refresh_every_s": 0.5}}},
+        "policy": {"cc.city_look": "allow"}}))
+
+    async def script(s, c):
+        assert (await c("cc.city_look"))["ok"]
+        await asyncio.sleep(1.6)                    # at least two renewals: the first token is dead now
+        assert CredentialCity.issued >= 3
+        assert (await c("cc.city_look"))["ok"], "the open session must use the renewed token"
+        led = await c("hub_ledger", limit=20)
+        refreshes = [e for e in led["events"] if e["event"] == "hub_token_refresh"]
+        assert refreshes and all(e["ok"] for e in refreshes)
+        blob = json.dumps(led)
+        assert SECRET not in blob and "issued-" not in blob, "neither the secret nor a token in the ledger"
+    run_hub(cfg, db, script)
+    assert FakeCity.calls == ["city_look", "city_look"]
+    assert all(g == {"grant_type": "client_credentials", "client_id": "hub-test", "scope": "mcp:read"}
+               for g in CredentialCity.grants), CredentialCity.grants
+
+
+def test_a_refused_grant_names_the_error_code_not_the_secret(credential_city, tmp_path, monkeypatch):
+    base = credential_city
+    monkeypatch.setenv("QOS_TEST_CC_SECRET", "the-wrong-secret")
+    with pytest.raises(ValueError) as e:
+        hub.http_headers({"auth": {"token_url": base + "/api/public/auth/agent/token", "client_id": "hub-test",
+                                   "client_secret_env": "QOS_TEST_CC_SECRET"}})
+    assert "401 invalid_client" in str(e.value) and "wrong-secret" not in str(e.value)
+    for bad in ({"auth": {"token_url": base + "/x", "client_id": "hub-test"}},
+                {"auth": {"token_url": base + "/x", "client_secret_env": "QOS_TEST_CC_SECRET"}},
+                {"auth": {"token_url": base + "/x", "client_id": "hub-test", "client_secret_file": str(tmp_path / "missing")}}):
+        with pytest.raises(ValueError) as e:
+            hub.http_headers(bad)
+        assert "wrong-secret" not in str(e.value)

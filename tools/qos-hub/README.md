@@ -135,8 +135,30 @@ The example config wires up:
 
 KAX refuses to refresh an expired token, so the hub has to start with a fresh one.
 
-Next in #297: the Command Center (OAuth). PFORK_MCP has no live endpoint (measured
-2026-10-30, see the issue); it would also need an `x-api-key` header option here.
+**The Command Center** ([nats.ninja-portal.com](https://nats.ninja-portal.com), 25 tools over the
+NATS bus and the GhostSignals markets) authenticates headless agents with the OAuth 2.1
+`client_credentials` grant rather than a token file:
+
+```json
+"cc": {"url": "https://nats.ninja-portal.com/mcp",
+       "auth": {"token_url": "https://nats.ninja-portal.com/api/public/auth/agent/token",
+                "client_id": "…", "client_secret_file": "~/.kannaka/command-center-client-secret.txt",
+                "scope": "mcp:read", "refresh_every_s": 600}}
+```
+
+- Create the client on the Command Center's Integrations page with the scopes you want; the
+  secret is shown once. Put it alone in a 0600 file (or name a variable with
+  `client_secret_env`). The client id is public and may sit in the config.
+- The hub posts the grant at start and every `refresh_every_s` (tokens last 900 s), and uses
+  the new `access_token` from the next request on. A refused grant is logged as the server's
+  error code (`401 invalid_client`), never with the secret.
+- The example policy allows the reads (bus, presence, dreams, Nostr and Hive traffic, recall,
+  market reads, compute roster) and asks for `ask_kannaka` (needs `mcp:recall`) and for
+  everything metered: `place_bet`, `propose_prediction`, `buy_credits`, `redeem_credits`,
+  `wake_machine`.
+
+PFORK_MCP has no live endpoint (measured 2026-10-30, see #297); it would also need an
+`x-api-key` header option here. Still open in #297: `KAX.qos.*` over NATS.
 
 ## Trust boundary
 
@@ -146,7 +168,7 @@ you are happy for allowed tools to use.
 
 ## Tests
 
-`python3 -m pytest -q tools/qos-hub`: 31 tests (8 hub, 19 CLI connector, 4 HTTP). They cover the policy matching, allow, deny
+`python3 -m pytest -q tools/qos-hub`: 43 tests (8 hub, 19 CLI connector, 6 HTTP, 10 installed defaults). They cover the policy matching, allow, deny
 never reaching the server, ask holding the exact call and releasing it only with the key and
 only once, a tampered or expired approval refused, unknown tools asking, a broken downstream
 server not hiding the others, the approval CLI, and a full run over real MCP stdio with a
