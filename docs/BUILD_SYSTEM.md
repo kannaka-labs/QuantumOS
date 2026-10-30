@@ -230,50 +230,15 @@ make benchmark
 make coverage
 ```
 
-## Documentation Generation
+## Documentation and releases (as built)
 
-### Doxygen Configuration
-```makefile
-docs:
-	doxygen Doxyfile
-
-.PHONY: docs
-```
-
-### README Generation
-```bash
-# Generate API documentation
-make docs
-
-# Generate architecture diagrams
-make diagrams
-
-# Generate user guides
-make user-docs
-```
-
-## Release Process
-
-### Version Management
-```bash
-# Bump version
-make version VERSION=0.1.0
-
-# Create release
-make release VERSION=0.1.0
-
-# Generate changelog
-make changelog
-```
-
-### Distribution
-```bash
-# Create distribution package
-make dist
-
-# Upload to release server
-make upload
-```
+The targets this section once listed (`make docs`, `make diagrams`, `make user-docs`,
+`make version`, `make release`, `make changelog`, `make dist`, `make upload`) were never
+implemented. What exists: `make help` prints the real target list; the ADRs under
+`docs/adr/` and the subsystem docs are written by hand with the change that lands them;
+a release is a `VERSION` bump, a `CHANGELOG.md` entry, a tag, and the GitHub Actions
+release workflow that builds the ISO and publishes `quantumos-host-tools` to PyPI
+(see `CONTRIBUTING.md`).
 
 ## Performance Monitoring
 

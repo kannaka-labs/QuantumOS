@@ -38,7 +38,7 @@ touched it.** ADR-0020 pins the 22-tool MCP schema in a committed golden file
 (`contracts/mcp/v1-tools.json`) with a teeth-checked CI gate — the exact surface
 an external agent consumes, versioned like an ABI.
 
-Claude is that external consumer. `scripts/qos_claude_agent.py` reuses the frozen
+Claude is that external consumer. `scripts/qos_agent.py` (`qos_claude_agent.py` remains as a compatibility shim) reuses the frozen
 MCP server verbatim (via the Anthropic SDK's MCP conversion helpers + tool runner),
 so Claude drives the *same* tools CI diffs against the golden — one source of truth,
 zero duplication. The model plans a field-society or associative-memory experiment,
@@ -100,7 +100,7 @@ Nothing gated. This is built and runnable today. We'd value:
   memory, multi-node field coherence, and agents that run reproducible experiments
   against a system whose authority is fully auditable.
 
-**Repo:** github.com/kannaka-labs/QuantumOS · **Agent:** `scripts/qos_claude_agent.py`
+**Repo:** github.com/kannaka-labs/QuantumOS · **Agent:** `scripts/qos_agent.py` (`qos_claude_agent.py` remains as a compatibility shim)
 · **Frozen surface:** `contracts/mcp/v1-tools.json` · **Design record:** `docs/adr/`
 
 *Honest scope note: QuantumOS is a research OS, not production infrastructure. The
