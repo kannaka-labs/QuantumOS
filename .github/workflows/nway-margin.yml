@@ -1,0 +1,86 @@
+# N-way society gate timing margin (issue #361, step 1).
+#
+# Runs the two N-way gates ten times on the same runner image CI uses and
+# records, per run, how long every wait point inside the tests took against
+# its own deadline (scripts/nway_margin_measure.py), then aggregates the ten
+# records into min / median / max margins (scripts/nway_margin_report.py).
+# Nothing here changes an assertion or a budget (ADR-0016): it measures.
+#
+# Manual only: the ten runs cost about ten gate-lengths of runner time.
+name: N-way gate margin (issue #361)
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "How many runs (the matrix is fixed at 10; lower values skip the tail)"
+        default: "10"
+        required: false
+
+jobs:
+  measure:
+    name: Run ${{ matrix.run }}/10
+    runs-on: ubuntu-26.04   # explicit image, see #346
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Skip runs past the requested count
+      if: ${{ matrix.run > fromJSON(inputs.runs || '10') }}
+      run: echo "run ${{ matrix.run }} skipped" && exit 0
+
+    # Same toolchain as the `build` job in ci.yml.
+    - name: Install dependencies
+      if: ${{ matrix.run <= fromJSON(inputs.runs || '10') }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential bison flex libgmp3-dev libmpc-dev libmpfr-dev texinfo
+        rustup target add x86_64-unknown-none   # the Rust citizens (user/rust, #263)
+        sudo apt-get install -y gdb-multiarch qemu-system-x86 grub-pc-bin grub-efi-amd64-bin xorriso nasm python3
+
+    - name: Build kernel (Debug)
+      if: ${{ matrix.run <= fromJSON(inputs.runs || '10') }}
+      run: |
+        make clean
+        make BUILD_TYPE=debug
+
+    - name: Measure both N-way gates
+      if: ${{ matrix.run <= fromJSON(inputs.runs || '10') }}
+      run: python3 scripts/nway_margin_measure.py --run ${{ matrix.run }} --out nway_margin_run.json
+
+    - name: Upload margin record
+      if: ${{ always() && matrix.run <= fromJSON(inputs.runs || '10') }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: nway-margin-run-${{ matrix.run }}
+        path: nway_margin_run.json
+        if-no-files-found: warn
+
+  report:
+    name: Margin report
+    needs: measure
+    if: ${{ always() }}
+    runs-on: ubuntu-26.04   # explicit image, see #346
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download the run records
+      uses: actions/download-artifact@v4
+      with:
+        path: records
+        pattern: nway-margin-run-*
+
+    - name: Aggregate
+      run: python3 scripts/nway_margin_report.py records --json | tee nway-margin-report.txt
+
+    - name: Upload the report
+      uses: actions/upload-artifact@v4
+      with:
+        name: nway-margin-report
+        path: nway-margin-report.txt
