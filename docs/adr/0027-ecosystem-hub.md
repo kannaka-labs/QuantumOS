@@ -65,3 +65,15 @@ same discipline, but most are not leased resources: they are single calls.
   - `swarm_send` was held as `approval_required` and then **denied**, so nothing was published;
   - `compute_grant` was denied and not listed;
   - the ledger recorded each decision.
+
+## Amendment 2026-11-01: the swarm over NATS (slice 5, #297)
+
+`KAX.qos.<name>.cmd` lets a peer in the swarm ask this person's hub to run a tool. The peer's
+request goes through the same policy as the agent's own call, behind a second allow-list that
+is empty by default, a rate limit and a backlog cap. One flow in §Decision needed stating for
+this path: when the policy says `ask`, the stored approval records its origin
+(`nats:<identity>`) and the person sees it in `pending`; once approved, **the person's own
+agent** runs the stored call with `hub_call_approved`, exactly as for its own asks. The peer
+is told only the approval id and never receives the result; `hub_call_approved`, `hub_ledger`
+and `hub_tools` are not reachable over NATS. `identity` on this path is a claim the NATS
+server's subject permissions must back, not something the hub authenticates.

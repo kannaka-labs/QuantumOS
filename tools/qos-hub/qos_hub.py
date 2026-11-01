@@ -45,6 +45,9 @@ The hub posts the grant at start and again every "refresh_every_s" (default 600;
 Command Center's tokens last 900), and uses the new access_token from the next request on.
 The secret only ever comes from a file or a variable, never from the config.
 
+An optional "nats" entry answers KAX.qos.<name>.cmd requests from the swarm through the same
+policy, behind an allow-list, a rate limit and a dry-run mode (nats_connector.py).
+
 Hub tools (always present): hub_tools (every tool with its policy), hub_call_approved,
 hub_ledger. There is deliberately no tool to approve or to change the policy.
 
@@ -118,6 +121,10 @@ class HubLedger:
     def __init__(self, db_path: str, clock=time.time):
         self.l = pb.Ledger(db_path)
         self.l.db.executescript(HUB_SCHEMA)
+        # Databases from before #297 slice 5 have no origin column (who asked: the local agent, or a
+        # peer over NATS). Add it in place; the old rows read back as "agent".
+        if "origin" not in {r["name"] for r in self.l.q("PRAGMA table_info(hub_approvals)")}:
+            self.l.db.execute("ALTER TABLE hub_approvals ADD COLUMN origin TEXT")
         self.l.db.commit()
         self.broker = pb.Broker(self.l, {})        # for the approver key only
         self.clock = clock
@@ -125,12 +132,17 @@ class HubLedger:
     def event(self, what: str, **detail) -> None:
         self.l.event(self.clock(), pb.OWNER, None, what, **detail)
 
-    def request(self, tool: str, arguments: dict) -> str:
+    def request(self, tool: str, arguments: dict, origin: str = "agent") -> str:
+        """Store a call for the person to approve. `origin` is who asked: "agent" (the hub's own
+        MCP client) or "nats:<identity>" (a peer over KAX.qos.<name>.cmd); `pending` shows it so the
+        person knows whose call they are approving. Whoever asked, the local agent runs it."""
         aid = "h" + secrets.token_hex(5)
-        self.l.q("INSERT INTO hub_approvals(id, owner, tool, arguments, digest, state, created) VALUES(?,?,?,?,?,?,?)",
+        self.l.q("INSERT INTO hub_approvals(id, owner, tool, arguments, digest, state, created, origin) "
+                 "VALUES(?,?,?,?,?,?,?,?)",
                  aid, pb.OWNER, tool, json.dumps(arguments, sort_keys=True), digest(tool, arguments),
-                 "pending", self.clock())
-        self.event("hub_approval_requested", approval=aid, tool=tool, digest=digest(tool, arguments)[:16])
+                 "pending", self.clock(), origin)
+        self.event("hub_approval_requested", approval=aid, tool=tool, digest=digest(tool, arguments)[:16],
+                   origin=origin)
         return aid
 
     def decide(self, aid: str, key: str, deny: bool = False) -> dict:
@@ -161,10 +173,10 @@ class HubLedger:
         return row["tool"], args
 
     def pending(self) -> list[dict]:
-        rows = self.l.q("SELECT id, tool, arguments, created FROM hub_approvals WHERE owner=? AND state='pending' "
-                        "ORDER BY created", pb.OWNER)
+        rows = self.l.q("SELECT id, tool, arguments, created, origin FROM hub_approvals WHERE owner=? "
+                        "AND state='pending' ORDER BY created", pb.OWNER)
         return [{"approval": r["id"], "tool": r["tool"], "arguments": json.loads(r["arguments"]),
-                 "age_s": int(self.clock() - r["created"])} for r in rows]
+                 "age_s": int(self.clock() - r["created"]), "origin": r["origin"] or "agent"} for r in rows]
 
 
 try:                                   # installed: quantumos_agent.hub
@@ -255,7 +267,9 @@ class Hub:
             parsed = None
         return {"ok": not r.isError, "result": parsed if parsed is not None else body}
 
-    async def call(self, tool: str, arguments: dict) -> dict:
+    async def call(self, tool: str, arguments: dict, origin: str = "agent") -> dict:
+        """`origin` names who is asking ("agent", or "nats:<identity>" from the command channel);
+        it is recorded on an approval and in the ledger, and changes no decision."""
         if tool == "hub_tools":
             return {"ok": True, "tools": self.catalog()}
         if tool == "hub_ledger":
@@ -284,7 +298,7 @@ class Hub:
                     check(self.tools[tool][1].name, arguments)
                 except ValueError as e:
                     return {"ok": False, "error": "bad_arguments", "message": str(e)}
-            aid = self.ledger.request(tool, arguments)
+            aid = self.ledger.request(tool, arguments, origin)
             return {"ok": False, "error": "approval_required", "approval": aid,
                     "tell_your_human": (f"{tool} needs your person's approval. Show them the call and ask them to "
                                         f"run: qos_hub.py approve {aid}. Then call hub_call_approved with "
@@ -480,6 +494,7 @@ async def serve(config: dict, db: str) -> None:
         return ctx()
 
     owners: list[Owned] = []
+    channels: list = []
     down = {}
     for ns, spec in (config.get("servers") or {}).items():
         if SEP in ns:
@@ -504,6 +519,14 @@ async def serve(config: dict, db: str) -> None:
         hub = Hub(down, Policy(config.get("policy") or {}, config.get("default", "ask")), ledger,
                   {ns: float(s.get("call_timeout_s", CALL_TIMEOUT_S)) for ns, s in (config.get("servers") or {}).items()})
         await hub.refresh()
+        if config.get("nats"):                # KAX.qos.<name>.cmd: the swarm, through this same policy
+            try:
+                from .nats_connector import CommandChannel
+            except ImportError:
+                from nats_connector import CommandChannel
+            channel = CommandChannel(hub, config["nats"])
+            await channel.start()             # a bad config or a missing nats-py stops the hub, loudly
+            channels.append(channel)
         server = Server("quantumos-hub")
 
         @server.list_tools()
@@ -525,6 +548,8 @@ async def serve(config: dict, db: str) -> None:
         async with stdio_server() as (r, w):
             await server.run(r, w, server.create_initialization_options())
     finally:
+        for c in channels:
+            await c.stop()
         for t in refreshers:
             t.cancel()
         for o in owners:
@@ -559,7 +584,11 @@ def main(argv=None) -> int:
         else:
             for item in led.pending():
                 if item["approval"] == a.approval:
-                    print("You are approving:", json.dumps({"tool": item["tool"], "arguments": item["arguments"]}))
+                    print("You are approving:", json.dumps({"tool": item["tool"], "arguments": item["arguments"],
+                                                            "origin": item["origin"]}))
+                    if item["origin"].startswith("nats:"):
+                        print(f"This call was asked for over NATS by {item['origin'][5:]!r}. Your own agent runs it "
+                              "(hub_call_approved); the peer only learns the approval id, never the result.")
             print(json.dumps(led.decide(a.approval, getpass.getpass("approver key: "), deny=a.deny)))
     except pb.Refused as e:
         print(f"refused: {e}", file=sys.stderr)
