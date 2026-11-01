@@ -46,7 +46,7 @@ WAITS = [
     # scripts/test_qos_society_agents_n.py — 1. each VM's own society completes
     ("agentd_demo_ok",
      "OK: three attested members booted with agentdemo",
-     "AGENTD: DEMO OK on all three members",
+     "OK: all three societies complete; each own aggregate verified",
      150.0,
      "test_qos_society_agents_n.py deadline = now + 150.0"),
     # scripts/test_qos_society_agents_n.py — 3. fields still synchronize under load
@@ -77,8 +77,12 @@ def run_gate(target: str, record: dict) -> int:
     started = {}
     cmd = ["make", target]
     print(f"[measure] $ {' '.join(cmd)}", flush=True)
+    # The gates are python3 scripts whose stdout is now a pipe, so without
+    # this every line arrives in one block when the test exits and every wait
+    # measures 0.0 s (the first dispatch of this workflow did exactly that).
+    env = dict(os.environ, PYTHONUNBUFFERED="1")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1)
+                            text=True, bufsize=1, env=env)
     assert proc.stdout is not None
     for line in proc.stdout:
         sys.stdout.write(line)
