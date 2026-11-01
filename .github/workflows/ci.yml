@@ -566,6 +566,24 @@ jobs:
     - name: Boot with and without virtio-rng and check the entropy labels
       run: make ci-smoke-rng
 
+  encrypted-save:
+    name: encrypted off-site save (QSAV1 seal in the guest, MAC verified on the host)
+    runs-on: ubuntu-26.04   # explicit image, see #346
+    needs: [build]
+    # Single-sourced `make ci-smoke-qsave` (#281 slice 1, ADR-0034): /bin/qsave seals a
+    # file, the guest must round-trip it and reject tampering and a wrong key, and
+    # scripts/qsave_check.py must verify the MAC and decrypt it from the console log.
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential qemu-system-x86 nasm
+        rustup target add x86_64-unknown-none   # the Rust citizens (user/rust, #263)
+    - name: Seal a save in the guest and verify it on the host
+      run: make ci-smoke-qsave
+
   pmm-differential-256:
     name: PMM dynamic-sizing differential (-m 256M, ADR-0021)
     runs-on: ubuntu-26.04   # explicit image, see #346

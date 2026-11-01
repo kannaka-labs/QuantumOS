@@ -134,7 +134,7 @@ OBJECTS = $(KERNEL_SOURCES:$(KERNEL_DIR)/src/%.c=$(BUILD_DIR)/%.o) \
 
 # Targets
 .PHONY: ci-isa-baseline
-.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-sched-load ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-iso-uefi ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress ci-smoke-egress-escape ci-smoke-net-e1000 ci-smoke-net-virtio-nofeat ci-smoke-http-big ci-smoke-net-virtio-tap ci-smoke-tcp-put
+.PHONY: all clean kernel run debug dump test test-list test-coverage ci-smoke ci-smoke-mem256 ci-smoke-mem512 ci-smoke-sched ci-smoke-sched-load ci-smoke-disk ci-smoke-disk-virtio ci-smoke-disk-upgrade ci-smoke-net ci-smoke-http ci-smoke-net-virtio ci-smoke-httpd ci-smoke-quiet ci-smoke-resonant ci-smoke-qseed ci-smoke-swarm ci-smoke-mcp ci-smoke-mcp-gate ci-smoke-qsubmit ci-smoke-society ci-smoke-society-gate ci-smoke-society-agents ci-smoke-society-agents-gate ci-smoke-society3 ci-smoke-society3-gate ci-smoke-society4 ci-smoke-society4-gate ci-smoke-society-agents-n ci-smoke-society-agents-n-gate ci-smoke-iso ci-smoke-iso-uefi ci-smoke-kbd ci-smoke-noserial ci-smoke-screen swarm-pingpong qos-agent qos-agent-list qos-claude qos-claude-list ci-smoke-rng ci-smoke-net-nogrant ci-smoke-egress ci-smoke-egress-escape ci-smoke-net-e1000 ci-smoke-net-virtio-nofeat ci-smoke-http-big ci-smoke-net-virtio-tap ci-smoke-tcp-put ci-smoke-qsave qsave-check-test
 
 all: kernel
 
@@ -179,7 +179,7 @@ $(LIBQ_A): $(LIBQ_OBJS)
 
 # The archive is appended AFTER $< on the link line: ld resolves left-to-right,
 # so the program's undefined symbols must precede the archive that satisfies them.
-$(USER_BUILD)/%.elf: $(USER_DIR)/%.c $(USER_DIR)/user.ld $(USER_DIR)/usys.h $(USER_DIR)/ghost.h $(USER_DIR)/paradox.h $(USER_DIR)/sha256.h $(USER_DIR)/swarm.h $(USER_DIR)/qsv_engine.h $(USER_DIR)/qpu_circuit.h $(LIBQ_HDRS) $(LIBQ_A)
+$(USER_BUILD)/%.elf: $(USER_DIR)/%.c $(USER_DIR)/user.ld $(USER_DIR)/usys.h $(USER_DIR)/ghost.h $(USER_DIR)/paradox.h $(USER_DIR)/sha256.h $(USER_DIR)/qsave.h $(USER_DIR)/swarm.h $(USER_DIR)/qsv_engine.h $(USER_DIR)/qpu_circuit.h $(LIBQ_HDRS) $(LIBQ_A)
 	@mkdir -p $(USER_BUILD)
 	@echo "Building user program: $<..."
 	$(CC) $(USER_CFLAGS) -T $(USER_DIR)/user.ld -o $@ $< $(LIBQ_A)
@@ -244,7 +244,7 @@ $(RUST_PROGS:%=$(USER_BUILD)/%.elf) $(RUST_SERVICES:%=$(USER_BUILD)/%.elf): $(US
 ROOTFS_DIR = rootfs
 ROOTFS_FILES = $(shell find $(ROOTFS_DIR) -type f 2>/dev/null)
 ROOTFS_STAGE = $(BUILD_DIR)/rootfs-stage
-INITRD_BIN_PROGS = hello args libqtest consciousnessd qtop qprobe life agentsub $(RUST_PROGS)
+INITRD_BIN_PROGS = hello args libqtest consciousnessd qtop qprobe life agentsub qsave $(RUST_PROGS)
 
 $(BUILD_DIR)/initrd.tar: $(ROOTFS_FILES) $(INITRD_BIN_PROGS:%=$(USER_BUILD)/%.elf)
 	@mkdir -p $(BUILD_DIR)
@@ -3313,3 +3313,41 @@ ci-smoke-mcp-schema-selftest: $(MCP_VENV_DEP)
 	if [ $$rc -ne 1 ]; then echo "TEETH-CHECK FAILED: QOS_MCP_TEETH=add gave rc=$$rc (want exactly 1)"; echo "$$out"; exit 1; fi; \
 	if ! echo "$$out" | grep -q "TOOL ADDED: qos_teeth_bogus_tool"; then echo "TEETH-CHECK FAILED: the diff does not name the bogus added tool"; echo "$$out"; exit 1; fi; \
 	echo "teeth-check OK (add): a bogus added tool reddened the gate (rc=1)"
+
+# CI Smoke Test (encrypted off-site saves, #281 slice 1, ADR-0034): the guest's
+# /bin/qsave seals a real file (the initrd's /docs/hello.txt) into a QSAV1 blob and
+# prints it on the console; the guest itself must round-trip it and REJECT a flipped
+# ciphertext bit, a flipped header bit and a wrong key (anti-vacuous); then the HOST
+# parses the header out of the console log, verifies the MAC against the known key and
+# decrypts to byte-equality with rootfs/docs/hello.txt, and a wrong key must fail the
+# host checker too. No network and no disk: the key never touches the overlay or QDSK.
+QSAVE_KEY ?= 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+QSAVE_BAD_KEY ?= 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1e
+ci-smoke-qsave: kernel
+	@echo "=== QuantumOS encrypted-save smoke (#281 slice 1, QSAV1) ==="
+	@python3 scripts/test_qsave_check.py
+	@rm -f /tmp/qemu-qsave.log
+	@( printf 'run /bin/qsave seal /docs/hello.txt $(QSAVE_KEY)\n'; sleep 10 ) | timeout 14s qemu-system-x86_64 \
+		-kernel $(BUILD_DIR)/kernel.elf32 -serial stdio -m 128M -display none -no-reboot \
+		2>&1 | tee /tmp/qemu-qsave.log || true
+	@if ! grep -q "QSAVE: roundtrip ok" /tmp/qemu-qsave.log; then \
+		echo "ERROR: the guest did not round-trip the sealed save (QSAVE: roundtrip ok)"; \
+		grep "QSAVE" /tmp/qemu-qsave.log || true; exit 1; \
+	fi
+	@echo "SUCCESS: guest sealed and re-opened the save"
+	@if ! grep -q "QSAVE: tamper rejected" /tmp/qemu-qsave.log; then \
+		echo "ERROR: the guest accepted a tampered blob or a wrong key (QSAVE: tamper rejected missing)"; exit 1; \
+	fi
+	@echo "SUCCESS: guest rejected a flipped ciphertext bit, a flipped header bit and a wrong key"
+	@python3 scripts/qsave_check.py --key $(QSAVE_KEY) --log /tmp/qemu-qsave.log --expect rootfs/docs/hello.txt || \
+		{ echo "ERROR: the host checker did not verify the guest's blob"; exit 1; }
+	@echo "SUCCESS: host parsed the header, verified the MAC and decrypted the guest's save"
+	@if python3 scripts/qsave_check.py --key $(QSAVE_BAD_KEY) --log /tmp/qemu-qsave.log >/dev/null; then \
+		echo "ERROR: the host checker accepted the blob under a WRONG key (gate would be vacuous)"; exit 1; \
+	fi
+	@echo "SUCCESS: host checker refuses the same blob under a wrong key"
+	@echo "=== Encrypted-save smoke PASSED ==="
+
+# Host-only half of the above (no QEMU needed): the checker's own unit tests.
+qsave-check-test:
+	python3 scripts/test_qsave_check.py
