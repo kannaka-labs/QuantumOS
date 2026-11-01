@@ -173,7 +173,37 @@ NATS bus and the GhostSignals markets) authenticates headless agents with the OA
   `wake_machine`.
 
 PFORK_MCP has no live endpoint (measured 2026-10-30, see #297); it would also need an
-`x-api-key` header option here. Still open in #297: `KAX.qos.*` over NATS.
+`x-api-key` header option here.
+
+## The swarm over NATS (`nats_connector.py`)
+
+An optional `"nats"` entry makes the hub answer request and reply on `KAX.qos.<name>.cmd`, so
+peers in the swarm can drive this person's QuantumOS VM through the same policy as the hub's
+own agent (ADR-0027). Off unless configured; needs `pip install 'quantumos-host-tools[nats]'`.
+
+```json
+"nats": {"name": "nick", "url": "nats://127.0.0.1:4222", "creds_file": "~/.nats/qos.creds",
+         "allow": ["kannaka.kannaka_recall", "kannaka.kannaka_status"],
+         "rate": {"per_identity_per_min": 20, "global_per_min": 120},
+         "dry_run": false}
+```
+
+Request: `{"v": 1, "id": "r1", "identity": "peer-a", "cmd": "kannaka.kannaka_recall", "args": {}, "dry_run": false}`.
+Reply: `{"v": 1, "id": "r1", "ok": true, "output": ..., "error": null | {"code", "message"}, "dry_run": false}`.
+
+Gates, in order, each refusing before anything runs: a well-formed v1 envelope (at most 64 KiB);
+the rate limits (sliding minute, per claimed identity and global; dry runs count); the
+**allow-list** (empty by default, which allows nothing, and narrower than the hub policy);
+then the hub policy (`deny` is refused, `ask` stores the call and replies `approval_required`
+with the approval id, `allow` runs). `hub_call_approved` is never reachable over NATS, and an
+allow pattern that would match it (such as `*`) is a config error. A request with no reply
+inbox is not run. With `dry_run` (per request, or forced for the channel) the reply says what
+would happen (`{"would": "run" | "ask" | "deny"}`) and nothing runs or is stored. Every outcome
+is a `hub_nats_cmd` event in the ledger.
+
+`identity` is a claim: plain NATS does not authenticate it, so the per-identity limit stops a
+polite client, not an adversary. The global limit and the NATS server's own publish permission
+on the subject are what hold against one. Grant that subject only to peers you trust.
 
 ## Trust boundary
 
@@ -183,7 +213,7 @@ you are happy for allowed tools to use.
 
 ## Tests
 
-`python3 -m pytest -q tools/qos-hub`: 43 tests (8 hub, 19 CLI connector, 6 HTTP, 10 installed defaults). They cover the policy matching, allow, deny
+`python3 -m pytest -q tools/qos-hub`: 70 tests (8 hub, 19 CLI connector, 6 HTTP, 10 installed defaults, 27 NATS channel with the client mocked). They cover the policy matching, allow, deny
 never reaching the server, ask holding the exact call and releasing it only with the key and
 only once, a tampered or expired approval refused, unknown tools asking, a broken downstream
 server not hiding the others, the approval CLI, and a full run over real MCP stdio with a

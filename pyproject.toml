@@ -28,6 +28,7 @@ dependencies = ["mcp>=1.10,<2"]
 quantum = ["pennylane>=0.45"]   # qsv_gateway host dispatch
 qbraid = ["qbraid"]             # qbraid_boot real-QPU entropy handoff
 oci = ["oci>=2.100"]            # the provider broker's OCI plugin (buckets, Always Free VMs)
+nats = ["nats-py>=2.6"]         # the hub's KAX.qos.<name>.cmd command channel (#297)
 
 [project.urls]
 Homepage = "https://github.com/kannaka-labs/QuantumOS"

@@ -45,6 +45,9 @@ The hub posts the grant at start and again every "refresh_every_s" (default 600;
 Command Center's tokens last 900), and uses the new access_token from the next request on.
 The secret only ever comes from a file or a variable, never from the config.
 
+An optional "nats" entry answers KAX.qos.<name>.cmd requests from the swarm through the same
+policy, behind an allow-list, a rate limit and a dry-run mode (nats_connector.py).
+
 Hub tools (always present): hub_tools (every tool with its policy), hub_call_approved,
 hub_ledger. There is deliberately no tool to approve or to change the policy.
 
@@ -480,6 +483,7 @@ async def serve(config: dict, db: str) -> None:
         return ctx()
 
     owners: list[Owned] = []
+    channels: list = []
     down = {}
     for ns, spec in (config.get("servers") or {}).items():
         if SEP in ns:
@@ -504,6 +508,14 @@ async def serve(config: dict, db: str) -> None:
         hub = Hub(down, Policy(config.get("policy") or {}, config.get("default", "ask")), ledger,
                   {ns: float(s.get("call_timeout_s", CALL_TIMEOUT_S)) for ns, s in (config.get("servers") or {}).items()})
         await hub.refresh()
+        if config.get("nats"):                # KAX.qos.<name>.cmd: the swarm, through this same policy
+            try:
+                from .nats_connector import CommandChannel
+            except ImportError:
+                from nats_connector import CommandChannel
+            channel = CommandChannel(hub, config["nats"])
+            await channel.start()             # a bad config or a missing nats-py stops the hub, loudly
+            channels.append(channel)
         server = Server("quantumos-hub")
 
         @server.list_tools()
@@ -525,6 +537,8 @@ async def serve(config: dict, db: str) -> None:
         async with stdio_server() as (r, w):
             await server.run(r, w, server.create_initialization_options())
     finally:
+        for c in channels:
+            await c.stop()
         for t in refreshers:
             t.cancel()
         for o in owners:
