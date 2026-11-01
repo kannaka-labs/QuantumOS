@@ -9,11 +9,14 @@
  *                                           MAC, decrypt, print length + sha256 of the plaintext
  *
  * Output lines (the host checker and `make ci-smoke-qsave` grep these):
- *   QSAVE: blob <hex>            the blob, 64 bytes (128 hex chars) per line, in order
+ *   QSAVE: blob <hex>            the blob, QS_LINE_BYTES (32) bytes = 64 hex chars per line
+ *                                (76 chars with prefix; the kernel truncates a console write at 127)
  *   QSAVE: blob-end len=<n>
  *   QSAVE: pt-sha256 <hex>
+ *   QSAVE: rng=fallback          SYS_QRAND was refused (a `run` program holds no quantum-pool cap);
+ *                                the nonce then rests on the tick count + plaintext (synthetic nonce)
  *   QSAVE: roundtrip ok | tamper rejected | open ok len=<n> | open FAILED (...)
- * Needs no capability beyond reading files and SYS_QRAND; it never writes a file
+ * Needs no capability beyond reading files (SYS_QRAND is tried, with a fallback); it never writes a file
  * (the key must not land in the overlay or on the QDSK disk), and has no network yet.
  *
  * SPDX-License-Identifier: GPL-2.0-only
@@ -24,6 +27,7 @@
 
 #define QS_MAX_PT 3072
 #define QS_MAX_BLOB (QS_MAX_PT + QSAVE_HDR_LEN)
+#define QS_LINE_BYTES 32 /* keep in sync with BYTES_PER_LINE in scripts/qsave_check.py */
 
 static uint8_t g_in[2 * QS_MAX_BLOB + 64]; /* file bytes (raw or hex text) */
 static uint8_t g_blob[QS_MAX_BLOB];
@@ -48,6 +52,14 @@ static int hexval(char c) {
         return c - 'A' + 10;
     }
     return -1;
+}
+
+static int str_eq(const char *a, const char *b) {
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    return *a == *b;
 }
 
 static int parse_key(const char *s, uint8_t key[QSAVE_KEY_LEN]) {
@@ -126,15 +138,24 @@ static int cmd_seal(const char *path, const uint8_t key[QSAVE_KEY_LEN]) {
     }
     uint8_t rng[16];
     if (qrand_fill(rng, sizeof(rng)) < 0) {
-        die("QSAVE: seal FAILED (no entropy syscall)", 2);
+        /* A program started with `run` holds no quantum-pool cap (only citizens.c
+         * services do), so this is the normal path. The nonce is synthetic
+         * (HMAC over rng||plaintext), so a weak rng cannot repeat it for two
+         * different plaintexts. Do NOT widen the permission for this. */
+        uint64_t t = (uint64_t)ticks();
+        for (int i = 0; i < (int)sizeof(rng); i++) {
+            rng[i] = (uint8_t)(t >> (8 * (i & 7)));
+        }
+        write_str("QSAVE: rng=fallback");
     }
     long bl = qsave_seal(key, rng, g_in, (uint32_t)n, g_blob, sizeof(g_blob));
     if (bl < 0) {
         die("QSAVE: seal FAILED (buffer)", 2);
     }
     say_int("QSAVE: sealed %d plaintext bytes", n);
-    for (long off = 0; off < bl; off += 64) {
-        put_hex_line("QSAVE: blob ", g_blob + off, (int)(bl - off < 64 ? bl - off : 64));
+    for (long off = 0; off < bl; off += QS_LINE_BYTES) {
+        put_hex_line("QSAVE: blob ", g_blob + off,
+                     (int)(bl - off < QS_LINE_BYTES ? bl - off : QS_LINE_BYTES));
     }
     say_int("QSAVE: blob-end len=%d", bl);
     print_sha(g_in, (uint32_t)n);
@@ -149,13 +170,14 @@ static int cmd_seal(const char *path, const uint8_t key[QSAVE_KEY_LEN]) {
     /* In-process proof 2 (anti-vacuous): one flipped ciphertext bit, one flipped
      * header (nonce) bit, and a wrong key must each be refused with EAUTH. */
     int refused = 0;
+    int expect = 3;
     memcpy(g_copy, g_blob, (size_t)bl);
     if (n > 0) {
         g_copy[QSAVE_HDR_LEN + n / 2] ^= 0x01;
         refused += qsave_open(key, g_copy, (uint32_t)bl, g_pt, sizeof(g_pt)) == QSAVE_EAUTH;
         g_copy[QSAVE_HDR_LEN + n / 2] ^= 0x01;
     } else {
-        refused++;
+        expect = 2; /* empty plaintext: no ciphertext byte to flip, say so honestly */
     }
     g_copy[9] ^= 0x80;
     refused += qsave_open(key, g_copy, (uint32_t)bl, g_pt, sizeof(g_pt)) == QSAVE_EAUTH;
@@ -165,11 +187,13 @@ static int cmd_seal(const char *path, const uint8_t key[QSAVE_KEY_LEN]) {
     wrong[0] ^= 0x01;
     refused += qsave_open(wrong, g_copy, (uint32_t)bl, g_pt, sizeof(g_pt)) == QSAVE_EAUTH;
     qsave_wipe(wrong, sizeof(wrong));
-    if (refused != 3) {
+    if (refused != expect) {
         die("QSAVE: tamper NOT rejected", 4);
     }
-    write_str("QSAVE: tamper rejected");
+    write_str(expect == 3 ? "QSAVE: tamper rejected (3/3)"
+                          : "QSAVE: tamper rejected (2/2, empty pt)");
     qsave_wipe(g_pt, sizeof(g_pt));
+    qsave_wipe(g_in, sizeof(g_in));
     return 0;
 }
 
@@ -220,6 +244,8 @@ static int cmd_open(const char *path, const uint8_t key[QSAVE_KEY_LEN]) {
     say_int("QSAVE: open ok len=%d", pl);
     print_sha(g_pt, (uint32_t)pl);
     qsave_wipe(g_pt, sizeof(g_pt));
+    qsave_wipe(g_in, sizeof(g_in));
+    qsave_wipe(g_blob, sizeof(g_blob));
     return 0;
 }
 
@@ -234,9 +260,9 @@ void _start(void) {
         die("QSAVE: key must be exactly 64 hex characters", 1);
     }
     int rc;
-    if (memcmp(argv[1], "seal", 5) == 0) {
+    if (str_eq(argv[1], "seal")) {
         rc = cmd_seal(argv[2], key);
-    } else if (memcmp(argv[1], "open", 5) == 0) {
+    } else if (str_eq(argv[1], "open")) {
         rc = cmd_open(argv[2], key);
     } else {
         die("QSAVE: usage: qsave seal|open <path> <64-hex-char key>", 1);

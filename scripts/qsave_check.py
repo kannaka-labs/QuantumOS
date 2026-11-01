@@ -28,6 +28,14 @@ import sys
 MAGIC = b"QSAV"
 VERSION = 1
 SUITE = 1
+# Console framing of the guest's blob lines. The kernel copies at most 127 characters per
+# console write (sys_write's 128-byte buffer), so 'QSAVE: blob ' (12) + 2*BYTES_PER_LINE hex
+# must stay well under that. MUST equal QS_LINE_BYTES in user/qsave.c.
+BYTES_PER_LINE = 32
+BLOB_PREFIX = "QSAVE: blob "
+KERNEL_WRITE_CAP = 127
+MAX_LINE = 120
+assert len(BLOB_PREFIX) + 2 * BYTES_PER_LINE <= MAX_LINE <= KERNEL_WRITE_CAP
 HDR_FIELDS = 32
 HDR_LEN = 64
 

@@ -43,7 +43,7 @@ class T(unittest.TestCase):
     def test_any_single_bit_flip_is_rejected(self):
         b = bytearray(q.seal(KEY, b"save-data-0123456789", RNG))
         for i in range(len(b)):
-            for bit in (0, 7):
+            for bit in range(8):
                 m = bytearray(b)
                 m[i] ^= 1 << bit
                 with self.assertRaises(q.QsaveError, msg=f"byte {i} bit {bit}"):
@@ -76,13 +76,13 @@ class T(unittest.TestCase):
             q.blob_from_log(text.replace(f"len={len(b)}", f"len={len(b) + 1}"))
 
     def test_cli(self):
-        d = tempfile.mkdtemp()
-        p, o = os.path.join(d, "pt"), os.path.join(d, "blob")
-        with open(p, "wb") as f:
-            f.write(b"cli-save")
-        self.assertEqual(q.main(["--key", KEY.hex(), "--seal", p, "--out", o]), 0)
-        self.assertEqual(q.main(["--key", KEY.hex(), "--blob", o, "--expect", p]), 0)
-        self.assertEqual(q.main(["--key", bytes(32).hex(), "--blob", o]), 1)
+        with tempfile.TemporaryDirectory() as d:
+            p, o = os.path.join(d, "pt"), os.path.join(d, "blob")
+            with open(p, "wb") as f:
+                f.write(b"cli-save")
+            self.assertEqual(q.main(["--key", KEY.hex(), "--seal", p, "--out", o]), 0)
+            self.assertEqual(q.main(["--key", KEY.hex(), "--blob", o, "--expect", p]), 0)
+            self.assertEqual(q.main(["--key", bytes(32).hex(), "--blob", o]), 1)
 
 
 if __name__ == "__main__":

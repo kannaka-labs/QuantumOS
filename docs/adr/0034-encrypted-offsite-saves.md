@@ -23,6 +23,11 @@ What a "save" is today (read from the tree, not assumed):
 - Only qsh holds the filesystem-write grant (`citizens.c` `grant_fswrite`, `syscall.c`
   `has_fs_write_cap`). A program started with `run /bin/x` can read files and print, and cannot
   write one.
+- `SYS_QRAND` is capability-gated (`sys_qrand`, `syscall.c`): it needs a quantum-pool read cap,
+  which `citizens.c` mints only for services with `grant_quantum_pool`. A program started with
+  `run` (`sys_spawn`) holds no caps, so `qrand_fill` returns EPERM there. `/bin/qsave` therefore
+  tries it and, on refusal, derives the rng input from the tick count and prints
+  `QSAVE: rng=fallback`. The permission is deliberately not widened for `run` programs.
 - `SYS_QRAND` can be a timer-seeded generator, not a CSPRNG. The boot labels say so
   ("Entropy: unseeded at boot (timer default, not from a QPU)"; ADR-0025).
 - There is no secure storage in the guest: no TPM, no keyring, no sealed memory, one flat ring-3
@@ -69,7 +74,9 @@ the guest**. Slice 1 therefore:
 - derives three independent subkeys with HMAC (below) so one master key never keys two
   primitives directly.
 - tolerates a weak RNG. The nonce is synthetic (SIV-style), so a repeated or predictable
-  `SYS_QRAND` output cannot repeat a nonce for two different plaintexts.
+  `SYS_QRAND` output (or the tick-count fallback above, the normal path under `run`) cannot repeat a
+  nonce for two different plaintexts. Only an identical plaintext sealed twice under the same key
+  with the same rng input yields the same blob, which reveals only that equality.
 
 Where the key comes from in later slices (not built here): a host-admitted session key delivered
 over the authenticated COM2 plane (ADR-0019 pattern: host holds the secret, the guest gets a
@@ -133,13 +140,15 @@ agree with it by accident.
 | freestanding seal/open + wipe, header-only | `user/qsave.h` |
 | tool `/bin/qsave seal\|open <path> <key>` (initrd, not a service) | `user/qsave.c` |
 | host parser, MAC verifier, decryptor, fixture sealer | `scripts/qsave_check.py` |
-| host unit tests: all lengths, every single-bit flip, wrong key, truncation, extension, log parsing | `scripts/test_qsave_check.py` |
+| host unit tests: all lengths, every single-bit flip (all 8 bits of every byte), wrong key, truncation, extension, log parsing | `scripts/test_qsave_check.py` |
 | gate | `make ci-smoke-qsave` (also `make qsave-check-test`, host only), CI job `encrypted-save` |
 
 `seal` reads a file of up to 3072 bytes (a hard slice-1 cap; larger saves need streaming),
-prints the blob as `QSAVE: blob <128 hex>` lines plus `QSAVE: blob-end len=N`, then proves in
+prints the blob as `QSAVE: blob <64 hex>` lines (32 bytes per line, 76 characters; the kernel
+truncates a console write at 127 characters, and host checker and test use the same width) plus `QSAVE: blob-end len=N`, then proves in
 process: the blob opens to the input, and a flipped ciphertext bit, a flipped nonce bit and a
-wrong key are each refused. `open` takes a raw or hex-text blob and prints the plaintext length and
+wrong key are each refused (an empty plaintext has no ciphertext byte to flip and prints
+`tamper rejected (2/2, empty pt)`). `open` takes a raw or hex-text blob and prints the plaintext length and
 SHA-256, not the plaintext. The gate then has the **host** extract the blob from the QEMU
 log, verify the MAC with the known key, decrypt, and compare to `rootfs/docs/hello.txt`; the
 same blob must fail under a wrong key (anti-vacuous, ADR-0016).
@@ -162,7 +171,7 @@ same blob must fail under a wrong key (anti-vacuous, ADR-0016).
 
 ## Verification (what was and was not run)
 
-Run: `python3 scripts/test_qsave_check.py` (9 tests, pass).
+Run: `python3 scripts/test_qsave_check.py` (pass) and `make -n ci-smoke-qsave` (resolves).
 
 Not run: the C tool was **not compiled**, `make` was **not run** and `make ci-smoke-qsave` was
 **not run**. The authoring machine has no gcc, make, nasm or qemu on PATH (only Python and
@@ -170,9 +179,12 @@ clang). C/Python agreement is therefore unproven until CI runs the gate; that is
 to check. An earlier, abandoned `qenc` draft (bare `SHA256(key||...)` keystream, the construction
 rejected above) was removed rather than kept as a second path.
 
+Before moving the Status beyond Proposed: record here that `make ci-smoke-qsave` actually ran green
+in CI (the blockers found in review, the `run` quantum-pool EPERM and the 127-character console
+write cap, are fixed in source but unproven under QEMU).
+
 ## References
 
 ADR-0004 (integer-only), ADR-0007 (QDSK), ADR-0016 (anti-vacuous gates), ADR-0017 (honest
 slices), ADR-0019 (authenticated plane), ADR-0025 (entropy labels), ADR-0026, ADR-0030
 (egress grant), ADR-0033; issue #281.
-

@@ -80,7 +80,7 @@ static inline uint64_t qsave_get_le64(const uint8_t *p) {
 }
 
 /* HMAC-SHA256 over the concatenation a||b without building it (RFC 2104;
- * identical to hmac_sha256 on the joined message). Key is <= 64 bytes here. */
+ * identical to hmac_sha256 on the joined message). Keys over 64 bytes are hashed first (RFC 2104). */
 static inline void qsave_hmac2(const uint8_t *key, uint32_t key_len, const uint8_t *a,
                                uint32_t a_len, const uint8_t *b, uint32_t b_len,
                                uint8_t out[32]) {
@@ -89,8 +89,12 @@ static inline void qsave_hmac2(const uint8_t *key, uint32_t key_len, const uint8
     for (int i = 0; i < 64; i++) {
         k[i] = 0;
     }
-    for (uint32_t i = 0; i < key_len && i < 64; i++) {
-        k[i] = key[i];
+    if (key_len > 64) {
+        sha256(key, key_len, k);
+    } else {
+        for (uint32_t i = 0; i < key_len; i++) {
+            k[i] = key[i];
+        }
     }
     for (int i = 0; i < 64; i++) {
         pad[i] = (uint8_t)(k[i] ^ 0x36);
@@ -108,6 +112,7 @@ static inline void qsave_hmac2(const uint8_t *key, uint32_t key_len, const uint8
     sha256_update(&c, inner, 32);
     sha256_final(&c, out);
     qsave_wipe(k, sizeof(k));
+    qsave_wipe(inner, sizeof(inner));
     qsave_wipe(pad, sizeof(pad));
 }
 
