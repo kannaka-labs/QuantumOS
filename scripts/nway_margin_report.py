@@ -75,7 +75,12 @@ def summarize(records: list[dict]) -> dict:
         s = stats(g["totals"])
         g["stats"] = s
         g["margin_s"] = (g["budget_s"] - s["max"]) if (s and g["budget_s"] is not None) else None
-    return {"runs": len(records), "waits": waits, "gates": gates}
+    hosts = {
+        "kvm": sum(1 for r in records if r.get("kvm") is True),
+        "accels": sorted({a for r in records for a in (r.get("qemu_accels") or [])}),
+        "nproc": sorted({r["nproc"] for r in records if r.get("nproc")}),
+    } if any("kvm" in r for r in records) else None
+    return {"runs": len(records), "waits": waits, "gates": gates, "hosts": hosts}
 
 
 def fmt(v, unit="s"):
@@ -84,6 +89,11 @@ def fmt(v, unit="s"):
 
 def print_report(summary: dict) -> None:
     print(f"N-way gate margin report: {summary['runs']} run(s)")
+    hosts = summary.get("hosts")
+    if hosts:
+        print(f"runs with /dev/kvm: {hosts['kvm']}/{summary['runs']}; "
+              f"QEMU accelerators seen: {', '.join(hosts['accels']) or 'unknown'}; "
+              f"nproc: {', '.join(str(n) for n in hosts['nproc']) or 'unknown'}")
     print()
     print(f"{'wait point':<28} {'n':>3} {'min':>8} {'median':>8} {'max':>8} {'budget':>8} {'margin':>8}  budget source")
     print("-" * 110)
