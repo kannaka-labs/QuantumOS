@@ -185,25 +185,45 @@ own agent (ADR-0027). Off unless configured; needs `pip install 'quantumos-host-
 "nats": {"name": "nick", "url": "nats://127.0.0.1:4222", "creds_file": "~/.nats/qos.creds",
          "allow": ["kannaka.kannaka_recall", "kannaka.kannaka_status"],
          "rate": {"per_identity_per_min": 20, "global_per_min": 120},
+         "max_inflight": 4, "max_backlog": 64, "max_age_s": 30,
          "dry_run": false}
 ```
 
-Request: `{"v": 1, "id": "r1", "identity": "peer-a", "cmd": "kannaka.kannaka_recall", "args": {}, "dry_run": false}`.
+Request: `{"v": 1, "id": "r1", "identity": "peer-a", "cmd": "kannaka.kannaka_recall", "args": {}, "dry_run": false, "ts": 1761955200}`
+(`ts`, unix seconds when sent, is optional; a request older than `max_age_s` is refused `expired`
+rather than run after its sender gave up).
 Reply: `{"v": 1, "id": "r1", "ok": true, "output": ..., "error": null | {"code", "message"}, "dry_run": false}`.
 
-Gates, in order, each refusing before anything runs: a well-formed v1 envelope (at most 64 KiB);
-the rate limits (sliding minute, per claimed identity and global; dry runs count); the
-**allow-list** (empty by default, which allows nothing, and narrower than the hub policy);
+Gates, in order, each refusing before anything runs: a well-formed v1 envelope (at most 64 KiB,
+not expired); the rate limits (sliding minute, per claimed identity and global; dry runs count);
+the **allow-list** (empty by default, which allows nothing, and narrower than the hub policy);
 then the hub policy (`deny` is refused, `ask` stores the call and replies `approval_required`
-with the approval id, `allow` runs). `hub_call_approved` is never reachable over NATS, and an
-allow pattern that would match it (such as `*`) is a config error. A request with no reply
-inbox is not run. With `dry_run` (per request, or forced for the channel) the reply says what
-would happen (`{"would": "run" | "ask" | "deny"}`) and nothing runs or is stored. Every outcome
-is a `hub_nats_cmd` event in the ledger.
+with the approval id, `allow` runs). The hub's own tools (`hub_call_approved`, `hub_ledger`,
+`hub_tools`) are never reachable over NATS, and an allow pattern that would match one (such as
+`*`) is a config error. A request with no reply inbox is not run. With `dry_run` (per request,
+or forced for the channel) the reply says what would happen (`{"would": "run" | "ask" | "deny"}`)
+and nothing runs or is stored.
+
+**Who runs an approved call.** An `ask` from a peer is stored with its origin (`nats:<identity>`),
+and `qos_hub.py pending` and `approve` show it, so the person knows whose call they are
+approving. As for the agent's own asks, the person's **local agent** then runs the stored call
+with `hub_call_approved`; the peer learns only the approval id and never sees the result. A peer
+that wants the result asks again once the call has run, or asks for a tool the policy allows.
+
+Load and the ledger: at most `max_inflight` requests run at once and `max_backlog` wait; past
+that a request is refused `busy` at once (nats-py's own queue for the subscription is capped at
+64 messages / 4 MiB too). Every request that reaches the hub leaves a `hub_nats_cmd` row when it
+is forwarded and another with how it ended (`ok`, `denied`, `approval_required`, `timeout`,
+`server_error`...). Refusals are bounded so a flood cannot grow the database: the first refusal
+of each kind in a minute is written in full with the claimed identity, the rest are counted, and
+one `hub_nats_refusals` row with the count closes the window. Connection loss and recovery are
+`hub_nats_down` / `hub_nats_up` rows; the client reconnects without limit, and a connection the
+server closes for good is a `hub_nats_closed` row.
 
 `identity` is a claim: plain NATS does not authenticate it, so the per-identity limit stops a
-polite client, not an adversary. The global limit and the NATS server's own publish permission
-on the subject are what hold against one. Grant that subject only to peers you trust.
+polite client, not an adversary. The global limit, the backlog cap and the NATS server's own
+publish permission on the subject are what hold against one. Grant that subject only to peers
+you trust.
 
 ## Trust boundary
 
@@ -213,7 +233,7 @@ you are happy for allowed tools to use.
 
 ## Tests
 
-`python3 -m pytest -q tools/qos-hub`: 70 tests (8 hub, 19 CLI connector, 6 HTTP, 10 installed defaults, 27 NATS channel with the client mocked). They cover the policy matching, allow, deny
+`python3 -m pytest -q tools/qos-hub`: 81 tests (8 hub, 19 CLI connector, 6 HTTP, 10 installed defaults, 38 NATS channel with the client mocked). They cover the policy matching, allow, deny
 never reaching the server, ask holding the exact call and releasing it only with the key and
 only once, a tampered or expired approval refused, unknown tools asking, a broken downstream
 server not hiding the others, the approval CLI, and a full run over real MCP stdio with a

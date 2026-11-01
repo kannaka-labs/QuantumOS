@@ -21,7 +21,9 @@ Full per-PR provenance: `git log` and the PR list on GitHub.
   the Command Center is in the example config (#356).
 - `qos-hub` answers `KAX.qos.<name>.cmd` over NATS (#297, slice 5): the swarm drives a person's
   VM through the hub's own policy, behind an empty-by-default allow-list, per-identity and global
-  rate limits and a dry-run mode, with a versioned reply envelope. Optional `nats` extra.
+  rate limits, an in-flight and backlog cap, a request age limit and a dry-run mode, with a
+  versioned reply envelope. An approval asked for over NATS carries its origin, which `pending`
+  shows; refusals are summarised in the ledger so a flood cannot grow it. Optional `nats` extra.
 - Claude Code plugin manifests at the repository root: the hub installs from the constellation
   marketplace (#352).
 

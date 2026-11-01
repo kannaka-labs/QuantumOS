@@ -13,12 +13,12 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import qos_hub as hub  # noqa: E402
 import provider_broker as pb  # noqa: E402
-from nats_connector import CommandChannel, ConfigError, RateLimiter, subject_for  # noqa: E402
+from nats_connector import CommandChannel, ConfigError, RateLimiter, RefusalLog, subject_for  # noqa: E402
 
 
 class FakeSession:
-    def __init__(self, tools):
-        self.tools, self.calls = tools, []
+    def __init__(self, tools, fail=None):
+        self.tools, self.calls, self.fail = tools, [], fail
 
     async def list_tools(self):
         return NS(tools=[NS(name=n, description=f"{n} tool", inputSchema={"type": "object"}) for n in self.tools])
@@ -29,17 +29,24 @@ class FakeSession:
 
     async def call_tool(self, name, arguments):
         self.calls.append((name, arguments))
+        if self.fail == "error":
+            return NS(content=[NS(type="text", text="the tool said no")], isError=True)
+        if self.fail == "raise":
+            raise ConnectionResetError("downstream died")
+        if self.fail == "hang":
+            await asyncio.sleep(5)
         return NS(content=[NS(type="text", text=json.dumps({"did": name, **arguments}))], isError=False)
 
 
 class FakeNats:
-    """What nats.connect returns: records the subscription and the drain."""
+    """What nats.connect returns: records the subscription (and its options) and the drain."""
 
     def __init__(self):
-        self.subs, self.drained, self.url, self.kw = {}, False, None, None
+        self.subs, self.sub_kw, self.drained, self.url, self.kw = {}, {}, False, None, None
 
-    async def subscribe(self, subject, cb=None):
+    async def subscribe(self, subject, cb=None, **kw):
         self.subs[subject] = cb
+        self.sub_kw[subject] = kw
         return NS(subject=subject)
 
     async def drain(self):
@@ -56,25 +63,25 @@ class FakeMsg:
 
 
 class Clock:
-    def __init__(self):
-        self.t = 1000.0
+    def __init__(self, t=1000.0):
+        self.t = t
 
     def __call__(self):
         return self.t
 
 
-def make(tmp_path, nats=None, rules=None):
+def make(tmp_path, nats=None, rules=None, fail=None, wall=None):
     tmp_path.mkdir(parents=True, exist_ok=True)
     led = hub.HubLedger(str(tmp_path / "pb.db"))
     led.broker.set_envelope(pb.Envelope(1, 1, ["storage"], 3600))
-    k = FakeSession(["kannaka_recall", "kannaka_remember", "swarm_send", "compute_grant"])
+    k = FakeSession(["kannaka_recall", "kannaka_remember", "swarm_send", "compute_grant"], fail)
     h = hub.Hub({"kannaka": k}, hub.Policy(rules if rules is not None else
                 {"kannaka.kannaka_*": "allow", "kannaka.swarm_send": "ask", "kannaka.compute_grant": "deny"}), led)
     asyncio.run(h.refresh())
     cfg = {"name": "nick", "allow": ["kannaka.kannaka_recall", "kannaka.swarm_send", "kannaka.compute_grant"],
            **(nats or {})}
     clock = Clock()
-    return CommandChannel(h, cfg, clock=clock), h, k, led, clock
+    return CommandChannel(h, cfg, clock=clock, wall=wall or Clock(2000.0)), h, k, led, clock
 
 
 def ask(ch, **req):
@@ -83,7 +90,18 @@ def ask(ch, **req):
 
 
 def events(led, what="hub_nats_cmd"):
-    return [e for e in led.broker.ledger(limit=100)["events"] if e["event"] == what]
+    return [e for e in led.broker.ledger(limit=500)["events"] if e["event"] == what]
+
+
+def connect_to(ch, nc):
+    async def connect(url, **kw):
+        nc.url, nc.kw = url, kw
+        return nc
+    ch.connect = connect
+
+
+def msg(rid="m1", **over):
+    return FakeMsg({"v": 1, "id": rid, "identity": "p", "cmd": "kannaka.kannaka_recall", "args": {}, **over})
 
 
 def test_every_outcome_is_in_the_ledger_with_the_claimed_identity(tmp_path):
@@ -93,7 +111,17 @@ def test_every_outcome_is_in_the_ledger_with_the_claimed_identity(tmp_path):
     ask(ch, dry_run=True)
     ask(ch)
     got = [(e["identity"], e["outcome"]) for e in reversed(events(led))]
-    assert got == [("peer-a", "forwarded"), ("peer-a", "not_allowed"), ("peer-a", "dry_run"), ("peer-a", "rate_limited")]
+    assert got == [("peer-a", "forwarded"), ("peer-a", "ok"), ("peer-a", "not_allowed"), ("peer-a", "dry_run"),
+                   ("peer-a", "rate_limited")]
+
+
+def test_a_forwarded_request_records_how_it_ended(tmp_path):
+    ch, h, _k, led, _c = make(tmp_path)
+    ask(ch, cmd="kannaka.compute_grant")
+    r = ask(ch, cmd="kannaka.swarm_send", args={"text": "hi"})
+    got = [(e["outcome"], e.get("approval")) for e in reversed(events(led))]
+    assert got == [("forwarded", None), ("denied", None), ("forwarded", None),
+                   ("approval_required", r["output"]["approval"])]
 
 
 def test_allowed_command_runs_and_replies_with_the_envelope(tmp_path):
@@ -133,26 +161,68 @@ def test_hub_policy_still_applies_deny_and_ask(tmp_path):
     assert [p["approval"] for p in h.ledger.pending()] == [aid]
 
 
-def test_hub_call_approved_is_never_reachable_and_cannot_be_allow_listed(tmp_path):
+def test_an_approval_asked_over_nats_shows_its_origin(tmp_path):
+    ch, h, _k, led, _c = make(tmp_path)
+    r = ask(ch, cmd="kannaka.swarm_send", args={"text": "hi"}, identity="spoof-7")
+    aid = r["output"]["approval"]
+    pending = h.ledger.pending()
+    assert [(p["approval"], p["origin"]) for p in pending] == [(aid, "nats:spoof-7")]
+    assert events(led, "hub_approval_requested")[0]["origin"] == "nats:spoof-7"
+    # the agent's own asks still read "agent", and the person's local agent is who runs either
+    asyncio.run(h.call("kannaka.swarm_send", {"text": "mine"}))
+    assert sorted(p["origin"] for p in h.ledger.pending()) == ["agent", "nats:spoof-7"]
+
+
+def test_an_old_database_gains_the_origin_column_in_place(tmp_path):
+    import sqlite3
+    db = str(tmp_path / "old.db")
+    con = sqlite3.connect(db)
+    con.executescript("CREATE TABLE hub_approvals (id TEXT PRIMARY KEY, owner TEXT, tool TEXT, arguments TEXT,"
+                      " digest TEXT, state TEXT, created REAL, decided REAL);")
+    con.execute("INSERT INTO hub_approvals VALUES('h1', ?, 't', '{}', 'd', 'pending', 1.0, NULL)", (pb.OWNER,))
+    con.commit()
+    con.close()
+    led = hub.HubLedger(db)
+    assert [(p["approval"], p["origin"]) for p in led.pending()] == [("h1", "agent")]
+    hub.HubLedger(db)                                      # a second open is not a second ALTER
+
+
+def test_the_hubs_own_tools_are_never_reachable_and_cannot_be_allow_listed(tmp_path):
     ch, *_ = make(tmp_path, nats={"allow": ["kannaka.*"]})
-    r = ask(ch, cmd="hub_call_approved", args={"approval": "h1"})
-    assert r["error"]["code"] == "not_allowed"
-    with pytest.raises(ConfigError):
-        make(tmp_path / "second", nats={"allow": ["hub_*"]})
+    for tool in ("hub_call_approved", "hub_ledger", "hub_tools"):
+        r = ask(ch, cmd=tool, args={"approval": "h1"})
+        assert r["error"]["code"] == "not_allowed", tool
+    for i, pattern in enumerate((["hub_*"], ["hub_ledger"], ["*"])):
+        with pytest.raises(ConfigError):
+            make(tmp_path / f"p{i}", nats={"allow": pattern})
 
 
-def test_a_bare_wildcard_allow_list_is_refused_at_config_time(tmp_path):
-    with pytest.raises(ConfigError):
-        make(tmp_path, nats={"allow": ["*"]})
+def test_bad_rate_and_limit_values_are_config_errors(tmp_path):
+    for i, bad in enumerate(({"rate": {"per_identity_per_min": "twenty"}}, {"rate": {"global_per_min": 0}},
+                             {"rate": [1]}, {"max_inflight": "many"}, {"max_backlog": 0}, {"max_age_s": -5})):
+        with pytest.raises(ConfigError):
+            make(tmp_path / f"bad{i}", nats=bad)
 
 
-def test_unknown_tool_and_downstream_error_shape(tmp_path):
-    ch, *_ = make(tmp_path, nats={"allow": ["kannaka.*"]})
+def test_unknown_tool_is_refused_before_the_hub(tmp_path):
+    ch, _h, k, _l, _c = make(tmp_path, nats={"allow": ["kannaka.*"]})
     r = ask(ch, cmd="kannaka.nope")
-    assert r["error"]["code"] == "no_such_tool"
+    assert r["error"]["code"] == "no_such_tool" and k.calls == []
 
 
-@pytest.mark.parametrize("raw,code,rid", ids=["notjson", "array", "toolarge", "noid", "v2", "badident", "badargs", "baddry"], argvalues=[
+@pytest.mark.parametrize("fail,code", [("error", "failed"), ("raise", "server_error"), ("hang", "timeout")])
+def test_downstream_failures_keep_the_envelope_and_the_code(tmp_path, fail, code):
+    ch, h, k, led, _c = make(tmp_path, fail=fail)
+    h.timeouts = {"kannaka": 0.05}
+    r = ask(ch)
+    assert r["v"] == 1 and r["id"] == "r1" and r["ok"] is False and r["error"]["code"] == code
+    assert r["dry_run"] is False and len(k.calls) == 1
+    if fail == "error":
+        assert r["output"] == "the tool said no"
+    assert [e["outcome"] for e in reversed(events(led))] == ["forwarded", code]
+
+
+@pytest.mark.parametrize("raw,code,rid", ids=["notjson", "array", "toolarge", "noid", "v2", "badident", "badargs", "baddry", "badts"], argvalues=[
     (b"not json", "bad_request", None),
     (b"[1]", "bad_request", None),
     (b"x" * (64 * 1024 + 1), "too_large", None),
@@ -161,11 +231,22 @@ def test_unknown_tool_and_downstream_error_shape(tmp_path):
     (json.dumps({"v": 1, "id": "r9", "identity": "a b", "cmd": "c"}).encode(), "bad_request", "r9"),
     (json.dumps({"v": 1, "id": "r9", "identity": "a", "cmd": "c", "args": []}).encode(), "bad_request", "r9"),
     (json.dumps({"v": 1, "id": "r9", "identity": "a", "cmd": "c", "dry_run": "yes"}).encode(), "bad_request", "r9"),
+    (json.dumps({"v": 1, "id": "r9", "identity": "a", "cmd": "c", "ts": "now"}).encode(), "bad_request", "r9"),
 ])
-def test_malformed_requests_are_refused_with_an_envelope(tmp_path, raw, code, rid):
-    ch, _h, k, _l, _c = make(tmp_path)
+def test_malformed_requests_are_refused_with_an_envelope_and_recorded(tmp_path, raw, code, rid):
+    ch, _h, k, led, _c = make(tmp_path)
     r = asyncio.run(ch.handle(raw))
     assert r["v"] == 1 and r["ok"] is False and r["id"] == rid and r["error"]["code"] == code and k.calls == []
+    assert [e["outcome"] for e in events(led)] == [code]
+
+
+def test_a_stale_request_is_refused_not_run_late(tmp_path):
+    wall = Clock(2000.0)
+    ch, _h, k, _l, _c = make(tmp_path, nats={"max_age_s": 30}, wall=wall)
+    assert ask(ch, ts=1990)["ok"], "29 s old is fine"
+    r = ask(ch, ts=1900.5)
+    assert not r["ok"] and r["error"]["code"] == "expired" and len(k.calls) == 1
+    assert ask(ch)["ok"], "a request without ts is not aged"
 
 
 def test_per_identity_rate_limit_and_window_recovery(tmp_path):
@@ -194,6 +275,35 @@ def test_rate_limiter_forgets_old_identities_and_refusals_do_not_count():
     for i in range(1100):
         rl.check(f"id{i}")
     assert len(rl.by_id) <= 1024
+
+
+def test_a_flood_of_refusals_writes_a_bounded_number_of_ledger_rows(tmp_path):
+    ch, _h, k, led, clock = make(tmp_path, nats={"rate": {"per_identity_per_min": 5, "global_per_min": 1000}})
+    for i in range(200):                                   # 200 spoofed identities, all asking for a tool not allowed
+        ask(ch, identity=f"spoof-{i}", cmd="kannaka.kannaka_remember")
+    for _ in range(50):
+        asyncio.run(ch.handle(b"garbage"))
+    rows = events(led)
+    assert [e["outcome"] for e in rows] == ["bad_request", "not_allowed"], "one full row per kind per minute"
+    assert rows[1]["identity"] == "spoof-0"
+    assert events(led, "hub_nats_refusals") == [], "the window is still open"
+    clock.t += 61
+    ask(ch, identity="late", cmd="kannaka.kannaka_remember")   # closes not_allowed's window, opens a new one
+    ch.refusals.close()                                        # stop() does this: closes bad_request's window too
+    summary = {e["outcome"]: (e["count"], e["identities"]) for e in events(led, "hub_nats_refusals")}
+    assert summary == {"not_allowed": (200, 64), "bad_request": (50, 1)}
+    assert [e["outcome"] for e in reversed(events(led))][-1] == "not_allowed", "the late one opened a new window"
+    assert k.calls == []
+
+
+def test_refusal_log_writes_no_summary_for_a_single_refusal():
+    out, clock = [], Clock()
+    rl = RefusalLog(lambda what, **d: out.append((what, d)), clock)
+    rl.refuse("busy")
+    clock.t += 61
+    rl.refuse("busy", "p")
+    rl.close()
+    assert [w for w, _ in out] == ["hub_nats_cmd", "hub_nats_cmd"]
 
 
 def test_dry_run_decides_but_runs_and_stores_nothing(tmp_path):
@@ -230,37 +340,79 @@ def test_channel_wide_dry_run_cannot_be_turned_off_by_a_request(tmp_path):
 def test_subscriber_lifecycle_replies_on_the_inbox_and_drops_reply_less_commands(tmp_path):
     ch, _h, k, led, _c = make(tmp_path)
     nc = FakeNats()
-
-    async def connect(url, **kw):
-        nc.url, nc.kw = url, kw
-        return nc
-    ch.connect = connect
+    connect_to(ch, nc)
     ch.cfg = {**ch.cfg, "url": "nats://x:4222", "creds_file": "/tmp/c.creds"}
 
     async def run():
         await ch.start()
         cb = nc.subs["KAX.qos.nick.cmd"]
-        good = FakeMsg({"v": 1, "id": "m1", "identity": "p", "cmd": "kannaka.kannaka_recall", "args": {}})
+        good = msg("m1")
         await cb(good)
         silent = FakeMsg({"v": 1, "id": "m2", "identity": "p", "cmd": "kannaka.kannaka_recall", "args": {}}, reply="")
         await cb(silent)
+        await nc.kw["disconnected_cb"]()
+        await nc.kw["reconnected_cb"]()
         await ch.stop()
         return good, silent
     good, silent = asyncio.run(run())
-    assert nc.url == "nats://x:4222" and nc.kw == {"user_credentials": "/tmp/c.creds"}
+    assert nc.url == "nats://x:4222"
+    assert nc.kw["user_credentials"] == "/tmp/c.creds" and nc.kw["max_reconnect_attempts"] == -1
+    assert nc.sub_kw["KAX.qos.nick.cmd"] == {"pending_msgs_limit": 64, "pending_bytes_limit": 4 << 20}
     assert good.sent and good.sent[0]["ok"] and good.sent[0]["id"] == "m1"
     assert silent.sent == [] and len(k.calls) == 1, "a request with no reply inbox is not run"
+    assert [e["outcome"] for e in events(led) if e["outcome"] == "no_reply_inbox"] == ["no_reply_inbox"]
+    kinds = [e["event"] for e in reversed(led.broker.ledger(limit=100)["events"])]
+    assert [k_ for k_ in kinds if k_.startswith("hub_nats_") and k_ != "hub_nats_cmd"] == \
+        ["hub_nats_listening", "hub_nats_down", "hub_nats_up"]
     assert nc.drained
 
 
-def test_a_crash_inside_a_command_becomes_an_error_reply(tmp_path):
-    ch, h, _k, _l, _c = make(tmp_path)
+def test_requests_run_concurrently_up_to_max_inflight_and_the_backlog_is_capped(tmp_path):
+    ch, h, _k, led, _c = make(tmp_path, nats={"max_inflight": 2, "max_backlog": 1})
+    nc = FakeNats()
+    connect_to(ch, nc)
+    running, peak, release = [0], [0], None
+
+    async def slow(tool, args, origin="agent"):
+        running[0] += 1
+        peak[0] = max(peak[0], running[0])
+        await release.wait()
+        running[0] -= 1
+        return {"ok": True, "result": origin}
+    h.call = slow
+
+    async def run():
+        nonlocal release
+        release = asyncio.Event()
+        await ch.start()
+        cb = nc.subs["KAX.qos.nick.cmd"]
+        msgs = [msg(f"m{i}") for i in range(4)]
+        for m in msgs:
+            await cb(m)                                    # 2 run, 1 waits, the 4th is refused at once
+        await asyncio.sleep(0.01)
+        assert peak[0] == 2 and running[0] == 2
+        assert msgs[3].sent[0]["error"]["code"] == "busy" and msgs[3].sent[0]["id"] == "m3"
+        release.set()
+        await ch.stop()                                    # waits for the three to answer
+        return msgs
+    msgs = asyncio.run(run())
+    assert [m.sent[0]["ok"] for m in msgs[:3]] == [True, True, True]
+    assert msgs[0].sent[0]["output"] == "nats:p", "the hub is told who asked"
+    assert peak[0] == 2
+    assert [e["outcome"] for e in events(led) if e["outcome"] == "busy"] == ["busy"]
+
+
+def test_a_crash_inside_a_command_becomes_an_error_reply_that_keeps_the_id(tmp_path):
+    ch, h, _k, led, _c = make(tmp_path)
 
     async def boom(*a, **kw):
         raise RuntimeError("secret-token-xyz")
     h.call = boom
     r = ask(ch)
     assert not r["ok"] and r["error"]["code"] == "internal_error" and "secret" not in json.dumps(r)
+    assert r["id"] == "r1"
+    assert [e["outcome"] for e in reversed(events(led))] == ["forwarded", "internal_error"]
+    assert "secret" not in json.dumps(events(led))
 
 
 def test_missing_nats_py_is_a_clear_config_error(tmp_path, monkeypatch):
