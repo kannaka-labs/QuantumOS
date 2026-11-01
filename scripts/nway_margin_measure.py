@@ -69,6 +69,16 @@ GATE_BANNERS = {
 }
 
 
+def qemu_accels() -> list[str]:
+    """The accelerators this QEMU reports (`-accel help`), e.g. ["kvm", "tcg"]."""
+    try:
+        out = subprocess.run(["qemu-system-x86_64", "-accel", "help"], capture_output=True,
+                             text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [ln.strip() for ln in out.splitlines() if ln.strip() and not ln.lower().startswith("accelerators")]
+
+
 def run_gate(target: str, record: dict) -> int:
     """Run one make target, streaming its output and stamping the wait points."""
     t0 = time.monotonic()
@@ -129,6 +139,12 @@ def main() -> int:
         "runner": os.environ.get("RUNNER_NAME", ""),
         "image": os.environ.get("ImageOS", "") + " " + os.environ.get("ImageVersion", ""),
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        # A slow run on a shared runner is most often a run without KVM (QEMU
+        # falls back to TCG, 30x+ slower); record it so the report can tell a
+        # thin budget from a degraded host.
+        "kvm": os.path.exists("/dev/kvm"),
+        "qemu_accels": qemu_accels(),
+        "nproc": os.cpu_count(),
         "gates": {},
     }
     worst = 0
