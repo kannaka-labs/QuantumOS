@@ -53,9 +53,25 @@ python3 qos_hub.py approve --db broker.db h1a2b3c4d5      # shows the call, asks
 The hub's own tools are `hub_tools` (every tool and its policy), `hub_call_approved`
 and `hub_ledger`. There is no tool to approve or to change the policy.
 
+Any model can drive the hub, not just Claude Code. `scripts/qos_agent.py --server-cmd` runs its
+tool loop against the hub instead of `qos_mcp.py`; with `--base-url` and `--api-key-env` that is
+any OpenAI-compatible endpoint (OpenRouter, a local Ollama). Hub names like `qos.qos_boot` are not
+legal tool names for either API, so the agent shows them to the model as `qos__qos_boot` and maps
+each call back:
+
+```
+echo "boot QuantumOS and report its process count" | python3 scripts/qos_agent.py - \
+  --provider openai --base-url https://openrouter.ai/api/v1 --api-key-env OPENROUTER_API_KEY \
+  --model z-ai/glm-5 --server-cmd "qos-hub serve --config hub.json --db broker.db"
+```
+
+A config written for unattended agents should set `"default": "deny"`: an `ask` call is stored and
+answered `approval_required`, and a denied tool is not listed at all, which also keeps the tool
+list short for a small-context model.
+
 ## What the example config wires up
 
-Seventeen servers. Reads are allowed; anything that writes to a shared bus, spends, or changes a
+Nineteen servers. Reads are allowed; anything that writes to a shared bus, spends, or changes a
 store asks first; the few truly one-way actions are denied. Unlisted tools ask.
 
 | server | from | allowed | asks first | denied |
@@ -63,6 +79,8 @@ store asks first; the few truly one-way actions are denied. Unlisted tools ask.
 | `kannaka` | the Kannaka plugin's `kannaka-mcp.mjs` (stdio) | status, recall, swarm status/tail, KAX compute roster/status/events | remember, dream, **swarm_send** (public bus), **compute_wake** (spends KAX credits) | compute_grant |
 | `kcli` | the `kannaka` CLI (templates) | status, recall, swarm status | | |
 | `quantum` | kannaka-quantum (`python -m kannaka_quantum mcp`) | devices, quantum_random, resonance_recall | run_circuit | |
+| `qos` | QuantumOS itself (`qos-mcp`, needs qemu and a kernel) | status, sysinfo, manifest, audit, field status, recall, society status | everything else (boot, run, imprint, fetch, QPU submit, memory import) | memory_export (writes the host HRM) |
+| `tui` | the `kannaka` commands behind [kannaka-tui](https://github.com/kannaka-labs/kannaka-tui)'s Status, Memory, Cosmos and Bus tabs (templates), so an agent sees what a person sees in the TUI | status, observe, constellation, radio, swarm | dream (changes the store) | |
 | `octo` | Kannaktopus `mcp-server` | status, skills, Kannaka/HRM reads, swarm status/tail | swarm_send, absorb, dream, the octopus workflows (paid LLMs) | |
 | `broker` | the provider broker's `broker_mcp.py` | all (the broker enforces its own envelope and approvals) | | |
 | `review` | `qos-review serve` (Sashiko with your own model key, ADR-0028) | quote, status, result, jobs | review_start (spends your budget) | |

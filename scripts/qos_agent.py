@@ -67,6 +67,8 @@ import argparse
 import asyncio
 import json
 import os
+import re
+import shlex
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -148,6 +150,38 @@ async def _open_tools(mcp_client_ctx):
     return result.tools
 
 
+# Both the Anthropic and OpenAI APIs only accept tool names matching this.
+_WIRE_NAME_OK = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _wire_tools(mcp_tools):
+    """Rename tools whose names the model APIs reject. Behind the hub
+    (`--server-cmd "qos-hub serve ..."`) tools are namespaced, e.g.
+    `qos.qos_boot`, and the dot is not a legal tool name; it becomes
+    `qos__qos_boot`. Returns (tools as the model sees them, wire -> MCP name)."""
+    tools, mapping = [], {}
+    for t in mcp_tools:
+        wire = t.name if _WIRE_NAME_OK.match(t.name) else re.sub(r"[^A-Za-z0-9_-]", "__", t.name)[:64]
+        mapping[wire] = t.name
+        tools.append(t if wire == t.name else t.model_copy(update={"name": wire}))
+    return tools, mapping
+
+
+class _WireSession:
+    """A ClientSession that maps wire tool names back to MCP names on call_tool,
+    so both drivers stay unaware of the renaming."""
+
+    def __init__(self, session, mapping):
+        self._session = session
+        self._mapping = mapping
+
+    async def call_tool(self, name, arguments=None, *a, **kw):
+        return await self._session.call_tool(self._mapping.get(name, name), arguments, *a, **kw)
+
+    def __getattr__(self, attr):
+        return getattr(self._session, attr)
+
+
 def _kernel_hint():
     """Warn early if no built guest is discoverable — every tool that boots a
     VM would otherwise fail deep inside a tool call with a confusing error."""
@@ -164,16 +198,22 @@ def _kernel_hint():
     )
 
 
-def _server_params():
+def _server_params(server_cmd=None):
     """stdio parameters that launch scripts/qos_mcp.py as an MCP server.
 
     Running `python qos_mcp.py` puts scripts/ on sys.path[0], so its bare
     `from qos_bridge import ...` resolves; cwd is the repo root so any
     relative kernel path resolves the same way the CI gates see it. QOS_KERNEL
     (and the rest of the environment) is inherited by the child, so the VM the
-    agent boots is the one you built."""
+    agent boots is the one you built.
+
+    `server_cmd` (a command line) launches a different MCP server instead,
+    e.g. the hub: `qos-hub serve --config hub.json --db broker.db`."""
     from mcp import StdioServerParameters
 
+    if server_cmd:
+        argv = shlex.split(server_cmd)
+        return StdioServerParameters(command=argv[0], args=argv[1:], env=os.environ.copy())
     return StdioServerParameters(
         command=sys.executable,
         args=[os.path.join(HERE, "qos_mcp.py")],
@@ -182,13 +222,13 @@ def _server_params():
     )
 
 
-async def list_tools_only():
+async def list_tools_only(server_cmd=None):
     """Prove the model→MCP→qos_bridge plumbing end to end WITHOUT calling any
     API or needing a key: spawn the server, initialize, list the tools."""
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
 
-    async with stdio_client(_server_params()) as (read, write):
+    async with stdio_client(_server_params(server_cmd)) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = await _open_tools(session)
@@ -201,8 +241,14 @@ async def list_tools_only():
 
 async def _cleanup(session):
     """Power off anything the agent may have booted. Best-effort and idempotent:
-    both tools no-op when nothing is running, so calling both is always safe."""
-    for name in CLEANUP_TOOLS:
+    both tools no-op when nothing is running, so calling both is always safe.
+    Behind the hub they are namespaced (`qos.qos_shutdown`), so match by suffix."""
+    try:
+        names = [t.name for t in await _open_tools(session)
+                 if t.name.rsplit(".", 1)[-1] in CLEANUP_TOOLS]
+    except Exception:  # noqa: BLE001
+        names = list(CLEANUP_TOOLS)
+    for name in names:
         try:
             await session.call_tool(name, {})
         except Exception:  # noqa: BLE001 — cleanup must never mask the real outcome
@@ -346,7 +392,7 @@ async def _drive_anthropic(client, session, mcp_tools, task, model, max_tokens, 
 # provider: openai (any OpenAI-compatible /chat/completions endpoint)
 # --------------------------------------------------------------------------
 
-def _prepare_openai(base_url):
+def _prepare_openai(base_url, key_env="OPENAI_API_KEY"):
     """Import the SDK and resolve credentials BEFORE any VM is spawned.
     Returns a client, or an int exit code on failure."""
     try:
@@ -358,7 +404,7 @@ def _prepare_openai(base_url):
             file=sys.stderr,
         )
         return 2
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get(key_env)
     if not api_key:
         if base_url:
             # Local/self-hosted servers (Ollama, LM Studio, llama.cpp) ignore
@@ -480,28 +526,32 @@ async def _drive_openai(client, session, mcp_tools, task, model, max_tokens, max
 # shared driver
 # --------------------------------------------------------------------------
 
-async def run_agent(task, provider, model, base_url, max_tokens, effort, max_turns, token_budget):
+async def run_agent(task, provider, model, base_url, max_tokens, effort, max_turns, token_budget,
+                    server_cmd=None, key_env="OPENAI_API_KEY"):
     """Drive QuantumOS with the chosen model: resolve provider credentials
     FIRST (no VM is ever spawned for a run that can't talk to a model), then
     spawn the MCP server and hand the session to the provider loop. Guarantees
     the guest is powered off on exit and caps the number of turns so a runaway
     loop cannot silently burn the user's key."""
-    prep = _prepare_anthropic() if provider == "anthropic" else _prepare_openai(base_url)
+    prep = (_prepare_anthropic() if provider == "anthropic"
+            else _prepare_openai(base_url, key_env))
     if isinstance(prep, int):
         return prep
     client = prep
 
-    hint = _kernel_hint()
+    # A --server-cmd server finds its own kernel (the hub may run it remotely).
+    hint = None if server_cmd else _kernel_hint()
     if hint:
         print(f"WARNING: {hint}\n", file=sys.stderr)
 
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
 
-    async with stdio_client(_server_params()) as (read, write):
+    async with stdio_client(_server_params(server_cmd)) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            mcp_tools = await _open_tools(session)
+            mcp_tools, mapping = _wire_tools(await _open_tools(session))
+            wire = _WireSession(session, mapping)
             print(
                 f"Connected to QuantumOS ({len(mcp_tools)} tools). "
                 f"Provider: {provider}, model: {model}.\n"
@@ -511,11 +561,11 @@ async def run_agent(task, provider, model, base_url, max_tokens, effort, max_tur
             try:
                 if provider == "anthropic":
                     return await _drive_anthropic(
-                        client, session, mcp_tools, task, model, max_tokens, effort, max_turns,
+                        client, wire, mcp_tools, task, model, max_tokens, effort, max_turns,
                         token_budget,
                     )
                 return await _drive_openai(
-                    client, session, mcp_tools, task, model, max_tokens, max_turns
+                    client, wire, mcp_tools, task, model, max_tokens, max_turns
                 )
             finally:
                 print("\n[shutting down any VM the agent booted…]", file=sys.stderr)
@@ -523,6 +573,11 @@ async def run_agent(task, provider, model, base_url, max_tokens, effort, max_tur
 
 
 def main():
+    # Model text is UTF-8 (φ, —); a piped stdout on Windows defaults to cp1252
+    # and print() would raise mid-run, after the VM was booted.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     p = argparse.ArgumentParser(
         description=(
             "Drive a live QuantumOS VM with the model of your choice over its "
@@ -530,7 +585,7 @@ def main():
         )
     )
     p.add_argument("task", nargs="?", default=None,
-                   help="a free-form experiment for the model to run (overrides --experiment)")
+                   help="a free-form experiment for the model to run (overrides --experiment); '-' reads it from stdin")
     p.add_argument("--experiment", choices=sorted(EXPERIMENTS), default="recall",
                    help="a curated experiment when no free-form task is given (default: recall)")
     p.add_argument("--provider", choices=PROVIDERS, default=None,
@@ -553,12 +608,19 @@ def main():
                    help="cumulative token cap (input+output+cache) per run, anthropic only; "
                         "the loop stops when reached and a spend estimate is printed "
                         "(default 400000; env QOS_TOKEN_BUDGET; 0 = unlimited)")
+    p.add_argument("--server-cmd", default=os.environ.get("QOS_AGENT_SERVER_CMD"),
+                   help="launch this MCP server instead of scripts/qos_mcp.py, e.g. the hub: "
+                        "\"qos-hub serve --config hub.json --db broker.db\" (env "
+                        "QOS_AGENT_SERVER_CMD; split like a shell, so use forward slashes)")
+    p.add_argument("--api-key-env", default=os.environ.get("QOS_AGENT_API_KEY_ENV", "OPENAI_API_KEY"),
+                   help="environment variable holding the key for --provider openai, e.g. "
+                        "OPENROUTER_API_KEY (default OPENAI_API_KEY)")
     p.add_argument("--list-tools", action="store_true",
                    help="list the QuantumOS MCP tools and exit (no API call, no key needed)")
     args = p.parse_args()
 
     if args.list_tools:
-        return asyncio.run(list_tools_only())
+        return asyncio.run(list_tools_only(args.server_cmd))
 
     provider = args.provider or os.environ.get("QOS_AGENT_PROVIDER") or (
         "openai" if args.base_url else "anthropic"
@@ -574,10 +636,15 @@ def main():
             p.error("--model is required with --provider openai — pass whatever your "
                     "endpoint serves (e.g. gpt-5.1, or llama3.3 for a local Ollama)")
 
-    task = args.task if args.task is not None else EXPERIMENTS[args.experiment]
+    if args.task == "-":
+        # Bytes, decoded as UTF-8: the locale's text decoding can leave
+        # surrogates in a piped prompt, which the API client cannot encode.
+        task = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+    else:
+        task = args.task if args.task is not None else EXPERIMENTS[args.experiment]
     return asyncio.run(
         run_agent(task, provider, model, args.base_url, args.max_tokens, args.effort, args.max_turns,
-                  args.token_budget)
+                  args.token_budget, args.server_cmd, args.api_key_env)
     )
 
 

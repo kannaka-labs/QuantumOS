@@ -853,6 +853,8 @@ jobs:
       run: make ci-smoke-mcp-schema-selftest MCP_PY=python3
     - name: MCP schema gate (extracted tool surface == committed golden)
       run: make ci-smoke-mcp-schema-gate MCP_PY=python3
+    - name: qos_agent hub wiring (tool renaming, --server-cmd, namespaced cleanup; offline)
+      run: python3 scripts/test_qos_agent_wire.py
 
   quantum-com2:
     name: COM2 Quantum-Submit (host → broker → qpud over the wire — epic #149 B1)
