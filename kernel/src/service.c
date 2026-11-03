@@ -723,14 +723,20 @@ svc_result_t service_find(const char *name, uint32_t *service_id_out) {
  * ============================================================================ */
 
 static void health_monitor_scan(void) {
-    uint64_t now = timer_get_ticks();
-
     for (uint32_t i = 0; i < MAX_SERVICES; i++) {
         service_slot_t *slot = &services[i];
         if (!slot->registered || !slot->monitored || slot->info.state != SERVICE_STATE_RUNNING) {
             continue;
         }
-        if (now - slot->last_heartbeat > SERVICE_HEARTBEAT_TIMEOUT) {
+        /* Read the clock per slot (#370). Restarting an earlier slot in this
+         * scan takes ticks (destroy, create, console lines), and live services
+         * keep heartbeating meanwhile; against a `now` read once at the top,
+         * their newer last_heartbeat made the unsigned difference wrap, and
+         * every live service after the restarted one was killed in turn. The
+         * explicit order check keeps that impossible even if this moves. */
+        uint64_t now = timer_get_ticks();
+        uint64_t last = slot->last_heartbeat;
+        if (now > last && now - last > SERVICE_HEARTBEAT_TIMEOUT) {
             slot->info.state = SERVICE_STATE_CRASHED;
             if (!boot_is_quiet()) {
                 boot_log("health monitor: service unresponsive:");

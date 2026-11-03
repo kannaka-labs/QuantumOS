@@ -46,7 +46,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qos_bridge import QosSociety, QosDead  # noqa: E402
+from qos_bridge import QosSociety, QosDead, QosTimeout  # noqa: E402
 
 QSEEDS = ["1111111111111111", "8888888888888888", "cccccccccccccccc"]
 KEY = bytes([0x11]) * 32          # ONE group key — the same 32 bytes to every member
@@ -61,12 +61,59 @@ REKEY = "FSKEY: rekeyed (replay watermarks reset)"
 _SOC = None  # the society under test, so a failure can print the evidence it needs
 
 
+# Lines that tell a fieldsyncd watchdog rebirth (#370 hypothesis 1) from an
+# anchor or harness fault: a rebirth prints the health-monitor pair, then
+# swarm_svc re-forwards the key up to ~2 s later.
+EVENTS = (
+    ("fskey", "FSKEY:"),
+    ("unresponsive", "health monitor: service unresponsive:"),
+    ("restarted", "health monitor: service restarted:"),
+    ("key_reforward", "SWARM: swarm-plane key re-forwarded to reborn fieldsyncd"),
+    ("badmac", BADMAC),
+)
+
+
+def _print_member_events():
+    """One line per member counting the EVENTS markers in its whole log, so passing
+    runs show whether rebirths happen at all (#370) and failing runs show where."""
+    soc = _SOC
+    if soc is None or not getattr(soc, "members", None):
+        return
+    for i, m in enumerate(soc.members):
+        try:
+            text = m._log_text()
+        except Exception:  # noqa: BLE001 - diagnostics only
+            continue
+        counts = " ".join(f"{k}={text.count(s)}" for k, s in EVENTS)
+        print(f"EVENTS member {i}: {counts}")
+
+
+def _save_member_logs():
+    """With QOS_MEMBER_LOG_DIR set, write every member's COMPLETE log there (CI uploads
+    it on failure): the 40-line tail cannot show where a stray line sat (#370)."""
+    soc = _SOC
+    out = os.environ.get("QOS_MEMBER_LOG_DIR")
+    if not out or soc is None or not getattr(soc, "members", None):
+        return
+    try:
+        os.makedirs(out, exist_ok=True)
+        for i, m in enumerate(soc.members):
+            with open(os.path.join(out, f"keyauth-n-member-{i}.log"), "w",
+                      encoding="utf-8") as f:
+                f.write(m._log_text())
+        print(f"member logs written to {out}")
+    except Exception as e:  # noqa: BLE001 - never let the dump hide the verdict
+        print(f"(member logs not written: {type(e).__name__})")
+
+
 def _dump_members(lines=40):
     """On failure, print each member's log tail. The verdict alone has not been enough
     to tell a harness race from a guest fault (#361); the next failure carries its logs."""
     soc = _SOC
     if soc is None or not getattr(soc, "members", None):
         return
+    _print_member_events()
+    _save_member_logs()
     for i, m in enumerate(soc.members):
         try:
             tail = m._log_text()[-6000:].splitlines()[-lines:]
@@ -264,6 +311,13 @@ def main():
         _leg_a_exclusion(soc)
         _leg_b_admit(soc)
         _leg_c_replay(soc)
+        _print_member_events()
+    except (QosDead, QosTimeout) as e:
+        # A harness timeout (e.g. a member never installs the key) is as much a
+        # failure as an assertion, and needs the same evidence (#370).
+        print(f"FAIL: {type(e).__name__}: {e}")
+        _dump_members()
+        raise
     finally:
         soc.shutdown()
     if soc.members:

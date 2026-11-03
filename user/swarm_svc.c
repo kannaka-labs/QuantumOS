@@ -154,6 +154,10 @@ static void compute_pubkey_digest(uint8_t out[LAMPORT_HASH_LEN]) {
     sha256_ctx pk_ctx;
     sha256_init(&pk_ctx);
     for (uint32_t i = 0; i < LAMPORT_BITS; i++) {
+        /* ~1000 SHA-256s in all: under TCG on a busy host that outlasts the
+         * 2 s watchdog, which then killed us mid-attestation and left a
+         * truncated frame on COM2 ("bad CRC8") — heartbeat as we go (#370). */
+        heartbeat();
         for (uint8_t b = 0; b < 2; b++) {
             uint8_t sk[LAMPORT_HASH_LEN], pk[LAMPORT_HASH_LEN];
             expand_sk(i, b, sk);
@@ -172,6 +176,7 @@ static void emit_signature(const uint8_t md[LAMPORT_HASH_LEN]) {
     uint8_t chunk[SWARM_MAX_PAYLOAD]; /* 512 = 8 elements of 64 bytes */
     uint32_t cpos = 0;
     for (uint32_t i = 0; i < LAMPORT_BITS; i++) {
+        heartbeat(); /* see compute_pubkey_digest (#370) */
         uint8_t bit = (uint8_t)((md[i >> 3] >> (i & 7u)) & 1u);
         uint8_t sk[LAMPORT_HASH_LEN], sko[LAMPORT_HASH_LEN], pko[LAMPORT_HASH_LEN];
         expand_sk(i, bit, sk); /* revealed preimage */

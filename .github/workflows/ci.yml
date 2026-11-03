@@ -1006,7 +1006,15 @@ jobs:
       run: |
         KERNEL_ELF=$(find build/ -name "kernel.elf32" | head -1)
         echo "Using kernel: $KERNEL_ELF"
-        QOS_KERNEL="$KERNEL_ELF" make ci-smoke-keyauth-n-gate
+        QOS_MEMBER_LOG_DIR=keyauth-n-logs QOS_KERNEL="$KERNEL_ELF" make ci-smoke-keyauth-n-gate
+
+    - name: Upload keyauth-n member logs on failure (#370)
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: keyauth-n-member-logs
+        path: keyauth-n-logs/
+        if-no-files-found: ignore
 
     - name: N=4 society — the documented configuration ceiling (societies epic)
       run: |
