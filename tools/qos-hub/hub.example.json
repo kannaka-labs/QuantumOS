@@ -20,6 +20,14 @@
       "env": {},
       "call_timeout_s": 600
     },
+    "qos": {
+      "command": "qos-mcp",
+      "args": [],
+      "env": {
+        "QOS_KERNEL": "~/QuantumOS/build/x86_64/kernel.elf32"
+      },
+      "call_timeout_s": 300
+    },
     "octo": {
       "command": "node",
       "args": [
@@ -632,6 +640,15 @@
     "quantum.quantum_random": "allow",
     "quantum.resonance_recall": "allow",
     "quantum.run_circuit": "ask",
+    "qos.qos_status": "allow",
+    "qos.qos_sysinfo": "allow",
+    "qos.qos_manifest": "allow",
+    "qos.qos_audit": "allow",
+    "qos.qos_field_status": "allow",
+    "qos.qos_recall": "allow",
+    "qos.qos_society_status": "allow",
+    "qos.qos_memory_export": "deny",
+    "qos.*": "ask",
     "octo.octopus_status": "allow",
     "octo.octopus_list_skills": "allow",
     "octo.kannaka_status": "allow",
