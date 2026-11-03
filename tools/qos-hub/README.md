@@ -71,7 +71,7 @@ list short for a small-context model.
 
 ## What the example config wires up
 
-Eighteen servers. Reads are allowed; anything that writes to a shared bus, spends, or changes a
+Nineteen servers. Reads are allowed; anything that writes to a shared bus, spends, or changes a
 store asks first; the few truly one-way actions are denied. Unlisted tools ask.
 
 | server | from | allowed | asks first | denied |
@@ -80,6 +80,7 @@ store asks first; the few truly one-way actions are denied. Unlisted tools ask.
 | `kcli` | the `kannaka` CLI (templates) | status, recall, swarm status | | |
 | `quantum` | kannaka-quantum (`python -m kannaka_quantum mcp`) | devices, quantum_random, resonance_recall | run_circuit | |
 | `qos` | QuantumOS itself (`qos-mcp`, needs qemu and a kernel) | status, sysinfo, manifest, audit, field status, recall, society status | everything else (boot, run, imprint, fetch, QPU submit, memory import) | memory_export (writes the host HRM) |
+| `tui` | the `kannaka` commands behind [kannaka-tui](https://github.com/kannaka-labs/kannaka-tui)'s Status, Memory, Cosmos and Bus tabs (templates), so an agent sees what a person sees in the TUI | status, observe, constellation, radio, swarm | dream (changes the store) | |
 | `octo` | Kannaktopus `mcp-server` | status, skills, Kannaka/HRM reads, swarm status/tail | swarm_send, absorb, dream, the octopus workflows (paid LLMs) | |
 | `broker` | the provider broker's `broker_mcp.py` | all (the broker enforces its own envelope and approvals) | | |
 | `review` | `qos-review serve` (Sashiko with your own model key, ADR-0028) | quote, status, result, jobs | review_start (spends your budget) | |

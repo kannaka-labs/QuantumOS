@@ -28,6 +28,44 @@
       },
       "call_timeout_s": 300
     },
+    "tui": {
+      "cli": {
+        "binary": "~/.local/bin/kannaka",
+        "env": {
+          "KANNAKA_QUIET": "1"
+        },
+        "timeout_s": 90,
+        "tools": {
+          "status": {
+            "description": "kannaka-tui Status tab: HRM gauges (phi, xi, order, consciousness level, memory counts), as the TUI reads them.",
+            "argv": ["status", "--envelope"]
+          },
+          "observe": {
+            "description": "kannaka-tui Memory tab: the medium's introspection snapshot.",
+            "argv": ["observe", "--json"]
+          },
+          "constellation": {
+            "description": "kannaka-tui Cosmos tab: which constellation apps are up or down.",
+            "argv": ["constellation"]
+          },
+          "radio": {
+            "description": "kannaka-tui Cosmos tab: what Kannaka Radio is playing now.",
+            "argv": ["radio"]
+          },
+          "swarm": {
+            "description": "kannaka-tui Bus and Constellation tabs, as a snapshot: the swarm's members and phases.",
+            "argv": ["swarm", "status"]
+          },
+          "dream": {
+            "description": "kannaka-tui Dreams tab trigger: run a dream consolidation. Changes the memory store.",
+            "argv": ["dream", "--mode", "{mode}"],
+            "params": {
+              "mode": {"type": "string", "enum": ["lite", "deep"], "default": "lite"}
+            }
+          }
+        }
+      }
+    },
     "octo": {
       "command": "node",
       "args": [
@@ -649,6 +687,12 @@
     "qos.qos_society_status": "allow",
     "qos.qos_memory_export": "deny",
     "qos.*": "ask",
+    "tui.status": "allow",
+    "tui.observe": "allow",
+    "tui.constellation": "allow",
+    "tui.radio": "allow",
+    "tui.swarm": "allow",
+    "tui.dream": "ask",
     "octo.octopus_status": "allow",
     "octo.octopus_list_skills": "allow",
     "octo.kannaka_status": "allow",
