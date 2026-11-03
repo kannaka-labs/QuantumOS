@@ -573,6 +573,11 @@ async def run_agent(task, provider, model, base_url, max_tokens, effort, max_tur
 
 
 def main():
+    # Model text is UTF-8 (φ, —); a piped stdout on Windows defaults to cp1252
+    # and print() would raise mid-run, after the VM was booted.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     p = argparse.ArgumentParser(
         description=(
             "Drive a live QuantumOS VM with the model of your choice over its "
@@ -632,7 +637,9 @@ def main():
                     "endpoint serves (e.g. gpt-5.1, or llama3.3 for a local Ollama)")
 
     if args.task == "-":
-        task = sys.stdin.read()
+        # Bytes, decoded as UTF-8: the locale's text decoding can leave
+        # surrogates in a piped prompt, which the API client cannot encode.
+        task = sys.stdin.buffer.read().decode("utf-8", errors="replace")
     else:
         task = args.task if args.task is not None else EXPERIMENTS[args.experiment]
     return asyncio.run(
